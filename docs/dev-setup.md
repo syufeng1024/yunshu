@@ -145,6 +145,7 @@ docker compose -f deploy/docker-compose.yml start redis
 | `GATEWAY_METRICS_ADDR`  | 可选                    | 默认 `:9090`                        |
 | `GATEWAY_METRICS_TOKEN` | 可选                    | 非空时 `/metrics` 要求 Bearer          |
 | `GATEWAY_DB_MAX_CONNS`  | 可选                    | 默认 `8`，必须 `>= 1`                  |
+| `GW_RATELIMIT_DEGRADE_MODE` | 可选（`gatewayd`）    | **默认 `off`**；可设 `concurrency_only`，**其它值启动失败**。为什么默认 off（以及什么条件下才该改回去）见 `docs/degradation.md` §1.1 与 errata E-38 |
 
 缺失必填变量时进程不会逐条报错：一次列出全部缺失项后 `exit 1`。
 

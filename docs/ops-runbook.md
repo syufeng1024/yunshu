@@ -140,7 +140,7 @@ UPDATE t_reconcile_diff
 | 为「立即重跑」`DEL lock:recon:*` | 只读任务重跑不修数据，重复执行只会重复发通知；K21 过期（03:00 + 2h = 05:00）后再跑 |
 | 用冻结 API 调用来「控制影响面」 | F-11 裁定：只冻结提现/退款 |
 
-## 7 其余四个任务的失败处置
+## 7 其余任务的失败处置
 
 | 任务 | 失败日志 | 处置 |
 | --- | --- | --- |
@@ -148,4 +148,23 @@ UPDATE t_reconcile_diff
 | `expire_batch`（00:05） | `job_skipped_not_leader` / `task_failed` | 只处理已过期且 `remaining_micro > 0` 的 BONUS；重跑安全（`idem_key='expire:{batch_id}'`）。RECHARGE 批次永不选入 |
 | `purge_log`（03:10） | `Truncated=true` | 达到 100 批上限，次日自动续删；不要手工 `TRUNCATE` |
 | `rollup`（00:20） | `task_failed job=rollup` | 重跑收敛（四张表全 upsert）；`cost_configured=0` 是价格规则缺失，补 `t_price_rule` 后重跑 |
+| `close_expired_order`（5min） | `task_failed job=close_expired_order` / 日志 `close_expired_order no_progress` | 只关 `state='PENDING' AND expire_at<=now` 的单；CAS 落空（已被回调支付或已关）不算失败。先看 `gw_order_auto_closed_total{reason="expire_at"}` 是否停涨，再看 `gw_order_auto_close_failed_total{stage}`：`scan`=扫描查询、`db`=逐单语句、`audit`=审计写入。`audit` 持续失败时单不会被关（状态变更随事务回滚），修好审计表后重跑即收敛，重复执行不产生第二条审计；确需人工兜底走 `POST /api/admin/orders/{id}/close`（`ORDER_CLOSED_BY_OPERATOR`），**该路由要 `fund.approve` 权限（财务角色，`internal/control/server.go` 挂的 `mw.PermFundApprove`）**，OPS 角色会被 403 |
 | 任意任务 | `job_lock_held_by_other` | 另一副本持锁；租约 90s、每 20s 续约、剩余 < 30s 可接管。持续 5 分钟不接管说明持锁进程未退出，先确认再重启 |
+
+## 8 容量与限流告警
+
+`internal/obs/alert/rules.yaml` 里除对账（R-01）之外的告警都落到本节。每条都先判「要不要立刻动手」，再决定「动谁」。
+
+| 告警 | 判据 | 动作 |
+| --- | --- | --- |
+| `RatelimitUnavailable`（P1） | `increase(gw_ratelimit_unavailable_total[5m]) > 0` | 每一次都是一批 503：查 Redis 连通性与 `maxmemory-policy`（被淘汰会让限流键凭空消失）。PRD §9.8 要求资金维度 fail-close，**不要为了「先恢复」临时改成放行**。Redis 恢复后自动退出降级（连续 3 次心跳 + 并发维度再等 `drain_window` 150s），见 `docs/degradation.md` §4 |
+| `RatelimitRejectRatioHigh`（P1） | `sum(rate(gw_ratelimit_rejected_total[5m])) / sum(rate(gw_requests_total[5m])) > 0.005` 且样本 > 1000 | 拒绝率到 PRD §9.5 的可接受上限。先按 `dim` 拆分定位是哪一维在拒（`curl :9090/metrics \| grep gw_ratelimit_rejected_total`），再排除降级（`gw_ratelimit_degraded_total` 同维度在涨时属预期）。**注意口径**：这是「拒绝率」，不是 §9.5 的「误杀率」——本仓没有被拒请求的用量数据，误杀率无法计算（errata E-37），别用这个数对外声称误杀水平 |
+| `RatelimitRejectRatioHighByDim`（P2） | 单维度拒绝率 `> 0.001`（= §9.5 月度目标 0.1%）且样本 > 1000 | 单一维度自己就吃掉整个月度目标额度。确认不是降级后，看该维度的阈值与套餐档是否匹配（`t_rate_limit_policy` 的 rpm/tpm/concurrency/daily_quota） |
+| `SettleBacklogOverThreshold`（P1） | `increase(gw_backpressure_rejected_total{tier="backlog"}[5m]) > 0` | 背压阈值是 `settle.BacklogThreshold = 5000` **条** PENDING（不是秒）。先确认 jobsd 的 P26 消费者是否存活，再确认结算是否整体变慢。本仓没有积压条数的 gauge，手工核对用 `SELECT COUNT(*) FROM t_settle_task WHERE state='PENDING'` |
+| `PlatformErrorRateHigh`（P1） | 平台白名单 8 码占全部请求 > 1%（样本 > 100） | 分子按 PRD §9.3 的 8 条码算，**不要换成「全部 5xx」**——上游 5xx 属于「上游依赖可用性」，混进来会让归因失真。按 `err_code` 排序修占比最高的那条 |
+| `GatewayLatencyP99High`（P2） | `histogram_quantile(0.99, …) > 120` | 120s 是非流式客户端超时预算。先看 `gw_upstream_attempts_total` 的失败分类与 `gw_circuit_state`，再按 `channel_id` 判断是否单渠道劣化 |
+| `CircuitBreakerOpen`（P2） | `gw_circuit_state == 1` 持续 2 分钟 | 单渠道 OPEN 看 `t_upstream_attempt` 的 `error_class`；全部渠道 OPEN 按「上游整体不可用」处理，**不要在网关侧反复重启**（重启不会恢复上游） |
+| `OrderAutoCloseFailing`（P1） | `increase(gw_order_auto_close_failed_total[15m]) > 0` | 见 §7 的 `close_expired_order` 行 |
+| 工单 SLA 超时 | **无埋点**，只能查 `GET /api/admin/overview` 的 `alerts.sla_overdue` | 每 2 小时巡检一次；超时工单按 `first_response_due_at` 升序处理。要做成告警需先在 jobsd 侧加 gauge（见 rules.yaml 里被注释掉的那条规则） |
+
+**降级期间的统一口径**：先看 `gw_ratelimit_degraded_total{dim}` 是否在涨（说明处于降级而不是故障），再看 reject 比例是否被降级放大。降级是**预期行为**，不要当成故障处理；但 `concurrency` 降级意味着实际并发上限按副本数缩小了，如果同时在扩缩容，需要把「名义值 ÷ 副本数」算给业务方。
