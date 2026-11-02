@@ -31,6 +31,8 @@ build/
 
 # Go 编译产物
 bin/
+# 本地进程日志（`bin/*.exe > logs/*.log` 产生），只留本机
+logs/
 
 # Playwright（T21 段2）
 web/test-results/
