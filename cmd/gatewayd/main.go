@@ -127,8 +127,21 @@ func main() {
 	logStream.Metrics = rec
 	go observeLogBacklog(ctx, logStream, rec)
 
-	deg := ratelimit.NewDegrader(rdb, redisClock, nodeID, ratelimit.ModeOff, 200_000)
+	// Degradation mode comes from the environment (TDS §2.3 gives V1 one value,
+	// concurrency_only). A value that is not understood stops startup: silently
+	// falling back would leave the process running with a limiter shape nobody
+	// asked for, and the matrix in docs/degradation.md would describe something
+	// else than the binary.
+	degradeMode, modeErr := ratelimit.ModeFromEnv()
+	if modeErr != nil {
+		logger.Error(rootCtx, "ratelimit degrade mode misconfigured: "+modeErr.Error(),
+			obslog.Fields{Stage: "startup", Status: 1})
+		os.Exit(1)
+	}
+	deg := ratelimit.NewDegrader(rdb, redisClock, nodeID, degradeMode, 200_000)
 	limiter := ratelimit.New(rdb, redisClock, deg, rec, logger)
+	logger.Info(rootCtx, fmt.Sprintf("ratelimit degrade mode=%s", degradeMode),
+		obslog.Fields{Stage: "startup"})
 
 	idemOpts := idemstore.DefaultOptions()
 	if v, ok := store.Int(config.KeyIdemLeaseTTLSeconds); ok {

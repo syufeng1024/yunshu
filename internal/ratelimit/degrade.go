@@ -3,7 +3,10 @@ package ratelimit
 import (
 	"container/list"
 	"context"
+	"fmt"
+	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,6 +22,54 @@ const (
 	ModeOff             Mode = "off"
 	ModeConcurrencyOnly Mode = "concurrency_only"
 )
+
+// EnvDegradeMode selects the mode at startup. The name follows the GW_ prefix
+// and the GW_POLICY_* convention: the value is read once, at boot, and a value
+// that is not understood is a startup error rather than a silent fallback — a
+// typo must not quietly turn concurrency counting back into the ZSET path.
+const EnvDegradeMode = "GW_RATELIMIT_DEGRADE_MODE"
+
+// DefaultMode is what an unset EnvDegradeMode means: off.
+//
+// Three things to know before changing it back:
+//
+//  1. The switch works. E-12 asked for the mode to be read from a startup
+//     parameter instead of being hardcoded; that is done (EnvDegradeMode), and an
+//     unknown value stops the process rather than being ignored.
+//  2. concurrency_only buys nothing while Replicas() reads Redis. The degraded
+//     path starts with Degrader.Replicas() — ZREMRANGEBYSCORE + ZCARD — and that
+//     is exactly the call that fails when Redis is down, so a Redis outage still
+//     ends in ErrUnavailable (503). Turning it on by default therefore costs
+//     two extra Redis reads on every request (measured 0.71-0.91 ms/op -> 1.96-2.47
+//     ms/op, internal/ratelimit/degrade_bench_test.go) and returns no availability
+//     gain. It also rewrites the meaning of gw_ratelimit_degraded_total{dim=
+//     "concurrency"}, which would then count admitted requests instead of outages.
+//  3. Flip it back to concurrency_only once Replicas() no longer needs Redis —
+//     cache the last known replica count at startup and refresh it in the
+//     background (BACKLOG G31). At that point the matrix in docs/degradation.md
+//     becomes reachable and TestDegradedModeIsUnreachableWhenRedisIsDown should
+//     assert the 429 branch instead of ErrUnavailable.
+//
+// TDS :3073 lists concurrency_only as V1's only value; that statement assumes
+// the path works. Until G31 lands, this default makes the deviation explicit
+// instead of shipping a default that only has a cost (see errata E-38).
+const DefaultMode = ModeOff
+
+// ModeFromEnv reads EnvDegradeMode. Empty means DefaultMode; anything else must
+// be one of the two known values.
+func ModeFromEnv() (Mode, error) {
+	raw := strings.TrimSpace(os.Getenv(EnvDegradeMode))
+	if raw == "" {
+		return DefaultMode, nil
+	}
+	switch Mode(raw) {
+	case ModeOff, ModeConcurrencyOnly:
+		return Mode(raw), nil
+	default:
+		return "", fmt.Errorf("ratelimit: %s must be %q or %q, got %q",
+			EnvDegradeMode, ModeOff, ModeConcurrencyOnly, raw)
+	}
+}
 
 // ConcurrencyMode describes which counter admitted the request.
 type ConcurrencyMode string
