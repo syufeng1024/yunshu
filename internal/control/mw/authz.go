@@ -12,19 +12,52 @@ type Permission string
 // The full T15 vocabulary. Names are 资源.动作; a write permission always means
 // "create, update, disable and delete that resource".
 //
+// Every read permission names one *resource scope*, not just one resource. The
+// same table row seen by two consoles is two permissions when the two consoles
+// see different columns of it:
+//
+//   - account.read — customer self-service. Reads your own account row through
+//     /api/console/overview; every aggregate is filtered by the session uid.
+//   - user.read / channel.read — operator scope. Reads *any* account or
+//     upstream channel, so the row carries another customer's disable reason,
+//     base_url and key mask.
+//
+// The two names must stay separate. Reusing user.read for the console overview
+// would mean PERSONAL holds an "operator read any account" capability, and
+// GET /api/admin/users would answer every customer with the whole account
+// list (the E-31/E-33 pattern). Reusing it the other way round — letting
+// account.read open /api/admin/users — has the same effect, because the
+// handler does not scope by uid. channel.read has no console counterpart at
+// all: a customer never sees an upstream channel, so only OPS and SUPER_ADMIN
+// hold it, and FINANCE (which legitimately reads the money queue and the model
+// cost sheet) must not.
+//
 // admin.all remains a super-admin shortcut for cross-cutting diagnostics such
 // as /api/admin/whoami, but no business route may rely on it: each admin
 // endpoint declares the concrete capability it needs so a future role split
 // does not silently grant everything.
 const (
-	PermUserRead     Permission = "user.read"
-	PermUserWrite    Permission = "user.write"
-	PermKeyRead      Permission = "key.read"
-	PermKeyWrite     Permission = "key.write"
-	PermModelRead    Permission = "model.read"
-	PermModelWrite   Permission = "model.write"
-	PermPriceWrite   Permission = "price.write"
-	PermGroupWrite   Permission = "group.write"
+	// PermAccountRead opens the account console's own overview (balance, plan,
+	// quota, today's counters). Held by PERSONAL and by SUPER_ADMIN for support
+	// diagnostics. It is never an operator-wide read: swapping it for user.read
+	// is a cross-account disclosure, see above.
+	PermAccountRead Permission = "account.read"
+	// PermUserRead is the operator scope: read any account, including each
+	// row's status, plan and disable reason. OPS and SUPER_ADMIN only. FINANCE
+	// deliberately does not hold it — finance works from orders, invoices and
+	// redeem batches, none of which needs the account directory.
+	PermUserRead   Permission = "user.read"
+	PermUserWrite  Permission = "user.write"
+	PermKeyRead    Permission = "key.read"
+	PermKeyWrite   Permission = "key.write"
+	PermModelRead  Permission = "model.read"
+	PermModelWrite Permission = "model.write"
+	PermPriceWrite Permission = "price.write"
+	PermGroupWrite Permission = "group.write"
+	// PermChannelRead is the operator scope for upstream channels: the rows
+	// expose base_url and the key mask, so no customer and no money-only role
+	// may hold it.
+	PermChannelRead  Permission = "channel.read"
 	PermChannelWrite Permission = "channel.write"
 	PermNoticeWrite  Permission = "notice.write"
 	PermRiskWrite    Permission = "risk.write"
@@ -46,11 +79,13 @@ const (
 	// SUPER_ADMIN only. The export download token is an additional check, not
 	// a replacement for this permission.
 	PermUsageRead Permission = "usage.read"
-	// admin.read gates the operator console's read routes. model.read cannot
-	// do that job: PERSONAL holds model.read for /api/console/models, and the
-	// admin model view carries upstream cost prices (B-48) and channel views
-	// carry base_url and key masks. Letting model.read open those routes would
-	// hand every customer the cost sheet.
+	// admin.read gates the operator console's remaining shared read routes:
+	// the overview and the model master data (which includes upstream cost
+	// prices, B-48). Model reads cannot move to model.read: PERSONAL holds
+	// model.read for /api/console/models, so that would hand every customer
+	// the cost sheet. The per-resource operator reads are narrower and live in
+	// user.read / channel.read, so a role that may read models does not
+	// automatically read the account directory or the upstream channels.
 	PermAdminRead Permission = "admin.read"
 	PermAdminAll  Permission = "admin.all"
 )
@@ -76,9 +111,23 @@ const (
 // log.read is likewise account-scoped: PERSONAL (and SUPER_ADMIN for support
 // diagnostics) may read only rows whose user_id equals their session, and no
 // operator role holds the permission.
+//
+// The read scopes are split three ways, and the split is what keeps the account
+// directory private:
+//
+//	account.read  PERSONAL + SUPER_ADMIN   own account only, handler scopes by uid
+//	user.read     OPS + SUPER_ADMIN        any account (status, plan, disable reason)
+//	channel.read  OPS + SUPER_ADMIN        any upstream channel (base_url, key mask)
+//
+// PERSONAL must not hold user.read even though it "only" renders the
+// customer's own profile: /api/admin/users does not scope by uid, so one name
+// for both consoles would let any customer enumerate every account, including
+// the disable reason on each row. FINANCE keeps fund.approve and audit.read but
+// gets neither user.read nor channel.read: the money queue, the invoice and the
+// model cost sheet are all it needs, and the account directory is not.
 var rolePermissions = map[string]map[Permission]bool{
 	"PERSONAL": {
-		PermUserRead:    true,
+		PermAccountRead: true,
 		PermKeyRead:     true,
 		PermKeyWrite:    true,
 		PermModelRead:   true,
@@ -96,6 +145,7 @@ var rolePermissions = map[string]map[Permission]bool{
 		PermModelWrite:   true,
 		PermPriceWrite:   true,
 		PermGroupWrite:   true,
+		PermChannelRead:  true,
 		PermChannelWrite: true,
 		PermNoticeWrite:  true,
 		PermRiskWrite:    true,
@@ -112,6 +162,7 @@ var rolePermissions = map[string]map[Permission]bool{
 		PermAdminRead:   true,
 	},
 	"SUPER_ADMIN": {
+		PermAccountRead:  true,
 		PermUserRead:     true,
 		PermUserWrite:    true,
 		PermKeyRead:      true,
@@ -120,6 +171,7 @@ var rolePermissions = map[string]map[Permission]bool{
 		PermModelWrite:   true,
 		PermPriceWrite:   true,
 		PermGroupWrite:   true,
+		PermChannelRead:  true,
 		PermChannelWrite: true,
 		PermNoticeWrite:  true,
 		PermRiskWrite:    true,

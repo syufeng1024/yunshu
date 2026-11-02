@@ -285,6 +285,140 @@ func TestPersonalCanReachAccountConsole(t *testing.T) {
 	}
 }
 
+// accountOperatorRoutes are the two operator read surfaces that leaked before
+// the read permissions were split by resource scope: as long as FINANCE held
+// admin.read and PERSONAL held user.read, the mux answered the whole account
+// directory (including each row's disable reason) and every upstream channel
+// (base_url, key mask). The list routes answer 200 for an authorised role; the
+// detail routes answer 200 or 404 depending on whether the row exists, so the
+// tests below assert "not 403" for those.
+var accountOperatorRoutes = []struct {
+	method string
+	path   string
+	isList bool
+}{
+	{http.MethodGet, "/api/admin/users", true},
+	{http.MethodGet, "/api/admin/users/1", false},
+	{http.MethodGet, "/api/admin/channels", true},
+	{http.MethodGet, "/api/admin/channels/1", false},
+}
+
+// FINANCE keeps the operator overview and the model cost sheet, but the account
+// directory and the upstream channels are not part of the money surface. The
+// overview assertion is the positive control: it proves the session, cookie and
+// CSRF pair are fine, so the 403s below are the permission layer speaking.
+func TestFinanceCannotReadAccountsOrChannels(t *testing.T) {
+	mux, sessMgr := newRouteMux(t)
+	uid := newRoleUser(t, "FINANCE")
+	cookieValue, csrfToken := issueSession(t, sessMgr, uid)
+
+	for _, route := range accountOperatorRoutes {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			req := newAuthedRequest(route.method, route.path, nil, cookieValue, csrfToken)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+			assertErrorCode(t, rec, http.StatusForbidden, "permission_denied")
+		})
+	}
+
+	req := newAuthedRequest(http.MethodGet, "/api/admin/overview", nil, cookieValue, csrfToken)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("FINANCE GET /api/admin/overview status=%d body=%s, want 200", rec.Code, rec.Body.String())
+	}
+	t.Logf("FINANCE: users/channels -> 403, overview -> %d", rec.Code)
+}
+
+// OPS and SUPER_ADMIN are the two roles that own these reads, so the same
+// routes must answer them. Without this pair a typo that gave the routes a
+// permission nobody holds would make the deny tests above pass vacuously.
+func TestOpsAndSuperAdminCanReadAccountsAndChannels(t *testing.T) {
+	for _, role := range []string{"OPS", "SUPER_ADMIN"} {
+		t.Run(role, func(t *testing.T) {
+			mux, sessMgr := newRouteMux(t)
+			uid := newRoleUser(t, role)
+			cookieValue, csrfToken := issueSession(t, sessMgr, uid)
+
+			for _, route := range accountOperatorRoutes {
+				req := newAuthedRequest(route.method, route.path, nil, cookieValue, csrfToken)
+				rec := httptest.NewRecorder()
+				mux.ServeHTTP(rec, req)
+				if route.isList {
+					if rec.Code != http.StatusOK {
+						t.Fatalf("%s GET %s status=%d body=%s, want 200",
+							role, route.path, rec.Code, rec.Body.String())
+					}
+					continue
+				}
+				// A missing row is 404 (the handler ran); a permission
+				// failure would be 403 before the handler.
+				if rec.Code == http.StatusForbidden {
+					t.Fatalf("%s GET %s status=403 body=%s, want the handler to run",
+						role, route.path, rec.Body.String())
+				}
+			}
+			t.Logf("%s: users/channels lists -> 200, details -> handler ran", role)
+		})
+	}
+}
+
+// The account console overview is account.read: PERSONAL (its owner) and
+// SUPER_ADMIN (support diagnostics) must reach it, FINANCE must not. FINANCE is
+// the operator role that does not even have a console route, and OPS is the
+// same; keeping them out means the account scope never silently widens back to
+// a shared name.
+func TestAccountOverviewPermissionSplit(t *testing.T) {
+	cases := []struct {
+		role string
+		want int
+		code string // expected error code when want != 200
+	}{
+		{"PERSONAL", http.StatusOK, ""},
+		{"SUPER_ADMIN", http.StatusOK, ""},
+		{"FINANCE", http.StatusForbidden, "permission_denied"},
+		{"OPS", http.StatusForbidden, "permission_denied"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.role, func(t *testing.T) {
+			mux, sessMgr := newRouteMux(t)
+			uid := newRoleUser(t, tc.role)
+			cookieValue, csrfToken := issueSession(t, sessMgr, uid)
+
+			req := newAuthedRequest(http.MethodGet, "/api/console/overview", nil, cookieValue, csrfToken)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+			if tc.code != "" {
+				assertErrorCode(t, rec, tc.want, tc.code)
+				return
+			}
+			if rec.Code != tc.want {
+				t.Fatalf("%s GET /api/console/overview status=%d body=%s, want %d",
+					tc.role, rec.Code, rec.Body.String(), tc.want)
+			}
+			t.Logf("%s GET /api/console/overview -> %d", tc.role, rec.Code)
+		})
+	}
+}
+
+// No cookie at all: the split must not have turned an authentication check into
+// an authorisation check. Require runs after Session, so a missing session is
+// still 401 session_expired rather than 403.
+func TestAccountAndChannelReadRequireSession(t *testing.T) {
+	mux, _ := newRouteMux(t)
+	for _, path := range []string{
+		"/api/admin/users", "/api/admin/users/1",
+		"/api/admin/channels", "/api/admin/channels/1",
+		"/api/console/overview",
+	} {
+		t.Run(path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+			assertErrorCode(t, rec, http.StatusUnauthorized, "session_expired")
+		})
+	}
+}
+
 // CSRF double submit: a valid session alone is not enough for a mutation.
 // There is no "skip CSRF in tests" switch — the same middleware runs here.
 func TestSessionMutationRequiresCSRF(t *testing.T) {

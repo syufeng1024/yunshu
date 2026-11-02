@@ -246,8 +246,10 @@ func (s *Server) Register(mux *http.ServeMux) {
 	// and every session key are cleared. No capability beyond being signed in.
 	mux.Handle("POST /api/v1/auth/cancel", s.authed("", s.auth.Cancel))
 
-	// Console account.
-	mux.Handle("GET /api/console/overview", s.authed(mw.PermUserRead, s.user.Overview))
+	// Console account. account.read, not user.read: this handler scopes every
+	// aggregate by the session uid, while user.read is the operator-wide
+	// directory read and must never be handed to a customer (E-31/E-33).
+	mux.Handle("GET /api/console/overview", s.authed(mw.PermAccountRead, s.user.Overview))
 
 	// Console keys: reads need key.read, mutations need key.write.
 	mux.Handle("GET /api/console/keys", s.authed(mw.PermKeyRead, s.keys.List))
@@ -296,15 +298,19 @@ func (s *Server) Register(mux *http.ServeMux) {
 	// FINANCE; PERSONAL has no route and no permission here.
 	mux.Handle("GET /api/admin/audit-logs", s.authed(mw.PermAuditRead, s.auditQ.List))
 
-	// T24 overview: one read-only aggregate. It uses admin.read, the same
-	// permission as the operator channel/model/user views.
+	// T24 overview: one read-only aggregate over the whole platform. admin.read
+	// is the right scope here and deliberately stays shared: OPS, FINANCE and
+	// SUPER_ADMIN all need it, and it carries no per-account or per-channel
+	// detail. The per-resource reads below are narrower (user.read /
+	// channel.read) precisely so that "may see the aggregate" does not imply
+	// "may see every account".
 	mux.Handle("GET /api/admin/overview", s.authed(mw.PermAdminRead, s.ops.Overview))
 
-	// Operator channels. Reads use admin.read, not model.read: PERSONAL holds
-	// model.read for the console catalog, and these views expose base_url and
-	// key masks. Mutations need channel.write.
-	mux.Handle("GET /api/admin/channels", s.authed(mw.PermAdminRead, s.ops.ListChannels))
-	mux.Handle("GET /api/admin/channels/{id}", s.authed(mw.PermAdminRead, s.ops.GetChannel))
+	// Operator channels. Reads use channel.read, not model.read and not
+	// admin.read: PERSONAL holds model.read for the console catalog, and these
+	// views expose base_url and the key mask. Mutations need channel.write.
+	mux.Handle("GET /api/admin/channels", s.authed(mw.PermChannelRead, s.ops.ListChannels))
+	mux.Handle("GET /api/admin/channels/{id}", s.authed(mw.PermChannelRead, s.ops.GetChannel))
 	mux.Handle("POST /api/admin/channels", s.authed(mw.PermChannelWrite, s.ops.CreateChannel))
 	mux.Handle("PATCH /api/admin/channels/{id}", s.authed(mw.PermChannelWrite, s.ops.UpdateChannel))
 	mux.Handle("POST /api/admin/channels/{id}/disable", s.authed(mw.PermChannelWrite, s.ops.DisableChannel))
@@ -316,9 +322,12 @@ func (s *Server) Register(mux *http.ServeMux) {
 	// permission would be enough for a write.
 	mux.Handle("POST /api/admin/upstream-bills/import", s.authed(mw.PermChannelWrite, s.ops.ImportUpstreamBills))
 
-	// Operator model master data. Reads use admin.read because this view
+	// Operator model master data. Reads keep admin.read because this view
 	// includes upstream cost prices; model.read stays the console catalog's
-	// permission.
+	// permission. FINANCE legitimately reads this view (its pricing page picks
+	// models by name), and admin.read is the narrowest permission that covers
+	// "operator may see the cost sheet" without also granting the account
+	// directory (user.read) or the upstream channels (channel.read).
 	mux.Handle("GET /api/admin/models", s.authed(mw.PermAdminRead, s.ops.ListModels))
 	mux.Handle("GET /api/admin/models/{id}", s.authed(mw.PermAdminRead, s.ops.GetModel))
 	mux.Handle("POST /api/admin/models", s.authed(mw.PermModelWrite, s.ops.CreateModel))
@@ -332,9 +341,13 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("DELETE /api/admin/models/{id}/aliases/{alias}", s.authed(mw.PermModelWrite, s.ops.DeleteAlias))
 
 	// T15 second segment: pricing, groups, announcements, risk, users and the
-	// runtime config whitelist. Reads of /api/admin/users use admin.read rather
-	// than user.read: PERSONAL holds user.read for its own profile, and this
-	// list returns every account's disable reason.
+	// runtime config whitelist. Reads of /api/admin/users use user.read, the
+	// operator-wide directory scope: the list returns every account's status,
+	// plan and disable reason, so no customer role may hold it. (The console's
+	// own overview is account.read — see the /api/console/overview route
+	// above.) FINANCE deliberately does not hold user.read: orders, invoices
+	// and redeem batches are its surface, and none of them needs the account
+	// directory.
 	mux.Handle("GET /api/admin/prices", s.authed(mw.PermPriceWrite, s.ops.ListPrices))
 	mux.Handle("POST /api/admin/prices", s.authed(mw.PermPriceWrite, s.ops.CreatePrice))
 	mux.Handle("PATCH /api/admin/prices/{id}", s.authed(mw.PermPriceWrite, s.ops.UpdatePrice))
@@ -355,8 +368,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("GET /api/admin/risk/hits", s.authed(mw.PermRiskWrite, s.ops.ListRiskHits))
 	mux.Handle("POST /api/admin/risk/users/{id}/score", s.authed(mw.PermRiskWrite, s.ops.SetUserRiskScore))
 
-	mux.Handle("GET /api/admin/users", s.authed(mw.PermAdminRead, s.ops.ListUsers))
-	mux.Handle("GET /api/admin/users/{id}", s.authed(mw.PermAdminRead, s.ops.GetUser))
+	mux.Handle("GET /api/admin/users", s.authed(mw.PermUserRead, s.ops.ListUsers))
+	mux.Handle("GET /api/admin/users/{id}", s.authed(mw.PermUserRead, s.ops.GetUser))
 	mux.Handle("POST /api/admin/users/{id}/disable", s.authed(mw.PermUserWrite, s.ops.DisableUser))
 	mux.Handle("POST /api/admin/users/{id}/enable", s.authed(mw.PermUserWrite, s.ops.EnableUser))
 	// T24 balance adjustment: user.write submits, fund.approve decides. The

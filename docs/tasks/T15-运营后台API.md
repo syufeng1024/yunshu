@@ -148,22 +148,34 @@ F 覆盖: F14-1..6、F16-1..7、F17-1..3 → 用例名
 
 ### 步骤 B · 权限矩阵
 
-权限点扩到 **19 个**：`user.read/write`、`key.read/write`、`model.read/write`、`price.write`、`group.write`、`channel.write`、`notice.write`、`risk.write`、`config.write`、`fund.read/write/approve`、`ticket.reply`、`audit.read`、`admin.read`、`admin.all`。
+权限点扩到 **19 个**：`user.read/write`、`key.read/write`、`model.read/write`、`price.write`、`group.write`、`channel.write`、`notice.write`、`risk.write`、`config.write`、`fund.read/write/approve`、`ticket.reply`、`audit.read`、`admin.read`、`admin.all`。（**已扩到 25 个**，见下方「权限点按资源作用域拆分」。）
 
 | 角色 | 关键权限 |
 | :--- | :--- |
-| `PERSONAL` | `user.read`、`key.*`、`model.read`、`fund.read/write`（仅自己的数据） |
+| `PERSONAL` | `account.read`、`key.*`、`model.read`、`fund.read/write`（仅自己的数据），**不含** `user.read`/`channel.read` |
 | `OPS` | 运营全集，**不含** `fund.approve` |
-| `FINANCE` | `fund.read`、`fund.approve`、`audit.read`、`model.read`、`admin.read`，**不含** `price.write`/`channel.write` |
+| `FINANCE` | `fund.read`、`fund.approve`、`audit.read`、`model.read`、`admin.read`，**不含** `price.write`/`channel.write`/`user.read`/`channel.read` |
 | `SUPER_ADMIN` | 全部 + `admin.all` |
 
-**`admin.read` 是本次新增**（E-31）：后台读接口若复用 `model.read`，`PERSONAL` 就能读到 `cost_*` 成本价与渠道 `base_url`，违反 B-48。已实测 13 条 `/api/admin/*` 路由对 `PERSONAL` 全 403 `permission_denied`（`server_authz_test.go`，13 个子测试）。
+**`admin.read` 是本次新增**（E-31）：后台读接口若复用 `model.read`，`PERSONAL` 就能读到 `cost_*` 成本价与渠道 `base_url`，违反 B-48。已实测全部 49 条 `/api/admin/*` 路由对 `PERSONAL` 全 403 `permission_denied`（`server_authz_test.go`，49 个子测试）。
 
 **「10 个角色」是文档笔误**（E-30）：PRD §6.3、TDS 1209 行、openapi `UserRole` 均只有 4 个角色。按 4 个实现，未编造角色名。
 
+#### 权限点按资源作用域拆分（2026-11-02 修复越权读）
+
+`admin.read` 只解决了「客户 vs 运营」，没解决「运营角色之间」：`FINANCE` 也持有 `admin.read`（它要进 `/api/admin/overview`），于是 `GET /api/admin/users`（含每条账号的 `disable_reason`）与 `GET /api/admin/channels`（含 `base_url`、上游密钥掩码）对 `FINANCE` 全程 200，而前端 `ADMIN_NAV` 对 `FINANCE` 是隐藏这两项的——服务端口径比菜单宽。修法是把「同一个资源、不同作用域」拆成不同权限名，而不是改菜单：
+
+| 权限点 | 作用域 | 持有角色 | 路由 |
+| :--- | :--- | :--- | :--- |
+| `account.read` | 客户自助，只读**自己**那一行（handler 按 session uid 过滤） | `PERSONAL` / `SUPER_ADMIN` | `GET /api/console/overview` |
+| `user.read` | 运营，读**任意**账号（状态、套餐、禁用原因） | `OPS` / `SUPER_ADMIN` | `GET /api/admin/users`、`/api/admin/users/{id}` |
+| `channel.read` | 运营，读**任意**上游渠道（`base_url`、密钥掩码） | `OPS` / `SUPER_ADMIN` | `GET /api/admin/channels`、`/api/admin/channels/{id}` |
+
+`user.read` 从 `PERSONAL` 移除是这次的关键：`/api/admin/users` 不按 uid 过滤，一个名字跨两个控制台就等于让每个客户枚举全站账号。`FINANCE` 不持有 `user.read`/`channel.read`：它的面是订单、发票、兑换码与模型成本表（`admin.read` 保留在 `overview`/`models` 读上）。权限点总数 23 → **25**。
+
 ### 步骤 C · 渠道（交付物 1–4）
 
-6 条路由（读 `admin.read`，写 `channel.write`）：`GET /api/admin/channels`、`GET/PATCH/DELETE /api/admin/channels/{id}`、`POST /api/admin/channels`、`POST /api/admin/channels/{id}/disable`。
+6 条路由（读 `channel.read`，写 `channel.write`；读权限自 2026-11-02 从 `admin.read` 收窄）：`GET /api/admin/channels`、`GET/PATCH/DELETE /api/admin/channels/{id}`、`POST /api/admin/channels`、`POST /api/admin/channels/{id}/disable`。
 
 四条硬约束实测：
 
@@ -241,13 +253,13 @@ ok  := lhs >= rhs
 ### 风控 / 用户 / 配置
 
 - 风控（`risk.write`）：规则 CRUD（DELETE 为 `enabled=0`，保留命中归因）、命中查询、风险分调整含 before/after 审计
-- 用户（读 `admin.read`、写 `user.write`）：列表筛选、详情（余额+套餐）、禁用/启用，`disable_source=OPS_MANUAL`
+- 用户（读 `user.read`、写 `user.write`；读权限自 2026-11-02 从 `admin.read` 收窄，`OPS`/`SUPER_ADMIN` 持有）：列表筛选、详情（余额+套餐）、禁用/启用，`disable_source=OPS_MANUAL`
 - **禁用原因不对外（硬约束 13）**：运营侧可见 `风控命中：异常退款-敏感原因-XYZ`，用户侧走真实 `auth.Service.Login` 返回「账号已被禁用，请联系客服」，断言不含原因文本
 - 配置（`config.write`）：`GET` 返回 45 键 + `runtime_writable` 标记；`PUT` 只收 12 键。第 13 键、`quota.overdraft_warn_days`、`quota.*` 未实现取值、未登记键 → 全 400 `config_value_invalid`。**无「一键清缓存」接口**（反射用例锁死 `FlushConfigCache`/`ClearCache`/`PurgeConfig` 不存在），发布只带本次涉及的 namespace
 
 ### 遗留
 
-1. **`GET /api/admin/users` 用 `admin.read` 而非卡面的 `user.read`**（E-33）：`PERSONAL` 本就持有 `user.read`，复用会泄露全量用户列表与 `disable_reason`。
+1. ~~**`GET /api/admin/users` 用 `admin.read` 而非卡面的 `user.read`**（E-33）~~：**已修（2026-11-02）**。原做法是让运营读借道 `admin.read`，代价是同样持有 `admin.read` 的 `FINANCE` 也能读全量用户与渠道。现按资源作用域拆名：`PERSONAL` 改持 `account.read`（只开 `/api/console/overview`），`user.read` 收窄为运营目录读（`OPS`/`SUPER_ADMIN`），渠道读单列 `channel.read`（`OPS`/`SUPER_ADMIN`）。实测 `FINANCE` → `/api/admin/users`、`/api/admin/channels` 均 403 `permission_denied`，`/api/admin/overview` 仍 200。
 2. **公告 `SCHEDULED` 态**（E-32）待回写 TDS。
 3. **PRD F16-7「未配价不得上架」第一段未实现**（E-34）：允许无价 `LISTED`。已列专项修复，回填到模型状态机。
 4. 公告 `model_ids` 只用于冲突检查，`t_announcement` 无模型列故不持久化。

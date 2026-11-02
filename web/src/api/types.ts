@@ -3366,7 +3366,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description 角色缺少 user.read */
+            /** @description 角色缺少 account.read */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -4916,7 +4916,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description 角色缺少 admin.read（permission_denied） */
+            /** @description 角色缺少 user.read（permission_denied） */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -4957,7 +4957,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description 角色缺少 admin.read（permission_denied） */
+            /** @description 角色缺少 user.read（permission_denied） */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -5085,7 +5085,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description 角色缺少 admin.read（permission_denied） */
+            /** @description 角色缺少 channel.read（permission_denied） */
             403: {
                 headers: {
                     [name: string]: unknown;

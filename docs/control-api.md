@@ -6,7 +6,8 @@
 
 | 权限点 | 含义 | 持有角色 |
 | :--- | :--- | :--- |
-| `user.read` | 读取自己的账号资料（控制台侧） | PERSONAL / OPS / SUPER_ADMIN |
+| `account.read` | 读取**自己**的账号概览（余额/套餐/额度/今日用量，按 session uid 过滤） | PERSONAL / SUPER_ADMIN |
+| `user.read` | 读取**任意**账号（状态、套餐、禁用原因，运营目录读） | OPS / SUPER_ADMIN |
 | `user.write` | 启用、禁用用户、提交余额调整（运营侧） | OPS / SUPER_ADMIN |
 | `key.read` | 查看自己的 API Key 列表、详情与变更记录 | PERSONAL / SUPER_ADMIN |
 | `key.write` | 创建、修改、轮换、删除自己的 API Key | PERSONAL / SUPER_ADMIN |
@@ -14,6 +15,7 @@
 | `model.write` | 创建、修改模型主数据、别名、上架状态与推荐权重 | OPS / SUPER_ADMIN |
 | `price.write` | 创建、修改模型价格与价格分组 | OPS / SUPER_ADMIN |
 | `group.write` | 修改价格分组倍率与可见范围 | OPS / SUPER_ADMIN |
+| `channel.read` | 读取任意上游渠道（含 `base_url`、上游密钥掩码） | OPS / SUPER_ADMIN |
 | `channel.write` | 创建、修改、停用、删除上游渠道 | OPS / SUPER_ADMIN |
 | `notice.write` | 创建、修改、发布、下线公告 | OPS / SUPER_ADMIN |
 | `risk.write` | 维护风控规则、查看命中、调整用户风险分 | OPS / SUPER_ADMIN |
@@ -27,16 +29,17 @@
 | `audit.read` | 查询 `t_admin_audit_log` | OPS / FINANCE / SUPER_ADMIN |
 | `log.read` | 查询自己的请求日志与正文 | PERSONAL / SUPER_ADMIN |
 | `usage.read` | 查询自己的用量、月账单、实时指标与 CSV 导出 | PERSONAL / SUPER_ADMIN |
-| `admin.read` | 读取运营后台的用户、渠道、模型视图 | OPS / FINANCE / SUPER_ADMIN |
+| `admin.read` | 读取运营后台的聚合概览与模型主数据（含成本价） | OPS / FINANCE / SUPER_ADMIN |
 | `admin.all` | 跨域诊断（`GET /api/admin/whoami`） | SUPER_ADMIN |
 
-`admin.read` 与 `model.read` / `user.read` 刻意分开：控制台读接口给客户看，运营读接口包含 `cost_*`、`base_url`、`key_mask`、`disable_reason`，共用权限点会把成本价和禁用原因泄露给普通账号（E-31 / E-33）。价格、分组、公告、风控、配置的运营读接口分别复用对应的 `.write` 权限点，FINANCE 只有 `admin.read`，因此能看渠道/模型/用户，不能看价格与风控。
+读权限按**资源作用域**拆分，而不只按资源名拆分。同一个资源在两个控制台看到的是不同列，就是两个权限点：`account.read` 是客户自助（只读自己那一行），`user.read` / `channel.read` 是运营作用域（读任意账号、任意上游渠道）。`admin.read` 与 `model.read` / `account.read` 也刻意分开：控制台读接口给客户看，运营读接口包含 `cost_*`、`base_url`、`key_mask`、`disable_reason`，共用权限点会把成本价和禁用原因泄露给普通账号（E-31 / E-33）。`admin.read` 只留在聚合概览与模型主数据上；用户目录与渠道各自有专名，因此「能看概览/成本表」不等于「能看全站账号与上游渠道」——FINANCE 持有 `admin.read`，但既没有 `user.read` 也没有 `channel.read`。价格、分组、公告、风控、配置的运营读接口分别复用对应的 `.write` 权限点，FINANCE 因此也看不了价格与风控。
 
 ## 角色 × 权限
 
 | 权限点 | PERSONAL | OPS | FINANCE | SUPER_ADMIN |
 | :--- | :---: | :---: | :---: | :---: |
-| `user.read` | ✓ | ✓ | — | ✓ |
+| `account.read` | ✓ | — | — | ✓ |
+| `user.read` | — | ✓ | — | ✓ |
 | `user.write` | — | ✓ | — | ✓ |
 | `key.read` | ✓ | — | — | ✓ |
 | `key.write` | ✓ | — | — | ✓ |
@@ -44,6 +47,7 @@
 | `model.write` | — | ✓ | — | ✓ |
 | `price.write` | — | ✓ | — | ✓ |
 | `group.write` | — | ✓ | — | ✓ |
+| `channel.read` | — | ✓ | — | ✓ |
 | `channel.write` | — | ✓ | — | ✓ |
 | `notice.write` | — | ✓ | — | ✓ |
 | `risk.write` | — | ✓ | — | ✓ |

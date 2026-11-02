@@ -11,16 +11,17 @@ import (
 // in the matrix fails here rather than agreeing with itself.
 func TestRolePermissionMatrix(t *testing.T) {
 	all := []Permission{
-		PermUserRead, PermUserWrite, PermKeyRead, PermKeyWrite,
+		PermAccountRead, PermUserRead, PermUserWrite, PermKeyRead, PermKeyWrite,
 		PermModelRead, PermModelWrite, PermPriceWrite, PermGroupWrite,
-		PermChannelWrite, PermNoticeWrite, PermRiskWrite, PermConfigWrite,
+		PermChannelRead, PermChannelWrite, PermNoticeWrite, PermRiskWrite,
+		PermConfigWrite,
 		PermFundRead, PermFundWrite, PermFundApprove,
 		PermTicketRead, PermTicketWrite, PermTicketReply,
 		PermAuditRead, PermLogRead, PermUsageRead, PermAdminRead, PermAdminAll,
 	}
 	want := map[string]map[Permission]bool{
 		"PERSONAL": {
-			PermUserRead: true, PermKeyRead: true, PermKeyWrite: true,
+			PermAccountRead: true, PermKeyRead: true, PermKeyWrite: true,
 			PermModelRead: true, PermFundRead: true, PermFundWrite: true,
 			PermTicketRead: true, PermTicketWrite: true, PermLogRead: true,
 			PermUsageRead: true,
@@ -28,9 +29,9 @@ func TestRolePermissionMatrix(t *testing.T) {
 		"OPS": {
 			PermUserRead: true, PermUserWrite: true, PermModelRead: true,
 			PermModelWrite: true, PermPriceWrite: true, PermGroupWrite: true,
-			PermChannelWrite: true, PermNoticeWrite: true, PermRiskWrite: true,
-			PermConfigWrite: true, PermTicketReply: true, PermAuditRead: true,
-			PermAdminRead: true,
+			PermChannelRead: true, PermChannelWrite: true, PermNoticeWrite: true,
+			PermRiskWrite: true, PermConfigWrite: true, PermTicketReply: true,
+			PermAuditRead: true, PermAdminRead: true,
 		},
 		"FINANCE": {
 			PermFundRead: true, PermFundApprove: true, PermAuditRead: true,
@@ -81,6 +82,42 @@ func TestRolePermissionMatrix(t *testing.T) {
 	// consoles have no usage route, so no operator role may hold it.
 	if Allows("OPS", PermUsageRead) || Allows("FINANCE", PermUsageRead) {
 		t.Error("usage.read must stay with PERSONAL and SUPER_ADMIN only")
+	}
+
+	// The read scopes are split by resource scope, not by resource name. These
+	// assertions are the regression guard for the cross-account read defect:
+	// while PERSONAL held user.read, GET /api/admin/users was open to every
+	// customer because the handler does not scope by uid.
+	if Allows("PERSONAL", PermUserRead) {
+		t.Error("PERSONAL must not hold user.read: /api/admin/users would enumerate every account")
+	}
+	if Allows("PERSONAL", PermChannelRead) {
+		t.Error("PERSONAL must not hold channel.read: upstream base_url and key masks are operator data")
+	}
+	if Allows("FINANCE", PermUserRead) || Allows("FINANCE", PermChannelRead) {
+		t.Error("FINANCE must not hold user.read / channel.read: the money surface needs neither")
+	}
+	for _, p := range []Permission{PermUserRead, PermChannelRead} {
+		if !Allows("OPS", p) || !Allows("SUPER_ADMIN", p) {
+			t.Errorf("%q must be held by OPS and SUPER_ADMIN", p)
+		}
+	}
+	// account.read is the customer self-service capability. FINANCE and OPS
+	// have no console account route, so they must not hold it either: one name
+	// per console keeps a future route swap from widening silently.
+	if !Allows("PERSONAL", PermAccountRead) || !Allows("SUPER_ADMIN", PermAccountRead) {
+		t.Error("account.read must be held by PERSONAL and SUPER_ADMIN (console overview)")
+	}
+	if Allows("OPS", PermAccountRead) || Allows("FINANCE", PermAccountRead) {
+		t.Error("account.read is the account console's scope; no operator-only role holds it")
+	}
+	// The three read scopes must be three distinct names, and no role may hold
+	// both halves of the account split.
+	if PermAccountRead == PermUserRead || PermUserRead == PermChannelRead || PermAccountRead == PermChannelRead {
+		t.Error("account.read / user.read / channel.read must be distinct permission names")
+	}
+	if Allows("PERSONAL", PermAccountRead) && Allows("PERSONAL", PermUserRead) {
+		t.Error("a role holding both account.read and user.read puts the two consoles back on one name")
 	}
 
 	// An unknown role grants nothing.
