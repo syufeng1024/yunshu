@@ -47,7 +47,9 @@ ENV_FILE="${YUNSHU_ENV_FILE:-$ROOT_DIR/deploy/.env.stack}"
 CONTAINER="${YUNSHU_MYSQL_CONTAINER:-yunshu-stack-mysql}"
 DATABASE="${YUNSHU_DB_NAME:-yunshu}"
 DEMO_EMAIL="${DEMO_EMAIL:-demo@yunshu.test}"
-DEMO_PASSWORD="${DEMO_PASSWORD:-Demo#2026}"
+# 默认值必须与库内既有演示账号的真实口令一致，否则脚本会在登录步骤 die。
+# 该口令于 2026-10-30 由 Demo#2026 轮换为 Review#2026（见 docs/tasks/HANDOFF-2026-10-30.md）。
+DEMO_PASSWORD="${DEMO_PASSWORD:-Review#2026}"
 CONTROL_URL="${YUNSHU_CONTROL_URL:-http://localhost:18081}"
 
 # 渠道 / 快照刷新相关。全部可覆盖，默认值与 deploy/docker-compose.stack.yml 一致。

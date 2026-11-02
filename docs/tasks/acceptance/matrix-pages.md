@@ -7,7 +7,7 @@
 | 行数 | 22 |
 | 前端路由实现 | `web/src/router.tsx:35-84` |
 | 运行站点 | `http://127.0.0.1:8088`（`yunshu-stack-web`，未新起服务） |
-| 登录账号 | `demo@yunshu.test / Demo#2026`（登录字段 `identifier`，实测角色 `PERSONAL`） |
+| 登录账号 | `demo@yunshu.test / Review#2026`（登录字段 `identifier`，实测角色 `PERSONAL`；密码于 2026-10-30 由 `Demo#2026` 轮换，见 `HANDOFF-2026-10-30.md:86`，本行 2026-11-02 据实测更正） |
 | 页面可达性命令 | `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8088<路由>` |
 | 接口权限命令 | 匿名：`curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8088<接口>`；登录：`curl -s -b /tmp/cj.txt -o /dev/null -w '%{http_code}' ...` |
 
