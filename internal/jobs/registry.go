@@ -156,5 +156,9 @@ func TaskTable() []Task {
 		{Name: "purge_log", Cron: "0 10 3 * * *", RequiresLeader: true, Timeout: 60 * time.Minute},
 		{Name: "rollup", Cron: "0 20 0 * * *", RequiresLeader: true, Timeout: 30 * time.Minute},
 		{Name: "daily_quota", Cron: "0 30 0 * * *", RequiresLeader: true, Timeout: 30 * time.Minute},
+		// A 30-minute payment window has to be swept far more often than the
+		// nightly tasks: the finance queue is read all day, and an order that
+		// expired at 09:31 must not still look payable at 09:40.
+		{Name: "close_expired_order", Period: 5 * time.Minute, RequiresLeader: true, Timeout: 5 * time.Minute},
 	}
 }

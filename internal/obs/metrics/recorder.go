@@ -29,6 +29,8 @@ type Recorder struct {
 	inflight    *Gauge
 
 	preholdOrphan       *CounterVec
+	orderAutoClosed     *CounterVec
+	orderAutoCloseFail  *CounterVec
 	settleFallback      *CounterVec
 	ledgerReconcileDiff *GaugeVec
 	balanceCASRetry     *CounterVec
@@ -98,6 +100,12 @@ func NewRecorder(reg *Registry) *Recorder {
 		preholdOrphan: reg.Counter("gw_prehold_orphan_total",
 			"Expired preholds recovered by the reconciliation job.",
 			"reason"),
+		orderAutoClosed: reg.Counter("gw_order_auto_closed_total",
+			"Unpaid recharge orders closed by the expiry job.",
+			"reason"),
+		orderAutoCloseFail: reg.Counter("gw_order_auto_close_failed_total",
+			"Unpaid orders the expiry job could not close, by failure stage.",
+			"stage"),
 		settleFallback: reg.Counter("gw_settle_fallback_total",
 			"Settlements that fell back because usage or the client was unavailable.",
 			"reason"),
@@ -257,6 +265,25 @@ func (r *Recorder) PreholdOrphan(reason string) {
 		return
 	}
 	r.preholdOrphan.With(enumValue(preholdOrphanReasons, reason)).Inc()
+}
+
+// OrderAutoClosed records one unpaid order the expiry job moved to CLOSED.
+// reason is a closed set so a cardinality accident cannot reach the label.
+func (r *Recorder) OrderAutoClosed(reason string) {
+	if r == nil || r.orderAutoClosed == nil {
+		return
+	}
+	r.orderAutoClosed.With(enumValue(orderAutoCloseReasons, reason)).Inc()
+}
+
+// OrderAutoCloseFailed records one order the expiry job could not close. It is
+// deliberately a separate counter from the closed one: a failure is not a
+// close, and summing the two would make the close rate unreadable.
+func (r *Recorder) OrderAutoCloseFailed(stage string) {
+	if r == nil || r.orderAutoCloseFail == nil {
+		return
+	}
+	r.orderAutoCloseFail.With(enumValue(orderAutoCloseFailureStages, stage)).Inc()
 }
 
 // SettleFallback records a settlement that could not use upstream usage.
@@ -493,6 +520,16 @@ var (
 	ratelimitDims = labelSet("rpm", "tpm", "concurrency", "daily")
 
 	preholdOrphanReasons = labelSet("ttl_expired", "db_sweep")
+
+	// expire_at is the only trigger an unpaid order has: the 30-minute
+	// payment window set at creation time.
+	orderAutoCloseReasons = labelSet("expire_at")
+
+	// Where the auto-close job broke: the scan query, a per-order database
+	// statement, or the audit insert. An operator reads the stage to decide
+	// whether to look at MySQL or at the audit trail.
+	orderAutoCloseFailureStages = labelSet("scan", "db", "audit")
+
 
 	settleFallbackReasons = labelSet("no_usage", "disconnect")
 

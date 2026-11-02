@@ -1,10 +1,10 @@
 // Command jobsd is the background-task process.
 //
 // It exposes no HTTP port. It runs the T09 task table: hanging-prehold
-// recovery, daily reconciliation, BONUS expiry, log retention, metric
-// rollup and the daily quota snapshot. Every task has a side effect and
-// therefore runs only while this
-// process holds its t_job_lock lease. The settlement consumer remains on every
+// recovery, daily reconciliation, BONUS expiry, unpaid-order expiry, log
+// retention, metric rollup and the daily quota snapshot. Every task has a
+// side effect and therefore runs only while this process holds its
+// t_job_lock lease. The settlement consumer remains on every
 // replica (D-18): FOR UPDATE SKIP LOCKED plus request_id idempotency makes that
 // safe and keeps settlement available when the leader is down.
 package main
@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"yunshu.dev/core/internal/control/audit"
 	"yunshu.dev/core/internal/jobs"
 	"yunshu.dev/core/internal/ledger"
 	"yunshu.dev/core/internal/lock"
@@ -180,6 +181,9 @@ func main() {
 	rollup.Location = cst
 	dailyQuota := jobs.NewDailyQuota(mainDB, logger, clock.Real{})
 	dailyQuota.Location = cst
+	closeExpired := jobs.NewCloseExpiredOrder(mainDB,
+		&audit.Writer{DB: mainDB, Now: clock.Real{}}, logger, clock.Real{})
+	closeExpired.Metrics = rec
 
 	runner := &jobs.Runner{
 		Registry: registry,
@@ -233,6 +237,17 @@ func main() {
 			"daily_quota": func(ctx context.Context, _ time.Time) error {
 				_, err := dailyQuota.RunRecent(ctx)
 				return err
+			},
+			// The automatic half of order expiry: fund.CloseOrder is the
+			// operator void, this is the same transition with actor SYSTEM.
+			"close_expired_order": func(ctx context.Context, _ time.Time) error {
+				res, err := closeExpired.Run(ctx)
+				if err != nil {
+					return err
+				}
+				logger.Info(ctx, fmt.Sprintf("close_expired_order closed=%d scanned=%d skipped=%d",
+					res.Closed, res.Scanned, res.Skipped), obslog.Fields{Stage: "close_expired_order"})
+				return nil
 			},
 		},
 	}

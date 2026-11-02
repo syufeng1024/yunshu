@@ -10,6 +10,7 @@ import (
 )
 
 var wantTasks = []string{
+	"close_expired_order",
 	"daily_quota",
 	"daily_reconcile",
 	"expire_batch",
