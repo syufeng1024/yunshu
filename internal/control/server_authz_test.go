@@ -120,6 +120,10 @@ var adminRoutes = []struct {
 	{http.MethodGet, "/api/admin/users/1"},
 	{http.MethodPost, "/api/admin/users/1/disable"},
 	{http.MethodPost, "/api/admin/users/1/enable"},
+	// Operator provisioning is admin.all: PERSONAL holds neither user.write nor
+	// admin.all, and must be refused before either handler parses a body.
+	{http.MethodPost, "/api/admin/users"},
+	{http.MethodPost, "/api/admin/users/1/role"},
 	{http.MethodGet, "/api/admin/config"},
 	{http.MethodPut, "/api/admin/config"},
 	// T16 ticket centre: the operator queue is ticket.reply, which PERSONAL
@@ -545,6 +549,68 @@ func TestPublicSiteRoutesNeedNoSession(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Operator provisioning is the one user-surface capability that is not
+// user.write. OPS holds user.write (it disables and enables accounts), so
+// gating POST /api/admin/users with it would let an operations account create a
+// SUPER_ADMIN and then sign in as it; the same request on /{id}/role could
+// promote any account, its own included. Both routes therefore require
+// admin.all, which only SUPER_ADMIN holds.
+//
+// The three deny cases and the one allow case run against the real mux, so this
+// is the permission column of the route table being tested — not the handler.
+func TestOperatorProvisioningIsSuperAdminOnly(t *testing.T) {
+	routes := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/api/admin/users"},
+		{http.MethodPost, "/api/admin/users/1/role"},
+	}
+	for _, role := range []string{"PERSONAL", "OPS", "FINANCE"} {
+		t.Run(role, func(t *testing.T) {
+			mux, sessMgr := newRouteMux(t)
+			uid := newRoleUser(t, role)
+			cookieValue, csrfToken := issueSession(t, sessMgr, uid)
+			for _, route := range routes {
+				req := newAuthedRequest(route.method, route.path,
+					bytes.NewReader([]byte(`{"role":"SUPER_ADMIN"}`)), cookieValue, csrfToken)
+				rec := httptest.NewRecorder()
+				mux.ServeHTTP(rec, req)
+				assertErrorCode(t, rec, http.StatusForbidden, "permission_denied")
+			}
+			t.Logf("%s: create + role change -> 403 permission_denied", role)
+		})
+	}
+
+	// Positive control: without it, a route wired to a permission nobody holds
+	// would make the three 403s above pass vacuously. SUPER_ADMIN reaches both
+	// handlers, which reject the body before touching the database
+	// ({} has no identifier / no role / no reason).
+	t.Run("SUPER_ADMIN", func(t *testing.T) {
+		mux, sessMgr := newRouteMux(t)
+		uid := newRoleUser(t, "SUPER_ADMIN")
+		cookieValue, csrfToken := issueSession(t, sessMgr, uid)
+		cases := []struct {
+			path string
+			body string
+		}{
+			{"/api/admin/users", `{}`},
+			{"/api/admin/users/1/role", `{}`},
+		}
+		for _, tc := range cases {
+			req := newAuthedRequest(http.MethodPost, tc.path,
+				bytes.NewReader([]byte(tc.body)), cookieValue, csrfToken)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("SUPER_ADMIN POST %s status=%d body=%s, want 400 from the handler",
+					tc.path, rec.Code, rec.Body.String())
+			}
+		}
+		t.Log("SUPER_ADMIN: create + role change -> handler ran (400 on the empty body)")
+	})
 }
 
 var authzUserSeq int64

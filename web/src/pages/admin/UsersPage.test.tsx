@@ -1,9 +1,10 @@
-import { cleanup, screen, waitFor } from '@testing-library/react'
+import { cleanup, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api } from '@/api/client'
 import type { AdminUser, AdminUserDetailResponse } from '@/api/admin'
 import { ToastViewport } from '@/components'
+import { useAuthStore } from '@/stores/auth'
 import { useToastStore } from '@/stores/toast'
 import { renderWithProviders } from '@/test/renderConsole'
 import AdminUsersPage from './UsersPage'
@@ -89,7 +90,29 @@ beforeEach(() => {
   useToastStore.setState({ toasts: [] })
 })
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  // The provisioning entry points are role-gated in the UI; a leaked session
+  // would make the "not visible" case below pass for the wrong reason.
+  useAuthStore.setState({ status: 'anonymous', user: null, error: null, hint: null })
+})
+
+const superAdminUser = {
+  id: '2',
+  email: 'admin@example.com',
+  display_name: '超级管理员',
+  role: 'SUPER_ADMIN' as const,
+  status: 'NORMAL' as const,
+  csrf_token: 'test-csrf',
+}
+
+const opsUser = {
+  ...superAdminUser,
+  id: '3',
+  email: 'ops@example.com',
+  display_name: '运营甲',
+  role: 'OPS' as const,
+}
 
 describe('UsersPage', () => {
   it('UsersPage：搜索按字段发出对应参数', async () => {
@@ -176,5 +199,97 @@ describe('UsersPage', () => {
       amount_micro: 5_000_000,
       reason: '客服补偿积分',
     })
+  })
+
+  it('UsersPage：超级管理员可新建运营账号，角色下拉不含个人用户', async () => {
+    useAuthStore.setState({ status: 'authenticated', user: superAdminUser, error: null, hint: null })
+    installMock()
+    mockedPost.mockResolvedValue({
+      user: { ...demoUser, id: 777, role: 'OPS', nickname: '新运营' },
+      balance: detail.balance,
+      latest_balance_adjust: null,
+    })
+    const user = userEvent.setup()
+    renderWithProviders(
+      <>
+        <AdminUsersPage />
+        <ToastViewport />
+      </>,
+    )
+    await screen.findByText('演示账号')
+
+    await user.click(screen.getByRole('button', { name: '新建运营账号' }))
+    const roleSelect = await screen.findByLabelText('角色')
+    // PERSONAL is not offerable: a customer account has to go through public
+    // registration, and the backend answers 400 for PERSONAL anyway.
+    const optionLabels = within(roleSelect)
+      .getAllByRole('option')
+      .map((option) => option.textContent)
+    expect(optionLabels).toEqual(['运营', '财务', '超级管理员'])
+    expect(optionLabels).not.toContain('个人用户')
+
+    await user.type(screen.getByLabelText(/账号（邮箱/), 'new-ops@example.com')
+    await user.type(screen.getByLabelText(/初始密码/), 'Ops#2026-Pass')
+    await user.type(screen.getByLabelText(/^昵称/), '新运营')
+    await user.click(screen.getByRole('button', { name: '创建账号' }))
+
+    expect(await screen.findByText('运营账号已创建')).toBeInTheDocument()
+    const [path, body] = mockedPost.mock.calls.at(-1) ?? []
+    expect(path).toBe('/api/admin/users')
+    expect(body).toMatchObject({
+      identifier: 'new-ops@example.com',
+      password: 'Ops#2026-Pass',
+      nickname: '新运营',
+      role: 'OPS',
+    })
+  })
+
+  it('UsersPage：非超级管理员看不到新建入口与角色变更', async () => {
+    useAuthStore.setState({ status: 'authenticated', user: opsUser, error: null, hint: null })
+    installMock()
+    const user = userEvent.setup()
+    renderWithProviders(<AdminUsersPage />)
+    await screen.findByText('演示账号')
+
+    expect(screen.queryByRole('button', { name: '新建运营账号' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '详情' }))
+    await screen.findByText('总余额')
+    expect(screen.queryByText('变更角色')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '提交角色变更' })).not.toBeInTheDocument()
+  })
+
+  it('UsersPage：变更角色校验理由并提交目标角色', async () => {
+    useAuthStore.setState({ status: 'authenticated', user: superAdminUser, error: null, hint: null })
+    installMock()
+    mockedPost.mockResolvedValue({
+      user: { ...demoUser, role: 'OPS' },
+      balance: detail.balance,
+      latest_balance_adjust: null,
+    })
+    const user = userEvent.setup()
+    renderWithProviders(
+      <>
+        <AdminUsersPage />
+        <ToastViewport />
+      </>,
+    )
+    await screen.findByText('演示账号')
+
+    await user.click(screen.getByRole('button', { name: '详情' }))
+    await screen.findByText('变更角色')
+    await user.selectOptions(screen.getByLabelText('目标角色'), 'OPS')
+    await user.click(screen.getByRole('button', { name: '提交角色变更' }))
+    // The reason is mandatory: nothing is sent without it.
+    expect(await screen.findByText('请填写变更理由，会写入审计。')).toBeInTheDocument()
+    expect(mockedPost).not.toHaveBeenCalled()
+
+    await user.type(screen.getByLabelText(/变更理由/), '转入运营团队')
+    await user.click(screen.getByRole('button', { name: '提交角色变更' }))
+
+    expect(await screen.findByText('角色已变更')).toBeInTheDocument()
+    const [path, body] = mockedPost.mock.calls.at(-1) ?? []
+    expect(path).toBe('/api/admin/users/501/role')
+    expect(body).toMatchObject({ role: 'OPS', reason: '转入运营团队' })
   })
 })

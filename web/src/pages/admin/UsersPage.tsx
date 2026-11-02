@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { errorHint, errorMessage } from '@/api/client'
 import {
+  useChangeUserRole,
+  useCreateOperatorUser,
   useDisableUser,
   useEnableUser,
   useSubmitBalanceAdjust,
@@ -11,9 +13,11 @@ import {
 import type {
   AdminUser,
   AdminUserListParams,
+  AdminUserRole,
   AdminUserStatus,
   BalanceAdjustDirection,
   BalanceAdjustState,
+  ProvisionableRole,
 } from '@/api/admin'
 import {
   Badge,
@@ -21,6 +25,7 @@ import {
   Drawer,
   ErrorState,
   Input,
+  Modal,
   PageHeader,
   Select,
   Table,
@@ -32,6 +37,7 @@ import { ConfirmDialog } from '@/components/console'
 import { formatCreditAmount, formatDateTime, formatInteger } from '@/lib/format'
 import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue'
 import { usePageTitle } from '@/lib/usePageTitle'
+import { useAuthStore } from '@/stores/auth'
 
 const PAGE_SIZE = 20
 
@@ -44,6 +50,29 @@ const ROLE_LABEL: Record<string, string> = {
   OPS: '运营',
   FINANCE: '财务',
   SUPER_ADMIN: '超级管理员',
+}
+
+/**
+ * 新建运营账号可选的角色。刻意不含 PERSONAL：客户账号必须走公开注册，
+ * 那条路径带体验积分、设备指纹与协议同意；后端同样会以 400 拒绝 PERSONAL。
+ */
+const PROVISIONABLE_ROLE_OPTIONS: { value: ProvisionableRole; label: string }[] = [
+  { value: 'OPS', label: ROLE_LABEL.OPS },
+  { value: 'FINANCE', label: ROLE_LABEL.FINANCE },
+  { value: 'SUPER_ADMIN', label: ROLE_LABEL.SUPER_ADMIN },
+]
+
+/** 变更角色可选的角色：客户与运营可以互转，所以这里是完整枚举。 */
+const ASSIGNABLE_ROLE_OPTIONS: { value: AdminUserRole; label: string }[] = [
+  { value: 'PERSONAL', label: ROLE_LABEL.PERSONAL },
+  { value: 'OPS', label: ROLE_LABEL.OPS },
+  { value: 'FINANCE', label: ROLE_LABEL.FINANCE },
+  { value: 'SUPER_ADMIN', label: ROLE_LABEL.SUPER_ADMIN },
+]
+
+/** 密码按 UTF-8 字节计：后端限制 8..72 字节（bcrypt 在 72 字节处截断）。 */
+function passwordByteLength(raw: string): number {
+  return new TextEncoder().encode(raw).length
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -147,6 +176,38 @@ export default function AdminUsersPage() {
 
   const disableUser = useDisableUser()
   const enableUser = useEnableUser()
+
+  // 开通运营账号与变更角色都挂 admin.all（只有超级管理员持有）。这里的显隐只是
+  // 体验层：两条接口在服务端已经拦住，其他角色即使构造请求也是 403。
+  const currentRole = useAuthStore((state) => state.user?.role)
+  const canProvisionRole = currentRole === 'SUPER_ADMIN'
+
+  const createOperator = useCreateOperatorUser()
+  const [createOpen, setCreateOpen] = useState(false)
+  const [createIdentifier, setCreateIdentifier] = useState('')
+  const [createPassword, setCreatePassword] = useState('')
+  const [createNickname, setCreateNickname] = useState('')
+  const [createRole, setCreateRole] = useState<ProvisionableRole>('OPS')
+  const [createIdentifierError, setCreateIdentifierError] = useState<string | null>(null)
+  const [createPasswordError, setCreatePasswordError] = useState<string | null>(null)
+  const [createError, setCreateError] = useState<string | null>(null)
+
+  const changeRole = useChangeUserRole()
+  const [roleDraft, setRoleDraft] = useState<AdminUserRole>('PERSONAL')
+  const [roleReason, setRoleReason] = useState('')
+  const [roleReasonError, setRoleReasonError] = useState<string | null>(null)
+  const [roleError, setRoleError] = useState<string | null>(null)
+
+  const detailRole = detail.data?.user.role
+  useEffect(() => {
+    if (!detailRole) return
+    // 抽屉里的下拉以服务端的当前角色为准：角色变更成功后会重新拉详情，这里随之
+    // 复位，避免下拉还停在旧值上再提交一次。
+    setRoleDraft(detailRole as AdminUserRole)
+    setRoleReason('')
+    setRoleReasonError(null)
+    setRoleError(null)
+  }, [detailRole])
 
   const [disableTarget, setDisableTarget] = useState<AdminUser | null>(null)
   const [disableReason, setDisableReason] = useState('')
@@ -270,9 +331,86 @@ export default function AdminUsersPage() {
     }
   }
 
+  const openCreate = () => {
+    setCreateOpen(true)
+    setCreateIdentifier('')
+    setCreatePassword('')
+    setCreateNickname('')
+    setCreateRole('OPS')
+    setCreateIdentifierError(null)
+    setCreatePasswordError(null)
+    setCreateError(null)
+  }
+
+  const handleCreateOperator = async () => {
+    const identifier = createIdentifier.trim()
+    const bytes = passwordByteLength(createPassword)
+    let invalid = false
+    setCreateIdentifierError(null)
+    setCreatePasswordError(null)
+    setCreateError(null)
+    if (!identifier) {
+      setCreateIdentifierError('请填写邮箱或手机号。')
+      invalid = true
+    }
+    if (bytes < 8 || bytes > 72) {
+      setCreatePasswordError('初始密码需为 8~72 字节（一个汉字约占 3 字节）。')
+      invalid = true
+    }
+    if (invalid) return
+    try {
+      const created = await createOperator.mutateAsync({
+        identifier,
+        password: createPassword,
+        nickname: createNickname.trim() || undefined,
+        role: createRole,
+      })
+      toast.success(
+        '运营账号已创建',
+        `${created.user.user_no} 已开通为${ROLE_LABEL[created.user.role] ?? created.user.role}，初始密码请通过安全渠道转交。`,
+      )
+      setCreateOpen(false)
+    } catch (error) {
+      const hint = errorHint(error)
+      setCreateError(hint ? `${errorMessage(error)}（${hint}）` : errorMessage(error))
+    }
+  }
+
+  const handleChangeRole = async () => {
+    if (!detailUser) return
+    const reason = roleReason.trim()
+    const reasonLength = [...reason].length
+    setRoleReasonError(null)
+    setRoleError(null)
+    if (roleDraft === detailUser.role) {
+      setRoleError('所选角色与当前角色相同，无需变更。')
+      return
+    }
+    if (reasonLength === 0) {
+      setRoleReasonError('请填写变更理由，会写入审计。')
+      return
+    }
+    if (reasonLength > 255) {
+      setRoleReasonError('变更理由最多 255 个字符。')
+      return
+    }
+    try {
+      const response = await changeRole.mutateAsync({
+        id: detailUser.id,
+        input: { role: roleDraft, reason },
+      })
+      toast.success(
+        '角色已变更',
+        `${ROLE_LABEL[detailUser.role] ?? detailUser.role} → ${ROLE_LABEL[response.user.role] ?? response.user.role}`,
+      )
+    } catch (error) {
+      const hint = errorHint(error)
+      setRoleError(hint ? `${errorMessage(error)}（${hint}）` : errorMessage(error))
+    }
+  }
+
   const listError = list.isError ? errorMessage(list.error) : null
   const listHint = list.isError ? errorHint(list.error) : null
-
   const searchHint = searchValue
     ? `自动判定：含 @ → 邮箱；纯 11 位数字 → 手机号；其余 → 用户号。当前按${SEARCH_FIELD_LABEL[effectiveField]}查询。`
     : '自动判定：含 @ → 邮箱；纯 11 位数字 → 手机号；其余 → 用户号。也可手动指定查询字段。'
@@ -379,11 +517,18 @@ export default function AdminUsersPage() {
     <div className="space-y-5">
       <PageHeader
         title="用户管理"
-        description="账号状态、套餐与余额展示；余额调整提交后进入审核队列，由他人批准后落账。"
+        description="账号状态、套餐与余额展示；余额调整提交后进入审核队列，由他人批准后落账。运营与财务账号由超级管理员在此开通，角色变更同样留痕。"
         actions={
-          <Button variant="secondary" onClick={() => openAudit()}>
-            审计记录
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            {canProvisionRole ? (
+              <Button variant="secondary" onClick={openCreate}>
+                新建运营账号
+              </Button>
+            ) : null}
+            <Button variant="secondary" onClick={() => openAudit()}>
+              审计记录
+            </Button>
+          </div>
         }
       />
 
@@ -509,6 +654,49 @@ export default function AdminUsersPage() {
                 <DetailRow label="禁用操作人" value={`#${detailUser.disabled_by}`} />
               ) : null}
             </section>
+
+            {canProvisionRole ? (
+              <section className="space-y-2">
+                <h3 className="text-sm font-semibold text-ink">变更角色</h3>
+                <p className="text-xs text-ink-muted">
+                  角色变更立即生效并写入审计（前后角色与状态，不含密码）。不能修改自己的角色；
+                  最后一个超级管理员不能降级，否则将无人能进入运营后台。
+                </p>
+                <Select
+                  label="目标角色"
+                  value={roleDraft}
+                  onChange={(event) => {
+                    setRoleDraft(event.target.value as AdminUserRole)
+                    setRoleError(null)
+                  }}
+                  options={ASSIGNABLE_ROLE_OPTIONS}
+                />
+                <Input
+                  label="变更理由"
+                  required
+                  value={roleReason}
+                  error={roleReasonError ?? undefined}
+                  hint="必填，最多 255 个字符；会写入审计。"
+                  onChange={(event) => {
+                    setRoleReason(event.target.value)
+                    setRoleReasonError(null)
+                  }}
+                />
+                {roleError ? (
+                  <p role="alert" className="text-xs text-danger">
+                    {roleError}
+                  </p>
+                ) : null}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  loading={changeRole.isPending}
+                  onClick={() => void handleChangeRole()}
+                >
+                  提交角色变更
+                </Button>
+              </section>
+            ) : null}
 
             <section className="space-y-2">
               <div className="flex items-center justify-between gap-2">
@@ -721,6 +909,77 @@ export default function AdminUsersPage() {
           setBalanceError(null)
         }}
       />
+
+      <Modal
+        open={createOpen}
+        onClose={() => {
+          if (createOperator.isPending) return
+          setCreateOpen(false)
+        }}
+        title="新建运营账号"
+        description="由超级管理员开通运营、财务或超级管理员账号。客户账号请让用户自行注册（试用额度、设备指纹与协议同意只在注册流程里采集）。"
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              onClick={() => setCreateOpen(false)}
+              disabled={createOperator.isPending}
+            >
+              取消
+            </Button>
+            <Button
+              loading={createOperator.isPending}
+              onClick={() => void handleCreateOperator()}
+            >
+              创建账号
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <Input
+            label="账号（邮箱 / 手机号）"
+            required
+            value={createIdentifier}
+            error={createIdentifierError ?? undefined}
+            hint="邮箱会被转为小写；手机号会去掉空格、括号与 + 号。"
+            onChange={(event) => {
+              setCreateIdentifier(event.target.value)
+              setCreateIdentifierError(null)
+            }}
+          />
+          <Input
+            label="初始密码"
+            required
+            type="password"
+            autoComplete="new-password"
+            value={createPassword}
+            error={createPasswordError ?? undefined}
+            hint="8~72 字节；只用于创建这一次请求，不会回显、不会写入审计或日志。"
+            onChange={(event) => {
+              setCreatePassword(event.target.value)
+              setCreatePasswordError(null)
+            }}
+          />
+          <Input
+            label="昵称"
+            value={createNickname}
+            hint="可留空；最多 64 个字符。"
+            onChange={(event) => setCreateNickname(event.target.value)}
+          />
+          <Select
+            label="角色"
+            value={createRole}
+            onChange={(event) => setCreateRole(event.target.value as ProvisionableRole)}
+            options={PROVISIONABLE_ROLE_OPTIONS}
+          />
+          {createError ? (
+            <p role="alert" className="text-xs text-danger">
+              {createError}
+            </p>
+          ) : null}
+        </div>
+      </Modal>
 
       <AuditTrail
         open={auditOpen}

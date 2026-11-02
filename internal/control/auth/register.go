@@ -24,6 +24,15 @@ import (
 // login endpoint is the only place that pays it.
 const bcryptCost = 12
 
+// BcryptCost is the exported form of bcryptCost.
+//
+// The operator console (internal/control/ops) hashes the initial password of an
+// operator account it provisions and must pay exactly the same cost: a second
+// literal there would drift the day this one is raised, and a cheaper hash on
+// the operator path is the kind of difference nobody notices until it matters.
+// Defined as an alias rather than a copy so there is one literal to change.
+const BcryptCost = bcryptCost
+
 // registerRequest is the first-segment registration body. `code` is accepted
 // in the struct only to reject it explicitly: silently ignoring a verification
 // code would let a caller believe the mailbox was proven when it was not.
@@ -121,7 +130,7 @@ func (s *Service) insertUser(ctx context.Context, r *http.Request, ident Identif
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after commit
 
-	uid, err := insertUserRow(ctx, tx, ident, nickname, agreement, passwordHash, now)
+	uid, err := insertUserRow(ctx, tx, ident, nickname, agreement, passwordHash, RolePersonal, now)
 	if err != nil {
 		if isDuplicate(err) {
 			// Erratum E-21 added account_exists (409): a duplicate registration
@@ -170,11 +179,31 @@ func (s *Service) insertUser(ctx context.Context, r *http.Request, ident Identif
 	return uid, nil
 }
 
-func insertUserRow(ctx context.Context, tx *sql.Tx, ident Identifier, nickname, agreement, hash string, now time.Time) (int64, error) {
+// RolePersonal is the role public registration always writes. The operator
+// console reuses the same INSERT (see InsertUserRowTx) with a role of its own,
+// so the column list and the user_no allocator cannot drift between the two.
+const RolePersonal = "PERSONAL"
+
+// InsertUserRowTx inserts one t_user row for the caller's transaction: the same
+// thirteen columns, the same user_no allocator and the same duplicate handling
+// as public registration. Exported for internal/control/ops, whose
+// POST /api/admin/users provisions operator accounts; a second INSERT written
+// there would silently stop matching this one (a new NOT NULL column, a new
+// unique key) the first time registration changes.
+//
+// The caller owns the transaction, the credit-account row and the audit row; a
+// duplicate identifier comes back as the driver's 1062 error and must be
+// mapped to apierr.CodeAccountExists (IsDuplicate reports it).
+func InsertUserRowTx(ctx context.Context, tx *sql.Tx, ident Identifier,
+	nickname, agreement, passwordHash, role string, now time.Time) (int64, error) {
+	return insertUserRow(ctx, tx, ident, nickname, agreement, passwordHash, role, now)
+}
+
+func insertUserRow(ctx context.Context, tx *sql.Tx, ident Identifier, nickname, agreement, hash, role string, now time.Time) (int64, error) {
 	const q = `INSERT INTO t_user
 		(user_no, email, phone, password_hash, password_algo, password_updated_at,
 		 nickname, role, status, agreement_version, agreed_at, created_at, updated_at)
-		VALUES (?,?,?,?,'bcrypt',?,?,'PERSONAL','NORMAL',?,?,?,?)`
+		VALUES (?,?,?,?,'bcrypt',?,?,?,'NORMAL',?,?,?,?)`
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
 		userNo, err := newUserNo(now)
@@ -192,7 +221,7 @@ func insertUserRow(ctx context.Context, tx *sql.Tx, ident Identifier, nickname, 
 			agreedAt = now
 		}
 		res, err := tx.ExecContext(ctx, q,
-			userNo, email, phone, hash, now, nickname, agreement, agreedAt, now, now)
+			userNo, email, phone, hash, now, nickname, role, agreement, agreedAt, now, now)
 		if err == nil {
 			return res.LastInsertId()
 		}
@@ -241,3 +270,22 @@ func isDuplicate(err error) bool {
 	var me *mysql.MySQLError
 	return errors.As(err, &me) && me.Number == 1062
 }
+
+// ValidatePassword exposes the registration password rule (8..72 bytes, not
+// blank) to the operator console, which sets an operator's initial password.
+//
+// It is a thin wrapper on purpose: registration keeps calling validatePassword
+// directly, so the two paths cannot drift into "the operator console checks
+// less than the customer form".
+func ValidatePassword(pw string) error { return validatePassword(pw) }
+
+// IsDuplicate reports a MySQL unique-key violation (1062). Callers map it to
+// their own error code: registration answers account_exists (409), and the
+// operator console answers the same code for a duplicate identifier.
+func IsDuplicate(err error) bool { return isDuplicate(err) }
+
+// MaskIdentifier is the audit-trail masking rule (keep the first character of
+// the local part / three digits of a phone). Exported so an operator-created
+// account lands in t_admin_audit_log with the same PII reduction as a
+// self-registered one instead of a second masking implementation.
+func MaskIdentifier(kind, value string) string { return maskIdentifier(kind, value) }

@@ -601,7 +601,24 @@ export interface paths {
         /** 运营用户列表（含活跃 Key 数 key_count） */
         get: operations["listAdminUsers"];
         put?: never;
-        post?: never;
+        /**
+         * 开通运营/财务账号（超级管理员在后台开通，不再写库）
+         * @description 运营与财务账号只能由管理员在后台开通。权限点是 admin.all，而不是
+         *     user.write：user.write 归 OPS 所有，而本接口的角色来自请求体，给了
+         *     user.write 就等于让运营账号能造一个 SUPER_ADMIN 再登录它（自提权）。
+         *
+         *     role 只接受 OPS / FINANCE / SUPER_ADMIN。传 PERSONAL 返回 400
+         *     invalid_request_body（字段 role）：客户账号必须走公开注册
+         *     POST /api/v1/auth/register，那条路径带体验积分、设备指纹与协议同意，
+         *     本接口三者都不采集，因此不提供客户账号的创建。
+         *
+         *     校验复用注册规则（identifier 归一化、密码 8..72 字节、bcrypt cost 12）。
+         *     事务内写三行：t_user（role 取请求值、status=NORMAL、agreement_version
+         *     空串）、空的 t_credit_account、t_admin_audit_log（action=CREATE_OPERATOR）。
+         *     密码只出现在这一条请求里：不落审计、不进日志、不回显；响应与
+         *     GET /api/admin/users/{id} 同形状。
+         */
+        post: operations["createOperatorUser"];
         delete?: never;
         options?: never;
         head?: never;
@@ -627,6 +644,43 @@ export interface paths {
         get: operations["getAdminUser"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/users/{id}/role": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description t_user.id；不存在或已删除返回 404 resource_not_found */
+                id: components["parameters"]["UserID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 变更账号角色（客户与运营互转）
+         * @description 权限点是 admin.all（同 POST /api/admin/users）：user.write 归 OPS 所有，
+         *     而本接口能写任意角色（含 SUPER_ADMIN），给了 user.write 就是自提权。
+         *
+         *     两条不变量在同一个事务里守住，都不依赖"先查后写"：
+         *
+         *     1. 不得修改自己的角色（id 等于会话 uid → 403 permission_denied）：
+         *        既防自提权，也防把自己降级后再没人能改回来。
+         *     2. 不得把最后一个超级管理员降级（→ 409 resource_state_conflict）：
+         *        否则全站没人能进 /admin。判定在事务内对当前 SUPER_ADMIN 行按 id 升序
+         *        加锁并重新读取角色后完成，两个管理员同时互相降级不会都通过。
+         *
+         *     角色未变化返回 409（不写"OPS → OPS"这种等于噪音的审计行）。降级后该
+         *     账号的会话不失效：会话在每次请求时现读 t_user.role，下一次请求就按新
+         *     角色鉴权。审计 module=USER、action=ROLE_CHANGE，before/after 只含角色与
+         *     状态，绝不含密码。
+         */
+        post: operations["changeUserRole"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2193,6 +2247,30 @@ export interface components {
             sla: components["schemas"]["TicketSLA"];
             /** @description 全部回复；is_internal=true 为内部备注（运营可见、用户不可见） */
             replies: components["schemas"]["AdminTicketReply"][];
+        };
+        /**
+         * @description 管理员开通运营/财务账号的请求体。role 复用 UserRole 枚举，但 PERSONAL
+         *     会被服务端以 400 invalid_request_body（字段 role）拒绝：客户账号只能走
+         *     公开注册。
+         */
+        OperatorCreateRequest: {
+            /** @description 邮箱或手机号；服务端按注册规则归一化（小写邮箱、去手机号分隔符） */
+            identifier: string;
+            /**
+             * Format: password
+             * @description 初始密码；bcrypt cost 与注册一致（12）。不回显、不落审计、不进日志
+             */
+            password: string;
+            nickname?: string;
+            role: components["schemas"]["UserRole"];
+        };
+        /**
+         * @description 变更角色。role 复用 UserRole 枚举（含 PERSONAL：运营可以降回客户）；
+         *     reason 必填，写入审计 reason 列。
+         */
+        UserRoleChangeRequest: {
+            role: components["schemas"]["UserRole"];
+            reason: string;
         };
         AdminUser: {
             /** Format: int64 */
@@ -4927,6 +5005,66 @@ export interface operations {
             };
         };
     };
+    createOperatorUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperatorCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description 账号已创建 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUserDetail"];
+                };
+            };
+            /** @description 字段不合法（invalid_request_body；identifier / password / nickname / role，含 role=PERSONAL） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 admin.all（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description identifier 已存在（account_exists） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     getAdminUser: {
         parameters: {
             query?: never;
@@ -4968,6 +5106,78 @@ export interface operations {
             };
             /** @description 用户不存在或已删除（resource_not_found） */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    changeUserRole: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description t_user.id；不存在或已删除返回 404 resource_not_found */
+                id: components["parameters"]["UserID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserRoleChangeRequest"];
+            };
+        };
+        responses: {
+            /** @description 角色已变更（返回与 GET /api/admin/users/{id} 同形状） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUserDetail"];
+                };
+            };
+            /** @description 字段不合法（invalid_request_body；role / reason） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 缺少 admin.all，或试图修改自己的角色（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 用户不存在或已删除（resource_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色未变化，或目标是最后一个超级管理员（resource_state_conflict） */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -1257,6 +1257,66 @@ export function useSubmitBalanceAdjust() {
   })
 }
 
+/**
+ * Operator provisioning (internal/control/ops/users_operator.go).
+ *
+ * Both endpoints are gated by admin.all server-side: only SUPER_ADMIN may open an
+ * operator account or change anyone's role. Hiding the entry points is a
+ * convenience, never the control.
+ */
+
+/** The t_user.role enum, spelled as the backend stores it. */
+export type AdminUserRole = 'PERSONAL' | 'OPS' | 'FINANCE' | 'SUPER_ADMIN'
+
+/** POST /api/admin/users refuses PERSONAL: customer accounts come from public registration. */
+export type ProvisionableRole = Exclude<AdminUserRole, 'PERSONAL'>
+
+export interface OperatorCreateInput {
+  /** Email or phone; the server normalizes it with the registration rule. */
+  identifier: string
+  /** Initial password, 8..72 bytes. Never returned, audited or logged. */
+  password: string
+  nickname?: string
+  role: ProvisionableRole
+}
+
+export interface UserRoleChangeInput {
+  role: AdminUserRole
+  /** Required; written to the audit row's reason column. */
+  reason: string
+}
+
+export function createOperatorUser(input: OperatorCreateInput): Promise<AdminUserDetailResponse> {
+  return api.post<AdminUserDetailResponse>('/api/admin/users', input)
+}
+
+export function changeUserRole(
+  id: number | string,
+  input: UserRoleChangeInput,
+): Promise<AdminUserDetailResponse> {
+  return api.post<AdminUserDetailResponse>(
+    `/api/admin/users/${encodeURIComponent(String(id))}/role`,
+    input,
+  )
+}
+
+export function useCreateOperatorUser() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (input: OperatorCreateInput) => createOperatorUser(input),
+    onSuccess: () => invalidateUsers(client),
+  })
+}
+
+export function useChangeUserRole() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, input }: { id: number | string; input: UserRoleChangeInput }) =>
+      changeUserRole(id, input),
+    onSuccess: (_response, variables) => invalidateUsers(client, variables.id),
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Reviews (internal/control/review)
 // ---------------------------------------------------------------------------

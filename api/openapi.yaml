@@ -1599,6 +1599,65 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
+    post:
+      operationId: createOperatorUser
+      tags: [admin]
+      summary: 开通运营/财务账号（超级管理员在后台开通，不再写库）
+      description: |
+        运营与财务账号只能由管理员在后台开通。权限点是 admin.all，而不是
+        user.write：user.write 归 OPS 所有，而本接口的角色来自请求体，给了
+        user.write 就等于让运营账号能造一个 SUPER_ADMIN 再登录它（自提权）。
+
+        role 只接受 OPS / FINANCE / SUPER_ADMIN。传 PERSONAL 返回 400
+        invalid_request_body（字段 role）：客户账号必须走公开注册
+        POST /api/v1/auth/register，那条路径带体验积分、设备指纹与协议同意，
+        本接口三者都不采集，因此不提供客户账号的创建。
+
+        校验复用注册规则（identifier 归一化、密码 8..72 字节、bcrypt cost 12）。
+        事务内写三行：t_user（role 取请求值、status=NORMAL、agreement_version
+        空串）、空的 t_credit_account、t_admin_audit_log（action=CREATE_OPERATOR）。
+        密码只出现在这一条请求里：不落审计、不进日志、不回显；响应与
+        GET /api/admin/users/{id} 同形状。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperatorCreateRequest'
+      responses:
+        '201':
+          description: 账号已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserDetail'
+        '400':
+          description: 字段不合法（invalid_request_body；identifier / password / nickname / role，含 role=PERSONAL）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 admin.all（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: identifier 已存在（account_exists）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
   /api/admin/users/{id}:
     parameters:
       - $ref: '#/components/parameters/UserID'
@@ -1633,6 +1692,75 @@ paths:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '404':
           description: 用户不存在或已删除（resource_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/users/{id}/role:
+    parameters:
+      - $ref: '#/components/parameters/UserID'
+    post:
+      operationId: changeUserRole
+      tags: [admin]
+      summary: 变更账号角色（客户与运营互转）
+      description: |
+        权限点是 admin.all（同 POST /api/admin/users）：user.write 归 OPS 所有，
+        而本接口能写任意角色（含 SUPER_ADMIN），给了 user.write 就是自提权。
+
+        两条不变量在同一个事务里守住，都不依赖"先查后写"：
+
+        1. 不得修改自己的角色（id 等于会话 uid → 403 permission_denied）：
+           既防自提权，也防把自己降级后再没人能改回来。
+        2. 不得把最后一个超级管理员降级（→ 409 resource_state_conflict）：
+           否则全站没人能进 /admin。判定在事务内对当前 SUPER_ADMIN 行按 id 升序
+           加锁并重新读取角色后完成，两个管理员同时互相降级不会都通过。
+
+        角色未变化返回 409（不写"OPS → OPS"这种等于噪音的审计行）。降级后该
+        账号的会话不失效：会话在每次请求时现读 t_user.role，下一次请求就按新
+        角色鉴权。审计 module=USER、action=ROLE_CHANGE，before/after 只含角色与
+        状态，绝不含密码。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserRoleChangeRequest'
+      responses:
+        '200':
+          description: 角色已变更（返回与 GET /api/admin/users/{id} 同形状）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserDetail'
+        '400':
+          description: 字段不合法（invalid_request_body；role / reason）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 缺少 admin.all，或试图修改自己的角色（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 用户不存在或已删除（resource_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: 角色未变化，或目标是最后一个超级管理员（resource_state_conflict）
           content:
             application/json:
               schema:
@@ -3455,6 +3583,42 @@ components:
           type: array
           description: 全部回复；is_internal=true 为内部备注（运营可见、用户不可见）
           items: {$ref: '#/components/schemas/AdminTicketReply'}
+    OperatorCreateRequest:
+      type: object
+      required: [identifier, password, role]
+      description: |
+        管理员开通运营/财务账号的请求体。role 复用 UserRole 枚举，但 PERSONAL
+        会被服务端以 400 invalid_request_body（字段 role）拒绝：客户账号只能走
+        公开注册。
+      properties:
+        identifier:
+          type: string
+          maxLength: 254
+          description: 邮箱或手机号；服务端按注册规则归一化（小写邮箱、去手机号分隔符）
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 72
+          description: 初始密码；bcrypt cost 与注册一致（12）。不回显、不落审计、不进日志
+        nickname:
+          type: string
+          maxLength: 64
+        role:
+          $ref: '#/components/schemas/UserRole'
+    UserRoleChangeRequest:
+      type: object
+      required: [role, reason]
+      description: |
+        变更角色。role 复用 UserRole 枚举（含 PERSONAL：运营可以降回客户）；
+        reason 必填，写入审计 reason 列。
+      properties:
+        role:
+          $ref: '#/components/schemas/UserRole'
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 255
     AdminUser:
       type: object
       required: [id, user_no, nickname, role, status, risk_score, key_count, created_at, updated_at]

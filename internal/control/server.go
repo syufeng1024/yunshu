@@ -372,6 +372,19 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("GET /api/admin/users/{id}", s.authed(mw.PermUserRead, s.ops.GetUser))
 	mux.Handle("POST /api/admin/users/{id}/disable", s.authed(mw.PermUserWrite, s.ops.DisableUser))
 	mux.Handle("POST /api/admin/users/{id}/enable", s.authed(mw.PermUserWrite, s.ops.EnableUser))
+	// Operator account provisioning. Both routes are gated by admin.all — the
+	// one permission only SUPER_ADMIN holds — and deliberately NOT by user.write.
+	//
+	// user.write is OPS's permission. Creating an account is not "editing an
+	// account": POST /api/admin/users takes a role from the body, so a caller
+	// who may create could create a SUPER_ADMIN and then sign in as it, and
+	// POST /api/admin/users/{id}/role could promote any account (its own
+	// included) the same way. Sharing user.write here would turn "may disable a
+	// customer" into "may mint a super admin" — a privilege escalation with two
+	// requests. The rest of the user surface keeps user.write; only who may
+	// decide *what an account is* moves up to admin.all.
+	mux.Handle("POST /api/admin/users", s.authed(mw.PermAdminAll, s.ops.CreateOperatorUser))
+	mux.Handle("POST /api/admin/users/{id}/role", s.authed(mw.PermAdminAll, s.ops.ChangeUserRole))
 	// T24 balance adjustment: user.write submits, fund.approve decides. The
 	// document never changes money on submission; approval posts a ledger entry.
 	mux.Handle("POST /api/admin/users/{id}/balance-adjust", s.authed(mw.PermUserWrite, s.reviews.SubmitBalanceAdjust))
