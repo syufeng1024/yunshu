@@ -24,10 +24,11 @@ import (
 // orders that wait for money, read the bank statement, confirm the arrival.
 //
 // The confirmation runs exactly the transaction the channel callback runs —
-// CAS on state='PENDING', grantOrderPaid, applyPlanTx for a PLAN order, one
-// audit row in the same transaction — so the two settlement paths can never
-// disagree about what "paid" means. The credit SQL is not repeated here: it
-// lives in ledger.GrantTx and is reached through grantOrderPaid.
+// CAS on state='PENDING', grantOrderPaid, applyPlanTx for a PLAN order (plus
+// its plan_purchased_at stamp), one audit row in the same transaction — so the
+// two settlement paths can never disagree about what "paid" means. The credit
+// SQL is not repeated here: it lives in ledger.GrantTx and is reached through
+// grantOrderPaid.
 
 const (
 	// bankTxnNoMin and bankTxnNoMax bound the statement number the operator
@@ -437,7 +438,9 @@ func (s *Service) confirmOrderPaymentTx(ctx context.Context, r *http.Request, op
 		return confirmPaymentResponse{}, apiErr
 	}
 
-	grant, apiErr := s.grantOrderPaid(ctx, tx, orderID, userID, rechargeMicro, bonusMicro, bonusDays, now)
+	// The operator is the actor here: the ledger row carries their id, so the
+	// credit is attributable without joining t_admin_audit_log.
+	grant, apiErr := s.grantOrderPaid(ctx, tx, orderID, userID, rechargeMicro, bonusMicro, bonusDays, operatorID, now)
 	if apiErr != nil {
 		return confirmPaymentResponse{}, apiErr
 	}
@@ -448,6 +451,9 @@ func (s *Service) confirmOrderPaymentTx(ctx context.Context, r *http.Request, op
 			return confirmPaymentResponse{}, apierr.New(apierr.CodeInternalError)
 		}
 		if _, apiErr := s.applyPlanTx(ctx, tx, userID, planID.Int64, now); apiErr != nil {
+			return confirmPaymentResponse{}, apiErr
+		}
+		if apiErr := s.markPlanPurchasedTx(ctx, tx, userID, now); apiErr != nil {
 			return confirmPaymentResponse{}, apiErr
 		}
 	}

@@ -161,8 +161,14 @@ func (s *Service) applyPlanTx(ctx context.Context, tx *sql.Tx, userID, planID in
 	// reopen a continuation row below (D-27 #3). Only rows already in force are
 	// matched: a future row stays untouched and simply wins once its window
 	// begins (D-27 #1).
+	//
+	// daily_quota_micro is nullable since 0018 and NULL means "no ceiling"
+	// (PRD §3.2.1). Scanning it into int64 made a NULL row fail the whole
+	// confirmation with a 500, so it is read as NullInt64 and carried through
+	// as NULL: turning it into 0 here would read as "no daily allowance at
+	// all", the opposite of what the approved row says.
 	var (
-		quotaDaily int64
+		quotaDaily sql.NullInt64
 		quotaTo    time.Time
 	)
 	hasQuota := false
@@ -235,6 +241,11 @@ func (s *Service) applyPlanTx(ctx context.Context, tx *sql.Tx, userID, planID in
 	// serving the newly purchased specs. The old row was closed at now above
 	// and stays visible as history; this row carries the same window end.
 	if hasQuota {
+		var quotaDailyValue *int64
+		if quotaDaily.Valid {
+			v := quotaDaily.Int64
+			quotaDailyValue = &v
+		}
 		continued := false
 		var contErr error
 		for attempt := 0; attempt < 5; attempt++ {
@@ -251,7 +262,7 @@ func (s *Service) applyPlanTx(ctx context.Context, tx *sql.Tx, userID, planID in
 					 daily_quota_micro, effective_from, effective_to,
 					 fallback_policy_id, created_at, updated_at)
 				VALUES ('USER', ?, 'QUOTA_APPLY', ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
-				userID, grant.RPM, grant.TPM, grant.Concurrency, quotaDaily,
+				userID, grant.RPM, grant.TPM, grant.Concurrency, dailyValue(quotaDailyValue),
 				from, quotaTo, now, now)
 			if contErr == nil {
 				continued = true
@@ -275,6 +286,24 @@ func dailyValue(v *int64) any {
 		return nil
 	}
 	return *v
+}
+
+// markPlanPurchasedTx stamps t_user.plan_purchased_at with the settlement
+// instant.
+//
+// The column exists since 0001 but nothing ever wrote it, so a PLAN order left
+// it NULL and "when did this account buy its tier" had no answer outside the
+// order table. It is stamped here — from the two order-settlement paths, inside
+// their own transaction — rather than inside applyPlanTx, because applyPlanTx
+// also serves the TRIAL claim (trial.go): a trial is granted, not purchased.
+func (s *Service) markPlanPurchasedTx(ctx context.Context, tx *sql.Tx, userID int64, now time.Time) *apierr.APIError {
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE t_user SET plan_purchased_at = ?, updated_at = ?
+		  WHERE id = ? AND deleted_at IS NULL`, now, now, userID); err != nil {
+		s.logError(ctx, "fund_plan_purchased_at_failed: "+err.Error())
+		return apierr.New(apierr.CodeInternalError)
+	}
+	return nil
 }
 
 func maxInt64(a, b int64) int64 {

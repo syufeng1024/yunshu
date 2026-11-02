@@ -265,7 +265,9 @@ func (s *Service) settleCallback(ctx context.Context, r *http.Request, channel, 
 		return callbackResponse{}, apiErr
 	}
 
-	grant, apiErr := s.grantOrderPaid(ctx, tx, orderID, userID, rechargeMicro, bonusMicro, bonusDays, now)
+	// operatorID 0: the payment channel is the actor, so the ledger row keeps
+	// operator_id NULL exactly as every other system entry does.
+	grant, apiErr := s.grantOrderPaid(ctx, tx, orderID, userID, rechargeMicro, bonusMicro, bonusDays, 0, now)
 	if apiErr != nil {
 		return callbackResponse{}, apiErr
 	}
@@ -276,6 +278,9 @@ func (s *Service) settleCallback(ctx context.Context, r *http.Request, channel, 
 			return callbackResponse{}, apierr.New(apierr.CodeInternalError)
 		}
 		if _, apiErr := s.applyPlanTx(ctx, tx, userID, planID.Int64, now); apiErr != nil {
+			return callbackResponse{}, apiErr
+		}
+		if apiErr := s.markPlanPurchasedTx(ctx, tx, userID, now); apiErr != nil {
 			return callbackResponse{}, apiErr
 		}
 	}
@@ -323,8 +328,14 @@ func (s *Service) settleCallback(ctx context.Context, r *http.Request, channel, 
 	return callbackResponse{Code: "SUCCESS", OrderNo: orderNo, Credited: true}, nil
 }
 
-// grantOrderPaid writes the split credit inside the callback transaction.
-func (s *Service) grantOrderPaid(ctx context.Context, tx *sql.Tx, orderID, userID, rechargeMicro, bonusMicro, bonusDays int64, now time.Time) (ledger.GrantResult, *apierr.APIError) {
+// grantOrderPaid writes the split credit inside the caller's transaction.
+//
+// operatorID attributes the ledger row: the operator id on a human
+// confirmation, 0 for the channel callback. t_ledger_entry.operator_id is
+// nullable and stays NULL for system entries (see the column comment), so 0
+// maps to NULL rather than to a sentinel row — the ledger keeps one
+// representation of "nobody signed for this".
+func (s *Service) grantOrderPaid(ctx context.Context, tx *sql.Tx, orderID, userID, rechargeMicro, bonusMicro, bonusDays, operatorID int64, now time.Time) (ledger.GrantResult, *apierr.APIError) {
 	bizType := ledger.BizTypeRecharge
 	if bonusMicro > 0 {
 		bizType = ledger.BizTypePlanGrant
@@ -337,6 +348,12 @@ func (s *Service) grantOrderPaid(ctx context.Context, tx *sql.Tx, orderID, userI
 		OrderID:         &orderID,
 		IdemKeyRecharge: "recharge:" + itoa(orderID),
 		IdemKeyBonus:    "bonus:" + itoa(orderID),
+	}
+	if operatorID > 0 {
+		// A human booked this money, so the ledger row names that human and
+		// attribution no longer depends on joining the audit table.
+		id := operatorID
+		p.OperatorID = &id
 	}
 	if bonusMicro > 0 {
 		expire := now.Add(time.Duration(bonusDays) * 24 * time.Hour)
