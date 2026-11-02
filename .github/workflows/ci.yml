@@ -53,10 +53,11 @@ jobs:
         run: go vet ./...
 
       - name: install golangci-lint
-        # v2.13.0 is the first release with go1.27 support (v1.x cannot decode
-        # Go 1.27's export data version 5 and dies with "export data version 5
-        # is greater than maximum supported version 2" during typecheck).
-        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.0
+        # v2.14.0 bundles x/tools v0.50.0, the first to decode Go 1.27.3's
+        # export data version 5. v1.x dies with "version 5 > max supported 2";
+        # v2.13.0 tops out at version 4 (Go 1.27.1/1.27.2) and fails on the
+        # 1.27.3 that setup-go resolves from `go 1.27`.
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
 
       - name: lint + hard-constraint scans
         shell: bash
