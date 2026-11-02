@@ -96,6 +96,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer func() { h.observeRequest(c, sw.Status()) }()
 	}
 
+	// G23 backfills one usage row when the request dies before the terminal
+	// runs. terminalRan flips true just before terminal.Serve so the
+	// dispatcher's own emitUsage stays the only writer for terminal calls.
+	terminalRan := false
+	defer func() { emitFailureUsage(h, c, terminalRan) }()
+
 	// P01: the total request budget. Streaming is only known after P04, so the
 	// non-stream budget is established first and upgraded below when the body
 	// says stream=true. Both derive from the original request context, so the
@@ -166,6 +172,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				h.writeReplay(w, ctx, c)
 				return
 			}
+			terminalRan = true
 			h.terminal.Serve(w, r, c)
 			return
 		}
@@ -301,6 +308,9 @@ func (h *Handler) writeReplay(w http.ResponseWriter, ctx context.Context, c *Ctx
 		e.WithRetryAfter(secs)
 		w.Header().Set("Retry-After", strconv.Itoa(secs))
 	}
+	// A replay 409 is an idempotency conflict, which belongs to the AUTH domain
+	// once stageForFail normalises it for the failure usage row.
+	c.FailStage = "P08"
 	h.writeError(w, ctx, c, e)
 }
 

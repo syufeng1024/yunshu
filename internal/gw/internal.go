@@ -99,6 +99,11 @@ func (h *InternalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer func() { h.h.observeRequest(c, sw.Status()) }()
 	}
 
+	// Same G23 backfill as the public handler. terminalRan suppresses the row
+	// once the dispatcher takes over and writes its own usage record.
+	terminalRan := false
+	defer func() { emitFailureUsage(h.h, c, terminalRan) }()
+
 	if r.Method != http.MethodPost || r.URL.Path != InternalPath {
 		c.FailStage = "P03"
 		h.h.writeError(w, r.Context(), c, apierr.New(apierr.CodeUnknownEndpoint))
@@ -202,6 +207,7 @@ func (h *InternalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		// P14: the same dispatcher the public path uses. Settlement, usage
 		// records and request logs are written there, not in controld.
+		terminalRan = true
 		h.h.terminal.Serve(w, r, c)
 		return
 	}

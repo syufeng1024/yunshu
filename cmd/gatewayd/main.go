@@ -143,6 +143,20 @@ func main() {
 	logger.Info(rootCtx, fmt.Sprintf("ratelimit degrade mode=%s", degradeMode),
 		obslog.Fields{Stage: "startup"})
 
+	// Seed the cached replica divisor before the first request so a Redis
+	// outage right after boot still has a last-known value. Errors are
+	// non-fatal: the cache starts at floor 1 and the heartbeat loop retries.
+	if err := deg.Heartbeat(ctx); err != nil {
+		logger.Warn(ctx, "degrader initial heartbeat failed: "+err.Error(),
+			obslog.Fields{Stage: "startup"})
+	}
+	if err := deg.RefreshReplicas(ctx); err != nil {
+		logger.Warn(ctx, "degrader initial replica refresh failed: "+err.Error(),
+			obslog.Fields{Stage: "startup"})
+	}
+	stopHeartbeat := deg.StartHeartbeat(ctx)
+	defer stopHeartbeat()
+
 	idemOpts := idemstore.DefaultOptions()
 	if v, ok := store.Int(config.KeyIdemLeaseTTLSeconds); ok {
 		idemOpts.LeaseTTL = time.Duration(v) * time.Second
@@ -220,6 +234,11 @@ func main() {
 		// same restricted gateway channel as every other gw write.
 		PolicyChecker: policyChecker,
 		PolicyHits:    gw.ContentPolicyHitWriter{DB: gwDB},
+		// G23: requests that fail before the terminal still produce a usage
+		// row. The adapter keeps every money column structurally zero.
+		FailureSink: func(f gw.FailureUsage) {
+			usageWriter.WriteUsage(rejectedUsageRecord(f))
+		},
 	}
 	if err := deps.Validate(); err != nil {
 		logger.Error(rootCtx, "gateway wiring incomplete: "+err.Error(), obslog.Fields{Stage: "startup", Status: 1})

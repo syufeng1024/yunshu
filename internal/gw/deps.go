@@ -122,6 +122,12 @@ type Deps struct {
 
 	// NodeID is written to t_prehold_hold.node_id.
 	NodeID string
+
+	// FailureSink receives one FailureUsage row for a request that failed
+	// before the upstream terminal ran (G23). A nil sink means T08 behaviour:
+	// no backfill rows, no error. The sink must be non-blocking; the usage
+	// writer drops rows rather than block the request path.
+	FailureSink func(FailureUsage)
 }
 
 // Validate reports the first missing required dependency. It is called before
