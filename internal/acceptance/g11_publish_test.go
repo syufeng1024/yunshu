@@ -94,8 +94,22 @@ func TestG11RoutingPublishUsesRealChain(t *testing.T) {
 	}
 
 	// 3) cfg:invalidate carried one message for this publish/version.
-	select {
-	case msg := <-sub.Messages():
+	//
+	// The channel is global and `go test -p 2` (scripts/coverage-gate.sh) runs
+	// several packages against the same Redis, so another package's publish can
+	// arrive first. Reading only the first message made this case fail with
+	// "invalidation version = 13, want 94" while passing on its own; drain until
+	// our version shows up, bounded by one deadline so a missing message still
+	// fails instead of hanging.
+	deadline := time.After(10 * time.Second)
+	for {
+		var msg string
+		select {
+		case msg = <-sub.Messages():
+		case <-deadline:
+			t.Fatalf("no message with version %d on %s within 10s after publish",
+				afterVersion, config.RedisInvalidateChannel)
+		}
 		var invalidation struct {
 			Version    int64    `json:"version"`
 			Namespaces []string `json:"namespaces"`
@@ -104,7 +118,8 @@ func TestG11RoutingPublishUsesRealChain(t *testing.T) {
 			t.Fatalf("decode %s message %q: %v", config.RedisInvalidateChannel, msg, err)
 		}
 		if invalidation.Version != afterVersion {
-			t.Fatalf("invalidation version = %d, want %d", invalidation.Version, afterVersion)
+			// Another package's publish; not ours to judge.
+			continue
 		}
 		routing := false
 		for _, ns := range invalidation.Namespaces {
@@ -115,8 +130,7 @@ func TestG11RoutingPublishUsesRealChain(t *testing.T) {
 		if !routing {
 			t.Fatalf("invalidation namespaces = %v, want %s", invalidation.Namespaces, config.NsRouting)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatalf("no message on %s within 10s after publish", config.RedisInvalidateChannel)
+		break
 	}
 
 	t.Logf("cfg:ver %d -> %d; cfg:snap:ROUTING %d -> %d bytes; new channel %q",
