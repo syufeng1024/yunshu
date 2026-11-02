@@ -38,7 +38,14 @@ for (const file of files) {
   if (!rel.endsWith('src/styles/tokens.css') && /#[0-9a-fA-F]{6}/.test(text)) {
     failures.push(`${rel}: raw hex colour outside tokens.css`)
   }
-  if (text.includes('localStorage') || text.includes('sessionStorage')) {
+  // Tests are exempt from the storage rule only. A component test has to lay
+  // out the browser state it asserts on (ScrollRestorer's case: clear
+  // sessionStorage, then render, then check the restored offset), which
+  // production code may never do. The brand, hex-colour and credit-conversion
+  // rules stay in force for tests: a test that shipped product copy, a raw
+  // colour or a second conversion would still fail.
+  const isTestFile = /\.(test|spec)\.(ts|tsx)$/.test(rel)
+  if (!isTestFile && (text.includes('localStorage') || text.includes('sessionStorage'))) {
     failures.push(`${rel}: browser storage reference`)
   }
   if (rel.startsWith('src/pages/') && text.includes('/ 100')) {
