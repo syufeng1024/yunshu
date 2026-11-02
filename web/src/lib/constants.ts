@@ -156,6 +156,20 @@ export const KEY_STATUS_LABEL: Record<KeyStatus, string> = {
 
 export const ADMIN_ROLES: readonly UserRole[] = ['OPS', 'FINANCE', 'SUPER_ADMIN']
 
+/**
+ * 「倍率与定价」页（ROUTES.adminPricing）的角色白名单——2026-11-02 与需求方确认的口径。
+ *
+ * 该页只对「能读价格与分组倍率」的人有意义：它调 `/api/admin/prices`
+ * (`price.write`)、`/api/admin/groups` (`group.write`)、`/api/admin/integrations`
+ * (`config.write`)，而这几个权限点只给了 OPS 与 SUPER_ADMIN，FINANCE 调它们全是
+ * 403（改权限之前就是坏的）。因为 FINANCE 没有 `price.write` / `group.write`，
+ * 所以该页不对其开放，也不为它新开 `price.read` / `group.read`。
+ *
+ * 菜单（ADMIN_NAV 不再收录该页）与路由（router.tsx 里 RequireAuth 的 roles）都以
+ * 本常量为准，避免两处各写一份白名单后再漂移。
+ */
+export const ADMIN_PRICING_ROLES: readonly UserRole[] = ['OPS', 'SUPER_ADMIN']
+
 export function isAdminRole(role: UserRole | null | undefined): boolean {
   return role !== null && role !== undefined && ADMIN_ROLES.includes(role)
 }
@@ -164,16 +178,18 @@ export interface AdminNavItem extends NavItem {
   roles: readonly UserRole[]
 }
 
+/**
+ * 运营后台侧边菜单。`roles` 只控制菜单是否显示（体验层），真正的权限仍由
+ * 服务端按权限点校验；路由层的单页角色收窄见 router.tsx。
+ *
+ * 注意：这里刻意**不收**「倍率与定价」（ROUTES.adminPricing）。该页依赖的三个
+ * 接口对 FINANCE 全 403，给 FINANCE 显示一个空壳页只是误导，故整页只对
+ * ADMIN_PRICING_ROLES 开放（2026-11-02 需求方裁定）。
+ */
 export const ADMIN_NAV: readonly AdminNavItem[] = [
   { to: ROUTES.admin, label: '运营概览', icon: 'home', end: true, roles: ADMIN_ROLES },
   { to: ROUTES.adminChannels, label: '渠道管理', icon: 'plug', roles: ['OPS', 'SUPER_ADMIN'] },
   { to: ROUTES.adminUsers, label: '用户管理', icon: 'users', roles: ['OPS', 'SUPER_ADMIN'] },
-  {
-    to: ROUTES.adminPricing,
-    label: '倍率与定价',
-    icon: 'tag',
-    roles: ['OPS', 'FINANCE', 'SUPER_ADMIN'],
-  },
   {
     to: ROUTES.adminAnnouncements,
     label: '公告与风控',

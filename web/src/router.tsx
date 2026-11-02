@@ -3,6 +3,7 @@ import { createBrowserRouter } from 'react-router-dom'
 import { AdminLayout } from '@/layouts/AdminLayout'
 import { ConsoleLayout } from '@/layouts/ConsoleLayout'
 import { SiteLayout } from '@/layouts/SiteLayout'
+import { ADMIN_PRICING_ROLES } from '@/lib/constants'
 import { RequireAuth } from '@/router/guards'
 
 // Route-level code splitting keeps the first paint free of chart/admin code.
@@ -81,7 +82,18 @@ export const router = createBrowserRouter([
       { index: true, element: <AdminOverviewPage /> },
       { path: 'channels', element: <ChannelsPage /> },
       { path: 'users', element: <UsersPage /> },
-      { path: 'pricing', element: <AdminPricingPage /> },
+      {
+        // 「倍率与定价」只对 OPS / SUPER_ADMIN 开放：该页依赖的 prices / groups /
+        // integrations 对 FINANCE 全是 403（2026-11-02 口径）。菜单已不再收录该页，
+        // 这里再堵一次直接输地址进来的人。ROUTES.adminPricing 与 ROUTE_TITLES 保留，
+        // 因为 OPS / SUPER_ADMIN 仍要用这个页面。
+        path: 'pricing',
+        element: (
+          <RequireAuth role="admin" roles={ADMIN_PRICING_ROLES}>
+            <AdminPricingPage />
+          </RequireAuth>
+        ),
+      },
       { path: 'announcements', element: <AnnouncementsPage /> },
       { path: 'reviews', element: <ReviewsPage /> },
       { path: 'tickets', element: <AdminTicketsPage /> },

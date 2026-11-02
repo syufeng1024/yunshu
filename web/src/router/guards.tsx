@@ -5,6 +5,7 @@ import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { Skeleton } from '@/components/Skeleton'
 import { ROUTES, isAdminRole } from '@/lib/constants'
+import type { UserRole } from '@/lib/constants'
 import { usePageTitle } from '@/lib/usePageTitle'
 import { useAuthStore } from '@/stores/auth'
 
@@ -39,7 +40,7 @@ export function ForbiddenPage() {
           icon={<span className="text-sm font-semibold text-ink-secondary">403</span>}
         />
         <p className="text-center text-xs text-ink-muted">
-          运营后台仅对运营、财务与超级管理员开放。
+          该区域按角色开放，当前账号无权访问本页。
         </p>
       </div>
     </div>
@@ -48,6 +49,14 @@ export function ForbiddenPage() {
 
 export interface RequireAuthProps {
   role: 'user' | 'admin'
+  /**
+   * 在 `role` 已放行之后的**二次收窄**，用于「运营后台里只有部分角色能进」的单页。
+   *
+   * 语义：仅当 `role` 校验通过后才生效；不传时行为与加这个属性之前完全一致
+   * （既有路由一条都没传，因此不受影响）。传空数组表示谁都不放行——守卫按
+   * fail-closed 处理，免得以后有人用 `roles={[]}` 表达「不限」时误开权限。
+   */
+  roles?: readonly UserRole[]
   children: ReactNode
 }
 
@@ -56,7 +65,7 @@ export interface RequireAuthProps {
  * a 403 shell for the wrong role; every page must still validate permissions
  * against the backend when its data loads (PRD §1.3, hard constraint 8).
  */
-export function RequireAuth({ role, children }: RequireAuthProps) {
+export function RequireAuth({ role, roles, children }: RequireAuthProps) {
   const location = useLocation()
   const status = useAuthStore((state) => state.status)
   const user = useAuthStore((state) => state.user)
@@ -96,6 +105,11 @@ export function RequireAuth({ role, children }: RequireAuthProps) {
   }
 
   if (role === 'admin' && !isAdminRole(user?.role)) {
+    return <ForbiddenPage />
+  }
+
+  // 单页角色收窄：只有在 `role` 已通过、且调用方显式传了 `roles` 时才判定。
+  if (roles !== undefined && (user === null || !roles.includes(user.role))) {
     return <ForbiddenPage />
   }
 
