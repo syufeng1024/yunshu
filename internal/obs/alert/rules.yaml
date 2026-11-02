@@ -1,0 +1,226 @@
+# 运维告警规则（T22 交付物 8）
+#
+# 加载方式：Prometheus rule_files 指向本文件，例如
+#   rule_files:
+#     - /etc/prometheus/rules/yunshu/*.yaml
+# 也可以先用 promtool 校验：promtool check rules internal/obs/alert/rules.yaml
+#
+# 两条硬约束（T22 §4 第 12、13 条）：
+#   1. 每条告警都必须可执行：annotations.runbook 写「看到它该做什么」，并指向
+#      docs/ops-runbook.md 的具体章节。只报警不给处置步骤的规则不算交付。
+#   2. 对账差异 > 0 是 P0（R-01），没有 for 延迟：金额不一致等一分钟都可能扩大。
+#
+# 指标名一律来自 internal/obs/metrics/recorder.go，不在这里发明新名字。
+# 其中三处本仓没有独立埋点，已在对应规则处写明「无埋点」与替代巡检方式，
+# 不要为了让 YAML 好看而编一个指标名。
+
+groups:
+  - name: yunshu-gateway
+    interval: 30s
+    rules:
+      # ---------------------------------------------------------------- P0
+      # 对账差异。gauge 由 recon.Daily 在最近一次成功运行后设置，懒创建：
+      # 序列不存在 = 还没有成功跑过对账，不是「零差异」。
+      - alert: ReconDiffDetected
+        expr: gw_ledger_reconcile_diff > 0
+        for: 0m
+        labels:
+          severity: P0
+          team: finance
+        annotations:
+          summary: '对账差异 {{ $value }} 条（P0，资金口径）'
+          description: >-
+            最近一次成功对账发现 {{ $value }} 条内部账本与上游/内部账不平。
+            先看 t_reconcile_diff 的 diff_type 与 delta_micro：金额非零即按
+            P0 SOP 处理，禁止改历史数据让断言变绿。
+          runbook: 'docs/ops-runbook.md §3 R-01 六步处置'
+
+      # 关单失败：自动关单任务关不掉单，队列只增不减。
+      - alert: OrderAutoCloseFailing
+        expr: increase(gw_order_auto_close_failed_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: P1
+          team: finance
+        annotations:
+          summary: '自动关单失败（stage={{ $labels.stage }}）'
+          description: >-
+            stage=audit 表示审计写入失败（状态已随事务回滚，单仍是 PENDING）；
+            stage=db 看 MySQL 可用性与慢查询；stage=scan 表示扫描查询本身失败。
+            修好后重跑即收敛，重复执行不会产生第二条审计。
+          runbook: 'docs/ops-runbook.md §7 其余任务的失败处置（close_expired_order）'
+
+      # ------------------------------------------------ 限流拒绝率（PRD §9.5）
+      # 口径：拒绝量占全部请求的比例。它是 §9.5「误杀率」的**上界代理**，不是误杀率本身
+      # ——误杀要求「重算真实用量后本可放行」，而本仓没有被拒请求的用量数据
+      # （详见 docs/tasks/errata.md E-37）。因此这条告警只能回答「拒绝是不是变多了」。
+      #
+      # 阈值来源：PRD §9.5 的可接受上限 0.5%（超过即「限流设计缺陷」）。月度目标
+      # 0.1% 不设成告警线——它会让 P1 长期常亮，反而失去信号；0.1% 写进 description
+      # 供复盘对照。
+      - alert: RatelimitRejectRatioHigh
+        expr: >-
+          (
+            sum(rate(gw_ratelimit_rejected_total[5m]))
+            /
+            sum(rate(gw_requests_total[5m]))
+          ) > 0.005
+          and
+          sum(increase(gw_requests_total[5m])) > 1000
+        for: 30m
+        labels:
+          severity: P1
+          team: platform
+        annotations:
+          summary: '限流拒绝率 {{ $value | humanizePercentage }}（PRD §9.5 可接受上限 0.5%）'
+          description: >-
+            持续等于或高于 0.5% 视为限流策略缺陷，不得用「用户余额本来就少」解释。
+            复盘对照 §9.5 的月度目标 0.1%。先按 dim 拆分（rpm / tpm / concurrency /
+            daily）定位是哪个维度在拒，再对比 gw_ratelimit_degraded_total：
+            降级期的拒绝是预期行为，不是策略退化。
+          runbook: 'docs/ops-runbook.md §8 容量与限流告警'
+
+      # 单维度触到月度目标（0.1%）就告警：任何单一维度自己就吃掉整个目标额度，
+      # 意味着该月目标已经不可能达成。阈值 0.1% 直接取自 PRD §9.5 的目标值，
+      # 不是另给一个数。
+      #
+      # expr 写法说明（为什么分母用 scalar()、and 用 on()）：左侧 sum by (dim)
+      # 的标签集是 {dim}，右侧 sum(...) 的标签集是空集。PromQL 的一对一向量匹配
+      # 要求两边标签集完全相同，否则该侧序列不会进入结果——不 scalar() 的话除法
+      # 会得到空向量、and 也匹配不上，整条规则永不触发（且 promtool check rules
+      # 查不出这类错）。scalar() 把分母压成标量、绕开向量匹配；and 用 on() 显式
+      # 只按空标签集匹配，两边都能对上。
+      #
+      # 阈值借自 PRD §9.5 的「误杀率」上限/目标，此处当作「拒绝率」的代理上限，
+      # 偏严（误杀 ⊆ 拒绝）。这是拒绝率，不是误杀率，不得对外声称误杀水平。
+      - alert: RatelimitRejectRatioHighByDim
+        expr: >-
+          (
+            sum by (dim) (rate(gw_ratelimit_rejected_total[5m]))
+            /
+            scalar(sum(rate(gw_requests_total[5m])))
+          ) > 0.001
+          and on()
+          (sum(increase(gw_requests_total[5m])) > 1000)
+        for: 30m
+        labels:
+          severity: P2
+          team: platform
+        annotations:
+          summary: '限流维度 {{ $labels.dim }} 单独拒绝率 {{ $value | humanizePercentage }}（§9.5 目标 0.1%）'
+          description: >-
+            单维度独立超过月度目标值，说明这一维的阈值（rpm / tpm / concurrency /
+            daily）对当前流量形态偏紧。先确认不是降级（gw_ratelimit_degraded_total
+            同维度在涨），再看该维度的配置是否与套餐档匹配。
+          runbook: 'docs/ops-runbook.md §8 容量与限流告警'
+
+      # ------------------------------------------------------- 容量与错误率
+      # 结算积压。本仓没有积压数量（条）的 gauge —— settle.Backlog 只在网关
+      # 内存里按秒缓存一个整数，超过 settle.BacklogThreshold = 5000 条才拒绝
+      # 新请求。因此这里告警的是「背压已经触发」这个可观测事实，而不是积压条数。
+      # 无埋点：结转积压条数；替代巡检：SELECT COUNT(*) FROM t_settle_task
+      # WHERE state='PENDING'（settle.Backlog 的同一个查询），> 5000 即积压。
+      - alert: SettleBacklogOverThreshold
+        expr: increase(gw_backpressure_rejected_total{tier="backlog"}[5m]) > 0
+        for: 0m
+        labels:
+          severity: P1
+          team: platform
+        annotations:
+          summary: '结算积压已越过 5000 条阈值，网关开始拒绝新请求'
+          description: >-
+            settle.BacklogThreshold = 5000 条 PENDING（不是秒）。
+            先确认 jobsd 的 P26 结算消费者是否存活（/readyz 的 settle 与
+            t_settle_task 的 PENDING 计数），再确认上游结算是否整体变慢。
+          runbook: 'docs/ops-runbook.md §8 容量与限流告警'
+
+      # 平台侧错误率。分子按 PRD §9.3 的 8 条平台白名单码，不把上游 5xx 算进来：
+      # 否则上游抖动会冒充平台故障，或反过来被平台故障掩盖。
+      - alert: PlatformErrorRateHigh
+        expr: >-
+          (
+            sum(rate(gw_requests_total{err_code=~"rate_limiter_unavailable|config_unavailable|auth_unavailable|settlement_unavailable|backpressure_rejected|backpressure_stream_rejected|internal_error|convert_failed"}[5m]))
+            /
+            sum(rate(gw_requests_total[5m]))
+          ) > 0.01
+          and
+          sum(increase(gw_requests_total[5m])) > 100
+        for: 5m
+        labels:
+          severity: P1
+          team: platform
+        annotations:
+          summary: '平台侧错误率 {{ $value | humanizePercentage }}（阈值 1%）'
+          description: >-
+            分子 = PRD §9.3 的 8 条平台白名单码，分母 = 全部请求（含 429/402）。
+            按 err_code 排序先修占比最高的那条码；样本 < 100 次时不断言（and 条件）。
+          runbook: 'docs/ops-runbook.md §8 容量与限流告警'
+
+      # 延迟。120s = 非流式客户端超时预算，超了说明请求注定失败（TDS §5.3）。
+      - alert: GatewayLatencyP99High
+        expr: >-
+          histogram_quantile(0.99,
+            sum by (le) (rate(gw_request_duration_seconds_bucket[5m]))
+          ) > 120
+        for: 10m
+        labels:
+          severity: P2
+          team: platform
+        annotations:
+          summary: '网关 P99 延迟 {{ $value | printf "%.1f" }}s（阈值 120s）'
+          description: >-
+            120s 是非流式硬上限：P99 触到它就意味着至少 1% 的请求在客户端侧已经超时。
+            先看 gw_upstream_attempts_total 的失败分类与 gw_circuit_state，
+            再看是否单渠道劣化（按 channel_id 拆分）。
+          runbook: 'docs/ops-runbook.md §8 容量与限流告警'
+
+      # 熔断。1=OPEN。
+      - alert: CircuitBreakerOpen
+        expr: max by (channel_id) (gw_circuit_state) == 1
+        for: 2m
+        labels:
+          severity: P2
+          team: platform
+        annotations:
+          summary: '渠道 {{ $labels.channel_id }} 熔断 OPEN 超过 2 分钟'
+          description: >-
+            OPEN 表示该渠道连续失败已被摘除。单渠道 OPEN 时看 t_upstream_attempt
+            的 error_class（超时 / 5xx / 4xx）；全部渠道 OPEN 时按「上游整体不可用」
+            处理，不要在网关侧反复重启。
+          runbook: 'docs/ops-runbook.md §8 容量与限流告警'
+
+      # Redis 不可用导致限流 fail-close（503 rate_limiter_unavailable）。
+      # 任何一次都告警：它既是可用性分子，也意味着那一刻起所有请求 503。
+      - alert: RatelimitUnavailable
+        expr: increase(gw_ratelimit_unavailable_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: P1
+          team: platform
+        annotations:
+          summary: '限流 Redis 不可用，请求按 fail-close 拒绝（dim={{ $labels.dim }}）'
+          description: >-
+            PRD §9.8 / T22 §4 第 5 条：资金相关维度必须 fail-close，不得放行。
+            确认 Redis 连通性与 CONFIG GET maxmemory-policy，恢复后限流自动回到
+            正常态（见 docs/degradation.md「恢复」一节）。
+          runbook: 'docs/ops-runbook.md §8 容量与限流告警'
+
+      # -------------------------------------------------- SLA 工单超时（无埋点）
+      # 无埋点：t_ticket 的首响超时没有导出成指标。目前唯一可读的出口是后台总览
+      # 接口 GET /api/admin/overview 的 alerts.sla_overdue 字段
+      # （internal/control/ops/overview.go：state='OPEN' AND first_responded_at IS NULL
+      # AND first_response_due_at < now 的计数）。
+      # 替代巡检：值班每 2 小时查一次该接口；若要把「超时」做成告警，需要先在
+      # jobsd 侧加一个 gauge（复用上面那条 SQL），本卡不擅自扩指标清单。
+      # 正式规则（埋点落地后取消注释）：
+      #
+      # - alert: TicketSLAFirstResponseOverdue
+      #   expr: gw_ticket_sla_overdue > 0
+      #   for: 0m
+      #   labels:
+      #     severity: P1
+      #     team: support
+      #   annotations:
+      #     summary: '工单首响超时 {{ $value }} 条'
+      #     description: 'PRD §9.2 承诺首次响应 ≤ 4 小时。'
+      #     runbook: 'docs/ops-runbook.md §8 容量与限流告警'
