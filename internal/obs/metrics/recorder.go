@@ -530,7 +530,6 @@ var (
 	// whether to look at MySQL or at the audit trail.
 	orderAutoCloseFailureStages = labelSet("scan", "db", "audit")
 
-
 	settleFallbackReasons = labelSet("no_usage", "disconnect")
 
 	strategyKinds = labelSet(

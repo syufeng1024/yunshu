@@ -131,14 +131,14 @@ func TestG23FailureUsageLandsInDB(t *testing.T) {
 	}
 
 	var (
-		httpStatus            int
-		bizCode, result       string
-		failStage, failOwner  string
-		usageSource           string
-		prehold, consumed     int64
-		recharge, bonus       int64
-		refunded, attempts    int64
-		tokensIn, tokensOut   int64
+		httpStatus           int
+		bizCode, result      string
+		failStage, failOwner string
+		usageSource          string
+		prehold, consumed    int64
+		recharge, bonus      int64
+		refunded, attempts   int64
+		tokensIn, tokensOut  int64
 	)
 	err := testDB.QueryRowContext(t.Context(), `
 		SELECT http_status, biz_code, result, fail_stage, fail_owner, usage_source,
