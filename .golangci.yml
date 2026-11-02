@@ -2,16 +2,20 @@
 # hard-constraint scans in scripts/lint.sh; golangci-lint adds the two
 # high-signal vet-class checks without turning an existing style backlog into
 # a red build. Widen deliberately, one linter at a time.
+#
+# v2 config (golangci-lint v2.13.0): version must be "2"; disable-all became
+# default:none; issues.exclude-dirs moved to linters.exclusions.paths.
+version: "2"
+
 run:
   timeout: 5m
 
 linters:
-  disable-all: true
+  default: none
   enable:
     - govet
     - ineffassign
-
-issues:
-  exclude-dirs:
-    - web
-    - relaykit
+  exclusions:
+    paths:
+      - web
+      - relaykit
