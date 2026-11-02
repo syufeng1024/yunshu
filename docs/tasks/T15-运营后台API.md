@@ -159,7 +159,7 @@ F 覆盖: F14-1..6、F16-1..7、F17-1..3 → 用例名
 
 **`admin.read` 是本次新增**（E-31）：后台读接口若复用 `model.read`，`PERSONAL` 就能读到 `cost_*` 成本价与渠道 `base_url`，违反 B-48。已实测全部 49 条 `/api/admin/*` 路由对 `PERSONAL` 全 403 `permission_denied`（`server_authz_test.go`，49 个子测试）。
 
-**「10 个角色」是文档笔误**（E-30）：PRD §6.3、TDS 1209 行、openapi `UserRole` 均只有 4 个角色。按 4 个实现，未编造角色名。
+**「10 个角色」是文档笔误**（E-30）：TDS 1209 行与 openapi `UserRole` 均只有 4 个角色；PRD §6.3 的角色列只列客户侧「个人用户」，四角色枚举不在该节（见 E-30b）。按 4 个实现，未编造角色名。
 
 #### 权限点按资源作用域拆分（2026-11-02 修复越权读）
 
