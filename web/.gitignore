@@ -1,0 +1,5 @@
+# Vitest cache, pinned inside the repo by vitest.config.ts (BACKLOG G19).
+# Ignored here so a test run never leaves untracked files behind and
+# `git add -A` cannot commit them.
+.vitest-cache/
+.vitest-tmp/
