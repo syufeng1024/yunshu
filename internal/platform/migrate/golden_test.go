@@ -11,7 +11,6 @@ package migrate
 // 硬编码版本列表：新增迁移而忘了重生成清单同样失败，这是预期行为。
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"strings"
@@ -20,47 +19,16 @@ import (
 
 const checksumGoldenFile = "checksums.golden"
 
-// readChecksumGolden 解析 "<version> <sha256>" 行，忽略 # 注释与空行。
-// 重复版本或乱序同样视为清单损坏，避免重生成后出现难以阅读的 diff。
+// readChecksumGolden 读取磁盘上的清单并解析。
+// 解析逻辑只保留一份（golden.go 的 ParseChecksumGolden），测试与镜像内的
+// `migrate checksum --verify` 共用，否则两边对“清单是否损坏”的判断会漂移。
 func readChecksumGolden(path string) (map[string]string, []string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("打开 %s 失败: %w", path, err)
 	}
 	defer f.Close()
-
-	golden := make(map[string]string)
-	var order []string
-	sc := bufio.NewScanner(f)
-	for lineNo := 1; sc.Scan(); lineNo++ {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) != 2 {
-			return nil, nil, fmt.Errorf("%s 第 %d 行格式不是 \"<version> <sha256>\": %q", path, lineNo, line)
-		}
-		version, checksum := fields[0], fields[1]
-		if _, exists := golden[version]; exists {
-			return nil, nil, fmt.Errorf("%s 第 %d 行版本 %s 重复", path, lineNo, version)
-		}
-		if len(version) != 4 || len(checksum) != 64 {
-			return nil, nil, fmt.Errorf("%s 第 %d 行版本或 sha256 长度不合法: %q", path, lineNo, line)
-		}
-		if len(order) > 0 && version <= order[len(order)-1] {
-			return nil, nil, fmt.Errorf("%s 第 %d 行版本 %s 未按升序排列（前一条 %s）", path, lineNo, version, order[len(order)-1])
-		}
-		golden[version] = checksum
-		order = append(order, version)
-	}
-	if err := sc.Err(); err != nil {
-		return nil, nil, fmt.Errorf("读取 %s 失败: %w", path, err)
-	}
-	if len(order) == 0 {
-		return nil, nil, fmt.Errorf("%s 中没有任何清单行", path)
-	}
-	return golden, order, nil
+	return ParseChecksumGolden(f, path)
 }
 
 func TestEmbeddedMigrationsMatchGoldenChecksums(t *testing.T) {
@@ -101,6 +69,59 @@ func TestEmbeddedMigrationsMatchGoldenChecksums(t *testing.T) {
 			t.Errorf("%s 列出的版本 %s 在 embedded 迁移中不存在。\n"+
 				"删除或改名迁移文件后也要重生成清单：bash scripts/gen-migration-checksums.sh",
 				checksumGoldenFile, version)
+		}
+	}
+}
+
+// VerifyEmbedded 是镜像内的守卫（release.yml 在 Build base image 之后执行
+// `migrate checksum --verify`），它只读编译进二进制的 SQL 与清单。这里必须证明
+// 它对当前仓库是干净的：否则那一步会在每次发布时误报。
+func TestVerifyEmbeddedReportsNoProblem(t *testing.T) {
+	migrations, err := LoadEmbedded()
+	if err != nil {
+		t.Fatalf("加载 embedded 迁移失败: %v", err)
+	}
+	checked, problems, err := VerifyEmbedded()
+	if err != nil {
+		t.Fatalf("VerifyEmbedded 失败: %v", err)
+	}
+	if len(problems) != 0 {
+		t.Fatalf("VerifyEmbedded 报告 %d 个问题，期望 0：%v", len(problems), problems)
+	}
+	if checked != len(migrations) {
+		t.Fatalf("VerifyEmbedded 校验了 %d 个迁移，期望 %d", checked, len(migrations))
+	}
+}
+
+// CompareChecksums 是镜像守卫的判定核心，用自造数据覆盖三类问题：清单缺行、
+// 字节被改、清单多出已不存在的版本；干净输入必须零告警。
+func TestCompareChecksumsReportsEveryKind(t *testing.T) {
+	migrations := []Migration{
+		{Version: "0001", UpFile: "0001_a.sql", Checksum: "11"},
+		{Version: "0002", UpFile: "0002_b.sql", Checksum: "22"},
+		{Version: "0003", UpFile: "0003_c.sql", Checksum: "33"},
+	}
+	clean := map[string]string{"0001": "11", "0002": "22", "0003": "33"}
+	if problems := CompareChecksums(migrations, clean, []string{"0001", "0002", "0003"}); len(problems) != 0 {
+		t.Fatalf("干净输入的告警 = %v，期望空", problems)
+	}
+
+	broken := map[string]string{"0001": "11", "0002": "XX", "0004": "44"}
+	problems := CompareChecksums(migrations, broken, []string{"0001", "0002", "0004"})
+	if len(problems) != 3 {
+		t.Fatalf("告警数量 = %d，期望 3（0002 字节不符 / 0003 缺清单行 / 0004 多出）: %v",
+			len(problems), problems)
+	}
+	for _, want := range []string{"0002", "0003", "0004"} {
+		found := false
+		for _, p := range problems {
+			if strings.Contains(p, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("告警里没有覆盖版本 %s: %v", want, problems)
 		}
 	}
 }

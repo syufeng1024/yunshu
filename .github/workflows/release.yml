@@ -53,6 +53,16 @@ jobs:
             --build-arg VCS_REF="${GITHUB_SHA}" \
             .
 
+      # 镜像里的迁移 SQL 是构建期 go:embed 进去的字节，go test 只在源码树上
+      # 校验 checksums.golden，管不到镜像层。构建上下文的行尾/平台差异一旦改了
+      # .sql 字节，症状要到生产执行 migrate up 才出现，而那时库里已经有旧
+      # checksum 记录。这里用同一个二进制（运行时镜像只有二进制、没有 Go 工具链）
+      # 的 checksum 子命令比对 embed 的 SQL 与清单，不连库、不写盘。
+      - name: Verify embedded SQL checksums
+        run: |
+          docker run --rm --entrypoint /usr/local/bin/migrate \
+            "yunshu-app:${TAG}" checksum --verify
+
       - name: Build gatewayd
         run: |
           docker buildx build --load \
