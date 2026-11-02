@@ -625,6 +625,11 @@ func TestA8ConcurrencyDegradation(t *testing.T) {
 
 	client := newTestClient(t)
 	degrader := NewDegrader(client, clock, "n1", ModeConcurrencyOnly, 0)
+	// Replicas() is cached after G31; seed it from the nodes written above so
+	// the divisor is 3 instead of the floor value of 1.
+	if err := degrader.RefreshReplicas(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	metrics := &captureMetrics{}
 	limiter := New(client, clock, degrader, metrics, nil)
 	limits := Limits{RPM: 100, TPM: 1_000_000, Concurrency: 10, DailyQuotaMicro: 1_000_000, DailyEnabled: true}

@@ -31,28 +31,21 @@ const EnvDegradeMode = "GW_RATELIMIT_DEGRADE_MODE"
 
 // DefaultMode is what an unset EnvDegradeMode means: off.
 //
-// Three things to know before changing it back:
+// G31 made the concurrency fallback reachable: Replicas() is now a cached
+// last-known value refreshed in the background, so concurrency_only no longer
+// pays two extra Redis reads per request or returns 503 just because the
+// divisor cannot be read. The default still stays off for two reasons:
 //
-//  1. The switch works. E-12 asked for the mode to be read from a startup
-//     parameter instead of being hardcoded; that is done (EnvDegradeMode), and an
-//     unknown value stops the process rather than being ignored.
-//  2. concurrency_only buys nothing while Replicas() reads Redis. The degraded
-//     path starts with Degrader.Replicas() — ZREMRANGEBYSCORE + ZCARD — and that
-//     is exactly the call that fails when Redis is down, so a Redis outage still
-//     ends in ErrUnavailable (503). Turning it on by default therefore costs
-//     two extra Redis reads on every request (measured 0.71-0.91 ms/op -> 1.96-2.47
-//     ms/op, internal/ratelimit/degrade_bench_test.go) and returns no availability
-//     gain. It also rewrites the meaning of gw_ratelimit_degraded_total{dim=
-//     "concurrency"}, which would then count admitted requests instead of outages.
-//  3. Flip it back to concurrency_only once Replicas() no longer needs Redis —
-//     cache the last known replica count at startup and refresh it in the
-//     background (BACKLOG G31). At that point the matrix in docs/degradation.md
-//     becomes reachable and TestDegradedModeIsUnreachableWhenRedisIsDown should
-//     assert the 429 branch instead of ErrUnavailable.
+//  1. concurrency_only relaxes only the concurrency dimension; RPM/TPM/daily
+//     still fail closed, so the availability gain is partial by design.
+//  2. Turning it on rewrites the meaning of gw_ratelimit_degraded_total{dim=
+//     "concurrency"}, which would then count admitted requests instead of
+//     outages, blurring the outage signal.
 //
-// TDS :3073 lists concurrency_only as V1's only value; that statement assumes
-// the path works. Until G31 lands, this default makes the deviation explicit
-// instead of shipping a default that only has a cost (see errata E-38).
+// The switch is read from EnvDegradeMode; an unknown value stops the process
+// rather than being ignored. TDS :3073 lists concurrency_only as V1's only
+// value; that statement assumes the path works. Until an operator explicitly
+// opts in, this default keeps the deviation explicit (see errata E-38).
 const DefaultMode = ModeOff
 
 // ModeFromEnv reads EnvDegradeMode. Empty means DefaultMode; anything else must
@@ -112,6 +105,10 @@ type Degrader struct {
 	mode   Mode
 	local  *localTable
 	seen   *seenSet
+	// replicas caches the last known K18' member count. It is read on the hot
+	// path (no Redis) and refreshed by RefreshReplicas in the heartbeat loop,
+	// so a Redis outage keeps the last divisor instead of blocking admission.
+	replicas atomic.Int64
 }
 
 // NewDegrader builds a degrader. nodeID must be stable for the process
@@ -121,7 +118,7 @@ func NewDegrader(client *redisx.Client, clock *redisx.Clock, nodeID string, mode
 	if maxLocalKeys <= 0 {
 		maxLocalKeys = 200_000
 	}
-	return &Degrader{
+	d := &Degrader{
 		client: client,
 		clock:  clock,
 		nodeID: nodeID,
@@ -129,29 +126,49 @@ func NewDegrader(client *redisx.Client, clock *redisx.Clock, nodeID string, mode
 		local:  newLocalTable(maxLocalKeys),
 		seen:   newSeenSet(maxLocalKeys),
 	}
+	// Floor 1: before the first refresh the divisor assumes a single replica,
+	// which errs toward admitting more per node (the safe direction for the
+	// concurrency dimension) rather than rejecting everything.
+	d.replicas.Store(1)
+	return d
 }
 
 // Enabled reports whether concurrency is locally counted.
 func (d *Degrader) Enabled() bool { return d != nil && d.mode == ModeConcurrencyOnly }
 
-// Replicas cleans K18' and returns the live replica count, never below one
-// (this process counts even before its first heartbeat).
-func (d *Degrader) Replicas(ctx context.Context) (int64, error) {
+// Replicas returns the cached replica count, never below one. It never touches
+// Redis, so the degraded concurrency path stays reachable during an outage:
+// RPM/TPM/daily still fail-close in callAcquire, but the local divisor no
+// longer depends on K18' being up.
+func (d *Degrader) Replicas() int64 {
+	n := d.replicas.Load()
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
+// RefreshReplicas cleans stale members from K18' and stores the live replica
+// count. On success the cache is updated; on failure the previous value is kept
+// and the error is returned for the caller to log (the request path does not
+// call this directly).
+func (d *Degrader) RefreshReplicas(ctx context.Context) error {
 	cctx, cancel := d.client.CommandContext(ctx)
 	defer cancel()
 	now := d.clock.NowMS()
 	if err := d.client.Raw().ZRemRangeByScore(cctx, redisx.NodeSetKey(),
 		"-inf", strconv.FormatInt(now-nodeStaleMS, 10)).Err(); err != nil {
-		return 0, err
+		return err
 	}
 	n, err := d.client.Raw().ZCard(cctx, redisx.NodeSetKey()).Result()
 	if err != nil {
-		return 0, err
+		return err
 	}
 	if n < 1 {
 		n = 1
 	}
-	return n, nil
+	d.replicas.Store(n)
+	return nil
 }
 
 // Heartbeat writes this node's K18' member with a millisecond score.
@@ -162,13 +179,15 @@ func (d *Degrader) Heartbeat(ctx context.Context) error {
 		d.clock.NowMS(), d.nodeID).Err()
 }
 
-// StartHeartbeat runs Heartbeat now and every 20s until stopped.
+// StartHeartbeat registers this node and refreshes the replica divisor now,
+// then repeats both every 20s until the returned stop function is called.
 func (d *Degrader) StartHeartbeat(ctx context.Context) func() {
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		_ = d.Heartbeat(runCtx)
+		_ = d.RefreshReplicas(runCtx)
 		ticker := time.NewTicker(NodeHeartbeatInterval)
 		defer ticker.Stop()
 		for {
@@ -177,6 +196,7 @@ func (d *Degrader) StartHeartbeat(ctx context.Context) func() {
 				return
 			case <-ticker.C:
 				_ = d.Heartbeat(runCtx)
+				_ = d.RefreshReplicas(runCtx)
 			}
 		}
 	}()

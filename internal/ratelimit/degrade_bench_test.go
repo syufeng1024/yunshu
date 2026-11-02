@@ -7,17 +7,18 @@ import (
 	"yunshu.dev/core/internal/redisx/redistest"
 )
 
-// This benchmark exists because the degradation mode is now a startup choice
-// (GW_RATELIMIT_DEGRADE_MODE, default concurrency_only). In concurrency_only
-// mode every Acquire goes through acquireDegraded, which spends two extra Redis
-// reads on Degrader.Replicas before the usual Lua call — the cost is part of the
-// decision, so it should be measurable rather than guessed:
+// This benchmark exists because the degradation mode is a startup choice
+// (GW_RATELIMIT_DEGRADE_MODE, default off). Before G31, concurrency_only spent
+// two extra Redis reads per request on Degrader.Replicas; after G31 the divisor
+// is cached and only the in-process local counter adds overhead, so the two
+// modes should converge. The cost is part of the decision, so it should be
+// measurable rather than guessed:
 //
 //	go test ./internal/ratelimit/ -run XXX -bench BenchmarkAcquireMode -benchtime=500x
 //
-// Local result (2026-11-02, Redis 127.0.0.1): off ≈ 0.71 ms/op,
+// Pre-G31 local result (2026-11-02, Redis 127.0.0.1): off ≈ 0.71 ms/op,
 // concurrency_only ≈ 2.47 ms/op — about 1.8 ms and two round trips more per
-// request.
+// request. G31 removes those two round trips from the request path.
 func benchAcquire(b *testing.B, mode Mode, keyID int64) {
 	b.Helper()
 	raw := redistest.Client()

@@ -8,85 +8,102 @@ import (
 	"yunshu.dev/core/internal/redisx"
 )
 
-// What this file pins: the degraded path is currently UNREACHABLE while Redis is
-// down, so concurrency_only cannot admit anything during an outage. That is a
-// statement about today's implementation, not about the spec — and it is the
-// baseline G31 has to change.
+// TestDegradedModeRejectsLocallyWhenRedisIsDown is the G31 acceptance baseline.
 //
-// The judgement order in the code is why, and it is worth writing down because
-// the matrix alone does not show it:
-//
-//  1. Acquire checks degrader.Enabled() first and, when the mode is
-//     concurrency_only, goes straight to acquireDegraded — every request, not
-//     only the ones that already failed.
-//  2. acquireDegraded's first act is Degrader.Replicas(), which itself reads
-//     K18' (ZREMRANGEBYSCORE + ZCARD). With Redis down this fails before any
-//     local counter is touched: unavailable("concurrency") + ErrUnavailable.
-//  3. Even if Replicas returned, step 3 of acquireDegraded calls callAcquire,
-//     which still reads the RPM / TPM / daily keys — the same ErrUnavailable.
-//
-// Step 2 is the defect behind BACKLOG G31: the fallback meant to survive a Redis
-// outage needs Redis to compute "nominal concurrency ÷ replicas". That is why
-// DefaultMode is off (errata E-38) — enabling it by default would cost two extra
-// Redis reads per request and still return 503.
-//
-// When G31 lands (replica count cached from the last known value), the last hop
-// of this test must change: a Redis outage in concurrency_only mode should then
-// be rejected by the LOCAL counter — 429 concurrency_limit_exceeded — instead of
-// ErrUnavailable. Keep the "Allowed must never be true" assertion in both worlds.
-func TestDegradedModeIsUnreachableWhenRedisIsDown(t *testing.T) {
-	bad := redisx.New(redisx.Options{
-		Addr:           "127.0.0.1:1",
-		DB:             15,
-		DialTimeout:    50 * time.Millisecond,
-		CommandTimeout: 50 * time.Millisecond,
-		LuaTimeout:     100 * time.Millisecond,
-	})
-	defer bad.Close()
-
-	// The same dead client is used for the degrader: Replicas() needs Redis, so
-	// this reproduces the real outage rather than a half-broken one.
-	degrader := NewDegrader(bad, redisx.NewStaticClock(baseTime), "n1", ModeConcurrencyOnly, 0)
-	if !degrader.Enabled() {
-		t.Fatal("degrader is not enabled; the mode was not wired through")
+// Before G31, acquireDegraded's first act was Degrader.Replicas(ctx), a
+// ZREMRANGEBYSCORE + ZCARD pair that failed as soon as Redis went down — so the
+// concurrency fallback was unreachable and every outage ended in
+// ErrUnavailable (503). After G31 the replica count is a cached last-known
+// value: the concurrency dimension reaches the node-local counter and rejects
+// with 429 once it is full, while the Redis-backed RPM/TPM/daily check still
+// fails closed when the local counter is not full.
+func TestDegradedModeRejectsLocallyWhenRedisIsDown(t *testing.T) {
+	dead := func() *redisx.Client {
+		return redisx.New(redisx.Options{
+			Addr:           "127.0.0.1:1",
+			DB:             15,
+			DialTimeout:    50 * time.Millisecond,
+			CommandTimeout: 50 * time.Millisecond,
+			LuaTimeout:     100 * time.Millisecond,
+		})
 	}
-	metrics := &captureMetrics{}
-	limiter := New(bad, redisx.NewStaticClock(baseTime), degrader, metrics, nil)
 
-	limits := Limits{RPM: 1000, TPM: 1_000_000, Concurrency: 10, DailyQuotaMicro: 1_000_000, DailyEnabled: true}
-	for i := 0; i < 3; i++ {
+	t.Run("local concurrency full yields 429", func(t *testing.T) {
+		bad := dead()
+		defer bad.Close()
+		degrader := NewDegrader(bad, redisx.NewStaticClock(baseTime), "n1", ModeConcurrencyOnly, 0)
+		if !degrader.Enabled() {
+			t.Fatal("degrader is not enabled; the mode was not wired through")
+		}
+		// Seed the cached divisor as if a prior RefreshReplicas succeeded while
+		// Redis was up. Replicas() must serve it without touching Redis now.
+		degrader.replicas.Store(3)
+
+		metrics := &captureMetrics{}
+		limiter := New(bad, redisx.NewStaticClock(baseTime), degrader, metrics, nil)
+
+		limits := Limits{RPM: 1000, TPM: 1_000_000, Concurrency: 10, DailyQuotaMicro: 1_000_000, DailyEnabled: true}
+		perKey := PerKeyLocalLimit(limits.Concurrency, degrader.Replicas())
+
+		// Fill the local counter to the ceiling directly: each full Acquire
+		// would pass TryAcquire and then fail the Redis-backed check, releasing
+		// its local slot again.
+		for i := int64(0); i < perKey; i++ {
+			if !degrader.TryAcquire(70, perKey) {
+				t.Fatalf("failed to fill local counter at slot %d", i)
+			}
+		}
+
 		verdict, err := limiter.Acquire(t.Context(), AcquireInput{
-			KeyID: 70, UserID: 70, RequestID: "degraded-down-" + string(rune('a'+i)),
+			KeyID: 70, UserID: 70, RequestID: "degraded-down-full",
 			EstTokens: 10, EstMicro: 1, Limits: limits,
 		})
 		// Allowed is the only thing that must never happen: it would mean an
 		// outage admitted traffic past a fail-close dimension.
 		if verdict.Allowed {
-			t.Fatalf("request %d admitted while Redis is down in concurrency_only mode: verdict=%+v err=%v", i, verdict, err)
+			t.Fatalf("admitted while Redis is down and local counter is full: verdict=%+v err=%v", verdict, err)
 		}
-		if err == nil {
-			// A rejection without an error is acceptable only if it carries the
-			// concurrency code — i.e. the local counter refused it.
-			if verdict.Code != CodeConcurrency {
-				t.Fatalf("request %d rejected with code %q and no error; want ErrUnavailable or %s",
-					i, verdict.Code, CodeConcurrency)
-			}
-			continue
+		if err != nil {
+			t.Fatalf("err = %v; want nil (local concurrency rejection, not fail-close)", err)
+		}
+		if verdict.Code != CodeConcurrency {
+			t.Fatalf("code = %q; want %s", verdict.Code, CodeConcurrency)
+		}
+		if !hasMetric(metrics.rejected, "concurrency") {
+			t.Fatalf("rejected dims = %v; want concurrency", metrics.rejected)
+		}
+	})
+
+	t.Run("local concurrency not full still fails close", func(t *testing.T) {
+		bad := dead()
+		defer bad.Close()
+		degrader := NewDegrader(bad, redisx.NewStaticClock(baseTime), "n1", ModeConcurrencyOnly, 0)
+		degrader.replicas.Store(3)
+
+		metrics := &captureMetrics{}
+		limiter := New(bad, redisx.NewStaticClock(baseTime), degrader, metrics, nil)
+
+		limits := Limits{RPM: 1000, TPM: 1_000_000, Concurrency: 10, DailyQuotaMicro: 1_000_000, DailyEnabled: true}
+		verdict, err := limiter.Acquire(t.Context(), AcquireInput{
+			KeyID: 71, UserID: 71, RequestID: "degraded-down-open",
+			EstTokens: 10, EstMicro: 1, Limits: limits,
+		})
+		if verdict.Allowed {
+			t.Fatalf("admitted while Redis is down on the RPM/TPM/daily dimensions: verdict=%+v", verdict)
 		}
 		if !errors.Is(err, ErrUnavailable) {
-			// Today the outage is caught before the local counter (see the file
-			// comment). A 429 here would mean G31 landed; update this branch
-			// deliberately rather than by accident.
-			t.Fatalf("request %d error = %v; want ErrUnavailable while Replicas() still needs Redis", i, err)
+			t.Fatalf("err = %v; want ErrUnavailable (RPM/TPM/daily fail-close)", err)
+		}
+	})
+}
+
+func hasMetric(dims []string, want string) bool {
+	for _, d := range dims {
+		if d == want {
+			return true
 		}
 	}
-
-	// The fail-close must be attributed: without the metric an operator cannot
-	// tell "rejected by policy" from "rejected because Redis is gone".
-	if len(metrics.unavailable) == 0 {
-		t.Fatal("no unavailable metric recorded; the fail-close branch was not the one taken")
-	}
-	t.Logf("degraded+down: unavailable dims=%v rejected=%v", metrics.unavailable, metrics.rejected)
+	return false
 }
 
 // ModeFromEnv is the startup contract: unset means TDS §2.3's single V1 value,

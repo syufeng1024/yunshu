@@ -202,13 +202,10 @@ func (l *Limiter) Acquire(ctx context.Context, in AcquireInput) (Verdict, error)
 }
 
 func (l *Limiter) acquireDegraded(ctx context.Context, in AcquireInput, nowMS, minEpoch int64, day string) (Verdict, error) {
-	replicas, err := l.degrader.Replicas(ctx)
-	if err != nil {
-		// Even the divisor needs Redis. K1/K2/K4 are fail-close anyway, so
-		// there is no useful partial admission here.
-		l.unavailable(ctx, "concurrency")
-		return Verdict{}, fmt.Errorf("%w: replicas: %v", ErrUnavailable, err)
-	}
+	// The divisor is a cached last-known value refreshed in the background, so
+	// the concurrency dimension stays reachable while Redis is down. The
+	// Redis-backed RPM/TPM/daily check in callAcquire below still fails closed.
+	replicas := l.degrader.Replicas()
 	perKey := PerKeyLocalLimit(in.Limits.Concurrency, replicas)
 	if !l.degrader.TryAcquire(in.KeyID, perKey) {
 		l.rejected("concurrency")

@@ -21,7 +21,7 @@
 | **账户日额度（K4）** | 全局精确 | **拒绝** 503 `rate_limiter_unavailable` | **拒绝** 503 `rate_limiter_unavailable` |
 | **余额预扣（P10，非四维）** | 正常预扣 | **拒绝** 503 `settlement_unavailable` | **拒绝** 503 `settlement_unavailable` |
 
-> **实现现状注记（2026-11-02）**：表中「Redis 不可用 → 并发节点内计数」这一格**当前实现为 503**，与 TDS 不符——降级路径的第一步 `Degrader.Replicas()` 需要 Redis 才能算出「名义值 ÷ 副本数」，而它恰恰是 Redis 不可用时最先失败的一步。因此 `GW_RATELIMIT_DEGRADE_MODE` **默认 `off`**：开启它只会多两次 Redis 读、却仍返回 503。矩阵本身不改（它是规格），修复路径见 §1.1 与 BACKLOG G31。
+> **实现现状注记（G31 已修）**：表中「Redis 不可用 → 并发节点内计数」这一格已可达——`Degrader.Replicas()` 拆成「热路径读缓存」+「周期刷新」，Redis 不可用时用缓存副本数算本地上限：本地满 → 429 `concurrency_limit_exceeded`、未满 → 503 `rate_limiter_unavailable`；RPM/TPM/日额度 fail-close 不变。`GW_RATELIMIT_DEGRADE_MODE` 仍**默认 `off`**，详见 §1.1。
 
 矩阵的读法：
 
@@ -36,20 +36,20 @@
 降级姿态由启动参数 `GW_RATELIMIT_DEGRADE_MODE` 决定（`ratelimit.ModeFromEnv`），取值 `off` / `concurrency_only`，**其它值启动失败**（不静默回落），启动日志打印 `ratelimit degrade mode=<姿态>`。在此之前该值是硬编码的 `ModeOff`，连启动参数都没读，属于 E-12 裁定「T07 从启动参数读取」未落实。
 
 **② 默认 `off`，理由与代价**
-TDS :3073 写「V1 唯一取值 `concurrency_only`」，但那个说法假设这条路径能工作。实测它**不能**：`acquireDegraded` 第一步就是 `Degrader.Replicas()`（`internal/ratelimit/degrade.go:121`），要靠 `ZREMRANGEBYSCORE` + `ZCARD` 读 K18' 才能算出「名义值 ÷ 副本数」——Redis 不可用时这一步先失败，仍然返回 503。所以默认开启的净效果是：**每请求多两次 Redis 读**（实测 `0.71~0.91 ms/op → 1.96~2.47 ms/op`，`internal/ratelimit/degrade_bench_test.go`）、限流开销 2~3.5×，**可用性收益为零**；同时 `gw_ratelimit_degraded_total{dim="concurrency"}` 会从「降级事件」退化成「放行次数」，降级信号反而更模糊。默认 `off` 把这条偏差显式化（errata E-38）。
+TDS :3073 写「V1 唯一取值 `concurrency_only`」。G31 修好后这条路径已可达（§③），但默认仍 `off`，理由有二：(1) `concurrency_only` 只放宽并发一维，RPM/TPM/日额度仍 fail-close，可用性收益本就是局部的；(2) 开启会把 `gw_ratelimit_degraded_total{dim="concurrency"}` 的语义从「降级事件」改成「放行次数」，降级信号反而更模糊。
 默认 `off` 下该计数器**只反映真实降级**，不再被放行路径污染（有用例 `TestDegradedCounterStaysQuietInOffMode` 钉住）。
 
-**③ 降级路径当前不可达（见 BACKLOG G31）**
-因为 `Replicas()` 依赖 Redis，`concurrency_only` 在 Redis 故障时走不通：`TestDegradedModeIsUnreachableWhenRedisIsDown` 断言「Redis 指向 127.0.0.1:1 时 `Allowed` 永不出现、错误恒为 `ErrUnavailable`」，这就是 G31 的验收基线。修法是把副本数改为「启动时读一次 + 周期刷新 + 缓存上次已知值」，让 Redis 不可用时仍能算本地上限；届时该用例应改为断言 **429 `concurrency_limit_exceeded`** 分支。
+**③ 已修（G31）：副本数改为缓存 + 周期刷新**
+`Replicas()` 已拆成「热路径读缓存」+「后台 `RefreshReplicas`」，Redis 不可用时并发维度用上次已知值算本地上限，不再因为读不到 K18' 而直接不可达。RPM/TPM/日额度 fail-close 不变：Redis 完全不可用时仍是「本地满 → 429 `concurrency_limit_exceeded`、未满 → 503 `rate_limiter_unavailable`」。`TestDegradedModeRejectsLocallyWhenRedisIsDown` 钉住这两条分支。
 
 | 项 | 规范要求 | 本仓现状 |
 | :--- | :--- | :--- |
 | RPM / TPM / 日额度 | 任何模式下 fail-close | 满足：`callAcquire` 读三个维度的键，Redis 不可用即 `ErrUnavailable` → 503 `rate_limiter_unavailable` |
-| Redis 完全不可用不得放行 | 不得放行 | 满足（两种模式都是 503，见 ③） |
-| 并发维度降级为节点内计数 | `concurrency_only` 时放行 | **未达成**：路径不可达（③），默认 `off`；修复见 G31 |
+| Redis 完全不可用不得放行 | 不得放行 | 满足：`Allowed` 恒为 false；并发本地满 → 429，RPM/TPM/日额度与并发未满 → 503 |
+| 并发维度降级为节点内计数 | `concurrency_only` 时放行 | ⚠️ **已修（G31）**：副本数缓存 + 周期刷新，并发维度可达（本地满 → 429）；RPM/TPM/日额度仍 fail-close；默认仍 `off` |
 | 恢复状态机（3 次心跳 + `drain_window` 150s） | 自动切回 | **未自动化**：代码只有原语 `Degrader.ResetLocal()`，按 §4 人工执行 |
 
-**对值班的含义**：Redis 故障时**没有任何维度会放行**，四个维度全 503（`gw_ratelimit_unavailable_total` 是唯一可靠信号）。`docs/ops-runbook.md` §8 按这个前提写。
+**对值班的含义**：默认 `off` 下 Redis 故障时**没有任何维度会放行**，四个维度全 503（`gw_ratelimit_unavailable_total` 是可靠信号）。显式开启 `concurrency_only` 时，并发维度满会走 429 `concurrency_limit_exceeded`（见 `gw_ratelimit_rejected_total{dim="concurrency"}`），不计入 `unavailable_total`；其余三维（RPM/TPM/日额度）仍 503。`docs/ops-runbook.md` §8 按这个前提写。
 
 ---
 
