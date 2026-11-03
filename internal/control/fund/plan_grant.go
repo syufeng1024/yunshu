@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	"yunshu.dev/core/internal/apierr"
@@ -104,6 +105,20 @@ func (s *Service) applyPlanTx(ctx context.Context, tx *sql.Tx, userID, planID in
 		curDaily  sql.NullInt64
 	)
 	hasCurrent := false
+	// Deliberately **no** FOR UPDATE here (G33).
+	//
+	// Two different accounts buying at the same time used to deadlock on
+	// uk_rlp_scope_active: this statement finds no row for a fresh user, and
+	// under REPEATABLE READ a locking read that matches nothing takes a gap
+	// lock all the way to supremum. Two such transactions then hold the same
+	// gap and each waits for the other's INSERT intention — InnoDB rolls one
+	// back with 1213 and the buyer sees 500.
+	//
+	// The lock was never load-bearing: applyPlanTx already locks the t_user row
+	// (line 70) before touching the policy, so two grants for the *same* user
+	// are serialised there, and policy rows for *different* users cannot
+	// conflict. Reading the current policy inside that same transaction is
+	// enough; adding a second lock only widened the gap.
 	err = tx.QueryRowContext(ctx, `
 		SELECT source, rpm, tpm, concurrency_quota, daily_quota_micro
 		  FROM t_rate_limit_policy
@@ -111,8 +126,7 @@ func (s *Service) applyPlanTx(ctx context.Context, tx *sql.Tx, userID, planID in
 		   AND effective_from <= ?
 		   AND (effective_to IS NULL OR effective_to > ?)
 		 ORDER BY effective_from DESC, id DESC
-		 LIMIT 1
-		 FOR UPDATE`, userID, now, now).
+		 LIMIT 1`, userID, now, now).
 		Scan(&curSource, &curRPM, &curTPM, &curConc, &curDaily)
 	switch {
 	case err == nil:
@@ -172,6 +186,12 @@ func (s *Service) applyPlanTx(ctx context.Context, tx *sql.Tx, userID, planID in
 		quotaTo    time.Time
 	)
 	hasQuota := false
+	// No FOR UPDATE for the same reason as the read above (G33): a locking read
+	// that matches no QUOTA_APPLY row takes a supremum gap lock under REPEATABLE
+	// READ, and two concurrent buyers — different users, therefore no logical
+	// conflict — deadlock against each other's INSERT intention. The t_user row
+	// lock taken at line 70 already serialises everything that touches this
+	// user's policy rows.
 	err = tx.QueryRowContext(ctx, `
 		SELECT daily_quota_micro, effective_to
 		  FROM t_rate_limit_policy
@@ -180,8 +200,7 @@ func (s *Service) applyPlanTx(ctx context.Context, tx *sql.Tx, userID, planID in
 		   AND effective_from <= ?
 		   AND effective_to > ?
 		 ORDER BY effective_from DESC, id DESC
-		 LIMIT 1
-		 FOR UPDATE`, userID, now, now).
+		 LIMIT 1`, userID, now, now).
 		Scan(&quotaDaily, &quotaTo)
 	switch {
 	case err == nil:
@@ -197,14 +216,31 @@ func (s *Service) applyPlanTx(ctx context.Context, tx *sql.Tx, userID, planID in
 	// effective_from guard keeps future rows out of the close: without it a
 	// next-day QUOTA_APPLY row got effective_to = now < effective_from, a
 	// negative window that erased the approved increase.
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE t_rate_limit_policy SET effective_to = ?, updated_at = ?
-		  WHERE scope_type = 'USER' AND scope_id = ?
-		    AND effective_from <= ?
-		    AND (effective_to IS NULL OR effective_to > ?)`,
-		now, now, userID, now, now); err != nil {
+	//
+	// Two steps on purpose (G33). A single UPDATE filtering on
+	// uk_rlp_scope_active matched nothing for a fresh user, but InnoDB still
+	// locked the range it scanned — the tail of that index, including supremum.
+	// Two concurrent buyers then each held the supremum record lock and waited
+	// for the other's INSERT intention; InnoDB rolled one back with 1213 and
+	// that buyer got a 500. Selecting the ids with a plain read and closing them
+	// by primary key keeps the write off the secondary index entirely.
+	closeIDs, err := activePolicyIDs(ctx, tx, userID, now)
+	if err != nil {
 		s.logError(ctx, "fund_plan_grant_close_policy_failed: "+err.Error())
 		return planGrant{}, apierr.New(apierr.CodeInternalError)
+	}
+	if len(closeIDs) > 0 {
+		args := make([]any, 0, len(closeIDs)+2)
+		args = append(args, now, now)
+		for _, id := range closeIDs {
+			args = append(args, id)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE t_rate_limit_policy SET effective_to = ?, updated_at = ?
+			  WHERE id IN (`+policyPlaceholders(len(closeIDs))+`)`, args...); err != nil {
+			s.logError(ctx, "fund_plan_grant_close_policy_failed: "+err.Error())
+			return planGrant{}, apierr.New(apierr.CodeInternalError)
+		}
 	}
 
 	inserted := false
@@ -318,4 +354,40 @@ func errString(err error) string {
 		return "unknown"
 	}
 	return err.Error()
+}
+
+// activePolicyIDs lists the policy rows currently in force for one user. It is
+// a plain read: the caller already holds the t_user row lock, so this user's
+// policy rows cannot change under it.
+//
+// It exists because closing those rows with a single UPDATE on
+// uk_rlp_scope_active deadlocked concurrent buyers (G33); see the call site.
+func activePolicyIDs(ctx context.Context, tx *sql.Tx, userID int64, now time.Time) ([]int64, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id FROM t_rate_limit_policy
+		 WHERE scope_type = 'USER' AND scope_id = ?
+		   AND effective_from <= ?
+		   AND (effective_to IS NULL OR effective_to > ?)
+		 ORDER BY id`, userID, now, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close() //nolint:errcheck // read-only query
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// policyPlaceholders builds "?,?,?" for an IN list of n ids.
+func policyPlaceholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strings.Repeat("?,", n-1) + "?"
 }
