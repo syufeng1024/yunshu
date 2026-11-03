@@ -137,20 +137,3 @@ make ci           # 硬约束扫描（lint.sh + grep 断言）
 ## 部署状态
 
 代码质量已符合上线条件；发布配置（`VITE_API_BASE_URL` 生产注入等）按需求方决策暂缓。详见 `docs/tasks/delivery/go-live.md`。
-
----
-
-## 许可证
-
-本项目以 [GNU Affero General Public License v3.0](LICENSE) 发布，第三方声明见 [NOTICE](NOTICE)。
-
-这意味着：
-
-- 可以自由使用、修改、分发，包括商业用途；
-- 但**修改后分发、或以网络服务的形式提供**时，必须同样以 AGPL-3.0 开放源代码，
-  并向使用者提供获取完整源码的方式（AGPL 第 13 条）。
-
-源码获取：<https://github.com/syufeng1024/yunshu-api>。部署实例的页脚也提供同一入口，
-因此通过浏览器访问本站的用户可以直接拿到对应版本的源码。
-
-> 如果你在本地修改后对外提供服务而不公开源码，即违反本许可证，请不要这样做。

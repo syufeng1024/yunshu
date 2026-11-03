@@ -134,12 +134,6 @@ export const SITE_NAV: readonly NavItem[] = [
   { to: ROUTES.integrations, label: '工具集成', icon: 'plug' },
 ]
 
-/**
- * 源码地址。AGPL-3.0 第 13 条要求：通过网络与本服务交互的用户必须能拿到对应
- * 版本的源码。页脚固定展示这个入口，所以改仓库地址时只改这一处。
- */
-export const SOURCE_CODE_URL = 'https://github.com/syufeng1024/yunshu-api'
-
 export const CONSOLE_NAV_GROUPS: readonly NavGroup[] = [
   {
     title: '工作台',

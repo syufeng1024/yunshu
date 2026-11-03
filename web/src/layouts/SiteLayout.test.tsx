@@ -1,7 +1,7 @@
 import { render, screen, within } from '@testing-library/react'
 import { RouterProvider, createMemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { ROUTES, SOURCE_CODE_URL } from '@/lib/constants'
+import { ROUTES } from '@/lib/constants'
 import { PENDING_BEFORE_LAUNCH } from '@/lib/placeholders'
 import { useAuthStore } from '@/stores/auth'
 import { SiteLayout } from './SiteLayout'
@@ -110,16 +110,5 @@ describe('SiteLayout', () => {
     expect(within(header).queryByRole('link', { name: '免费开始' })).toBeNull()
     expect(within(header).queryByRole('link', { name: '登录' })).toBeNull()
     expect(screen.queryByRole('link', { name: '登录' })).toBeNull()
-  })
-
-  // AGPL-3.0 §13: whoever uses the site over the network must be able to reach
-  // the source. Removing this link silently breaks the licence, so it is pinned.
-  it('exposes the source code link in the footer', () => {
-    renderLayout()
-
-    expect(screen.getByRole('link', { name: '源代码（AGPL-3.0）' })).toHaveAttribute(
-      'href',
-      SOURCE_CODE_URL,
-    )
   })
 })

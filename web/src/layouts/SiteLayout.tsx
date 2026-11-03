@@ -7,7 +7,7 @@ import { Logo } from '@/components/Logo'
 import { ScrollRestorer } from '@/components/ScrollRestorer'
 import { SERVICE_TERMS_SECTION_ID } from '@/content/legal'
 import { cn } from '@/lib/cn'
-import { BRAND_DESCRIPTION, ROUTES, SITE_NAV, SOURCE_CODE_URL } from '@/lib/constants'
+import { BRAND_DESCRIPTION, ROUTES, SITE_NAV } from '@/lib/constants'
 import { PENDING_BEFORE_LAUNCH } from '@/lib/placeholders'
 import { useAuthStore } from '@/stores/auth'
 
@@ -184,18 +184,8 @@ export function SiteLayout() {
             </div>
           </div>
 
-          <div className="mt-8 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
+          <div className="mt-8 border-t border-border pt-4">
             <Copyright />
-            {/* AGPL-3.0 §13：通过网络使用本服务的人要能拿到源码。页脚是唯一
-                每个页面都能看到的位置，所以放在这里而不是文档里。 */}
-            <a
-              href={SOURCE_CODE_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs text-ink-muted hover:text-ink"
-            >
-              源代码（AGPL-3.0）
-            </a>
           </div>
         </div>
       </footer>
