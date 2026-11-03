@@ -9,6 +9,7 @@ import { RequireAuth } from '@/router/guards'
 // Route-level code splitting keeps the first paint free of chart/admin code.
 const LandingPage = lazy(() => import('@/pages/site/LandingPage'))
 const PricingPage = lazy(() => import('@/pages/site/PricingPage'))
+const ModelPricePage = lazy(() => import('@/pages/site/ModelPricePage'))
 const DocsPage = lazy(() => import('@/pages/site/DocsPage'))
 const LoginPage = lazy(() => import('@/pages/site/LoginPage'))
 const IntegrationsPage = lazy(() => import('@/pages/site/IntegrationsPage'))
@@ -45,6 +46,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <LandingPage /> },
       { path: 'pricing', element: <PricingPage /> },
+      { path: 'models', element: <ModelPricePage /> },
       { path: 'docs', element: <DocsPage /> },
       { path: 'login', element: <LoginPage /> },
       { path: 'integrations', element: <IntegrationsPage /> },

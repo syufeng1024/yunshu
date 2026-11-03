@@ -15,6 +15,7 @@ export const LOGO_ARIA_LABEL = `${BRAND_NAME} 首页`
 export const ROUTES = {
   home: '/',
   pricing: '/pricing',
+  models: '/models',
   docs: '/docs',
   login: '/login',
   integrations: '/integrations',
@@ -130,6 +131,7 @@ export interface NavGroup<T extends NavItem = NavItem> {
 export const SITE_NAV: readonly NavItem[] = [
   { to: ROUTES.home, label: '首页', icon: 'home', end: true },
   { to: ROUTES.pricing, label: '定价', icon: 'tag' },
+  { to: ROUTES.models, label: '模型价格', icon: 'grid' },
   { to: ROUTES.docs, label: '文档', icon: 'book' },
   { to: ROUTES.integrations, label: '工具集成', icon: 'plug' },
 ]
