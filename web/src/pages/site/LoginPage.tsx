@@ -493,6 +493,14 @@ export default function LoginPage() {
 
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-12 sm:px-6">
+      {searchParams.get('reason') === 'password-changed' ? (
+        <div
+          role="status"
+          className="mx-auto mb-6 max-w-xl rounded-lg border border-success bg-success-soft p-3 text-center text-xs text-success"
+        >
+          密码已更新，其他设备已退出登录。请用新密码重新登录。
+        </div>
+      ) : null}
       <header className="text-center">
         <Badge variant="primary" dot>
           {planCode ? `已选择套餐：${selectedPlan?.name ?? planCode}` : '云枢 API'}

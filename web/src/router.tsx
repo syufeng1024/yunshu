@@ -25,6 +25,8 @@ const RechargePage = lazy(() => import('@/pages/console/RechargePage'))
 const LogsPage = lazy(() => import('@/pages/console/LogsPage'))
 const PlaygroundPage = lazy(() => import('@/pages/console/PlaygroundPage'))
 const ConsoleTicketsPage = lazy(() => import('@/pages/console/TicketsPage'))
+const ConsoleAccountPage = lazy(() => import('@/pages/console/AccountPage'))
+const ConsoleSubscriptionPage = lazy(() => import('@/pages/console/SubscriptionPage'))
 
 const AdminOverviewPage = lazy(() => import('@/pages/admin/OverviewPage'))
 const ChannelsPage = lazy(() => import('@/pages/admin/ChannelsPage'))
@@ -69,6 +71,8 @@ export const router = createBrowserRouter([
       { path: 'logs', element: <LogsPage /> },
       { path: 'playground', element: <PlaygroundPage /> },
       { path: 'tickets', element: <ConsoleTicketsPage /> },
+      { path: 'account', element: <ConsoleAccountPage /> },
+      { path: 'subscription', element: <ConsoleSubscriptionPage /> },
     ],
   },
   {

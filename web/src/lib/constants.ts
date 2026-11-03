@@ -31,6 +31,8 @@ export const ROUTES = {
   consoleLogs: '/console/logs',
   consolePlayground: '/console/playground',
   consoleTickets: '/console/tickets',
+  consoleAccount: '/console/account',
+  consoleSubscription: '/console/subscription',
 
   admin: '/admin',
   adminChannels: '/admin/channels',
@@ -153,6 +155,14 @@ export const CONSOLE_NAV_GROUPS: readonly NavGroup[] = [
   {
     title: '支持',
     items: [{ to: ROUTES.consoleTickets, label: '工单中心', icon: 'ticket' }],
+  },
+  {
+    // 账户相关：改密与注销以前在控制台里没有任何入口（后端接口早就有）。
+    title: '账户',
+    items: [
+      { to: ROUTES.consoleSubscription, label: '我的订阅', icon: 'tag' },
+      { to: ROUTES.consoleAccount, label: '账户设置', icon: 'users' },
+    ],
   },
 ]
 
