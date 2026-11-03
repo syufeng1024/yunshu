@@ -15,6 +15,17 @@ import (
 // decryptTestKEK is base64 of "0123456789abcdef0123456789abcdef" (32 bytes).
 const decryptTestKEK = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
 
+// newDecryptRing wraps one box in a single-key ring. The reader is keyed by the
+// row's body_key_id, so even the single-key case goes through the ring.
+func newDecryptRing(t *testing.T, id string, box *cryptobox.Box) *cryptobox.BodyKeyRing {
+	t.Helper()
+	ring, err := cryptobox.NewBodyKeyRingFromBoxes(id, map[string]*cryptobox.Box{id: box})
+	if err != nil {
+		t.Fatalf("body key ring: %v", err)
+	}
+	return ring
+}
+
 func newDecryptBox(t *testing.T) *cryptobox.Box {
 	t.Helper()
 	box, err := cryptobox.NewBodyFromBase64(decryptTestKEK)
@@ -69,7 +80,7 @@ func TestBodyDecryptSuccess(t *testing.T) {
 	seedBody(t, uid, requestID, []byte(envelope), cryptobox.BodyKeyID)
 
 	reg := obsmetrics.NewRegistry()
-	svc.BodyStore = &sqlBodyStore{DB: testDB, Box: box, Metrics: obsmetrics.NewRecorder(reg)}
+	svc.BodyStore = &sqlBodyStore{DB: testDB, Keys: newDecryptRing(t, cryptobox.BodyKeyID, box), Metrics: obsmetrics.NewRecorder(reg)}
 
 	rec := callUserID(t, svc.Body, http.MethodGet,
 		"/api/console/logs/"+requestID+"/body", requestID, uid)
@@ -111,7 +122,7 @@ func TestBodyDecryptCorruptCiphertextIs404(t *testing.T) {
 	seedBody(t, uid, requestID, tampered, cryptobox.BodyKeyID)
 
 	reg := obsmetrics.NewRegistry()
-	svc.BodyStore = &sqlBodyStore{DB: testDB, Box: box, Metrics: obsmetrics.NewRecorder(reg)}
+	svc.BodyStore = &sqlBodyStore{DB: testDB, Keys: newDecryptRing(t, cryptobox.BodyKeyID, box), Metrics: obsmetrics.NewRecorder(reg)}
 
 	rec := callUserID(t, svc.Body, http.MethodGet,
 		"/api/console/logs/"+requestID+"/body", requestID, uid)
@@ -143,7 +154,7 @@ func TestBodyUnknownKeyIDIs404(t *testing.T) {
 	seedBody(t, uid, requestID, []byte(envelope), "body-v0")
 
 	reg := obsmetrics.NewRegistry()
-	svc.BodyStore = &sqlBodyStore{DB: testDB, Box: box, Metrics: obsmetrics.NewRecorder(reg)}
+	svc.BodyStore = &sqlBodyStore{DB: testDB, Keys: newDecryptRing(t, cryptobox.BodyKeyID, box), Metrics: obsmetrics.NewRecorder(reg)}
 
 	rec := callUserID(t, svc.Body, http.MethodGet,
 		"/api/console/logs/"+requestID+"/body", requestID, uid)
@@ -209,7 +220,7 @@ func TestBodyDecryptRespectsWindow(t *testing.T) {
 		t.Fatalf("seal: %v", err)
 	}
 	seedBody(t, uid, requestID, []byte(envelope), cryptobox.BodyKeyID)
-	svc.BodyStore = &sqlBodyStore{DB: testDB, Box: box}
+	svc.BodyStore = &sqlBodyStore{DB: testDB, Keys: newDecryptRing(t, cryptobox.BodyKeyID, box)}
 
 	rec := callUserID(t, svc.Body, http.MethodGet,
 		"/api/console/logs/"+requestID+"/body", requestID, uid)

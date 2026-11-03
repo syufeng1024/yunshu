@@ -43,7 +43,11 @@ type bodyItem struct {
 	UserID     int64
 	Body       []byte
 	Ciphertext []byte
-	CreatedAt  time.Time
+	// KeyID is the body key that sealed Ciphertext. It is read from the ring at
+	// seal time and written to t_request_body.body_key_id, so a later rotation
+	// still knows which retired key opens this row (G3).
+	KeyID     string
+	CreatedAt time.Time
 }
 
 // UsageRecord is one t_usage_record row (P28). IDs of 0 mean SQL NULL.
@@ -95,7 +99,7 @@ type UsageRecord struct {
 	CreatedAt             time.Time
 	// RawBody is the request body handed over by the relay after the response
 	// is complete. It is never inserted as-is: WriteUsage transfers it to the
-	// body queue and the async flush seals it with BodyBox. Nil means there is
+	// body queue and the async flush seals it with BodyKeys. Nil means there is
 	// no body to keep (for example GET /v1/models).
 	RawBody []byte
 	// FullLogSaved is written to t_usage_record.full_log_saved. The console
@@ -149,13 +153,14 @@ type UsageWriter struct {
 	// are never queued. The function is read per WriteUsage so a runtime config
 	// change (opt_in ↔ meta_only) takes effect without a restart.
 	BodyMode func() string
-	// BodyBox seals bodies with LOG_BODY_KEK and the request-body AAD. Nil
-	// means the key is unavailable: bodies are dropped and counted with
-	// reason="no_kek"; usage rows are still written.
-	BodyBox *cryptobox.Box
-	// BodyKeyID is written to t_request_body.body_key_id. Empty means the
-	// default cryptobox.BodyKeyID.
-	BodyKeyID string
+	// BodyKeys seals bodies with the current LOG_BODY_KEK and reports the id
+	// to store next to each row. Nil means no usable body key: bodies are
+	// dropped and counted with reason="no_kek"; usage rows are still written.
+	//
+	// It is a ring (current + retired keys) rather than one Box so that a key
+	// rotation does not orphan the rows written before it; reading is the other
+	// half, in internal/control/logq (G3, errata E-39).
+	BodyKeys *cryptobox.BodyKeyRing
 	// RetentionDays reports log.retention_days. Nil or <=0 means 180.
 	RetentionDays func() int
 	// Metrics receives the body counters. Nil is safe.
@@ -181,7 +186,6 @@ func NewUsageWriter(db *sql.DB, logger *obslog.Logger, clk clock.Clock) *UsageWr
 		Clock:         clk,
 		FlushInterval: DefaultFlushInterval,
 		BatchSize:     DefaultFlushBatch,
-		BodyKeyID:     cryptobox.BodyKeyID,
 		usageCh:       make(chan UsageRecord, usageQueueSize),
 		attemptCh:     make(chan AttemptRecord, usageQueueSize),
 		bodyCh:        make(chan bodyItem, bodyQueueSize),
@@ -200,7 +204,7 @@ func (w *UsageWriter) WriteUsage(r UsageRecord) {
 	r.FullLogSaved = false
 	if len(body) > 0 && w.bodyMode() == config.EnumOptIn {
 		switch {
-		case w.BodyBox == nil:
+		case w.BodyKeys == nil:
 			w.dropBody("no_kek")
 		default:
 			select {
@@ -228,13 +232,6 @@ func (w *UsageWriter) bodyMode() string {
 		return config.EnumMetaOnly
 	}
 	return w.BodyMode()
-}
-
-func (w *UsageWriter) bodyKeyID() string {
-	if w.BodyKeyID == "" {
-		return cryptobox.BodyKeyID
-	}
-	return w.BodyKeyID
 }
 
 func (w *UsageWriter) retentionDays() int {
@@ -384,7 +381,7 @@ func (w *UsageWriter) flushBodies(ctx context.Context, rows []bodyItem) {
 	if len(rows) == 0 {
 		return
 	}
-	if w.BodyBox == nil {
+	if w.BodyKeys == nil {
 		for range rows {
 			w.dropBody("no_kek")
 		}
@@ -392,13 +389,14 @@ func (w *UsageWriter) flushBodies(ctx context.Context, rows []bodyItem) {
 	}
 	sealed := make([]bodyItem, 0, len(rows))
 	for _, r := range rows {
-		envelope, err := w.BodyBox.Seal(r.Body)
+		keyID, envelope, err := w.BodyKeys.Seal(r.Body)
 		r.Body = nil // release the plaintext reference before the batch is built
 		if err != nil {
 			w.dropBody("seal_failed")
 			continue
 		}
 		r.Ciphertext = []byte(envelope)
+		r.KeyID = keyID
 		sealed = append(sealed, r)
 	}
 	for start := 0; start < len(sealed); start += bodyFlushBatch {
@@ -436,7 +434,7 @@ func (w *UsageWriter) insertBodies(ctx context.Context, rows []bodyItem) error {
 		created := w.createdAt(r.CreatedAt)
 		expires := created.AddDate(0, 0, w.retentionDays())
 		args = append(args,
-			cut(r.RequestID, 36), r.UserID, r.Ciphertext, w.bodyKeyID(),
+			cut(r.RequestID, 36), r.UserID, r.Ciphertext, r.KeyID,
 			created.UTC(), expires.UTC(),
 		)
 	}

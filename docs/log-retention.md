@@ -62,6 +62,24 @@ B-67 / TDS 4318 的承诺是「用户关闭即删」，不是「关闭后 180 �
 
 客服口径：客户问「我关了正文保存，之前的记录清掉了吗」→ 答「关闭后一分钟内已删除，正文接口对历史请求返回 404，元数据与用量记录按 365 天保留」。
 
+## 正文密钥轮换
+
+`t_request_body.body_key_id` 不是装饰列：每一行记录的是**加密它那一版的 KEK 标识**，读取端按这个 id 选 key，而不是永远用当前 key 去试。
+
+| 变量 | 作用 |
+| :--- | :--- |
+| `LOG_BODY_KEK` | 当前 KEK，新行用它加密 |
+| `LOG_BODY_KEY_ID` | 当前 KEK 的 id，写入新行的 `body_key_id`（默认 `body-v1`） |
+| `LOG_BODY_KEK_PREVIOUS` | 退休 KEK 列表，`id:base64` 逗号分隔，只读 |
+
+轮换顺序（不可颠倒）：
+
+1. 生成新 KEK，把**旧** KEK 追加进 `LOG_BODY_KEK_PREVIOUS`，`LOG_BODY_KEK` 换新，`LOG_BODY_KEY_ID` 改新 id；
+2. 两个进程（gatewayd 写入、controld 读取）**同时**重启到这份配置——只改一边会让新行用新 key、读取端不认识这个 id，表现为正文接口 404 且 `gw_log_body_open_failed_total` 上涨；
+3. 旧 key **至少保留到它加密的最后一行过期**（`expires_at`，最长 180 天）。提前摘掉旧 key 不会删数据，但那些行再也解不开。
+
+未知 `body_key_id` 的处理与「从未存过」一致：404 + `gw_log_body_open_failed_total`，不返回 500，也不回落到当前 key 去试（回落只会把「key 没配」伪装成「解密失败」，让排障方向跑偏）。
+
 ## 不删除
 
 `t_usage_record` 与 `t_upstream_attempt` 没有删除接口（T14 硬约束 12）。账号注销不删除日志，按 PRD §10.3 的独立流程处理。清理任务只按保留期批量删除，不做单条删除。

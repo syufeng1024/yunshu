@@ -24,12 +24,25 @@ func newBodyTestBox(t *testing.T) *cryptobox.Box {
 	return box
 }
 
+// bodyTestRing wraps one box in a single-key ring: the writer asks the ring for
+// the id to store, never for a bare Box (G3).
+func bodyTestRing(t *testing.T, id string, box *cryptobox.Box) *cryptobox.BodyKeyRing {
+	t.Helper()
+	ring, err := cryptobox.NewBodyKeyRingFromBoxes(id, map[string]*cryptobox.Box{id: box})
+	if err != nil {
+		t.Fatalf("body key ring: %v", err)
+	}
+	return ring
+}
+
 func newBodyTestWriter(t *testing.T, mode string, box *cryptobox.Box, retentionDays int) (*UsageWriter, *obsmetrics.Registry) {
 	t.Helper()
 	reg := obsmetrics.NewRegistry()
 	w := NewUsageWriter(testDB, nil, clock.Real{})
 	w.BodyMode = func() string { return mode }
-	w.BodyBox = box
+	if box != nil {
+		w.BodyKeys = bodyTestRing(t, cryptobox.BodyKeyID, box)
+	}
 	w.RetentionDays = func() int { return retentionDays }
 	w.Metrics = obsmetrics.NewRecorder(reg)
 	return w, reg

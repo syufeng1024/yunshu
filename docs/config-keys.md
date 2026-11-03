@@ -69,6 +69,8 @@
 | `CONTROL_METRICS_ADDR` | controld | `:9091` | 为空时回落 `:9091`，不再回落 `:9090` |
 | `JOBSD_METRICS_ADDR` | jobsd | `:9092` | 与 `/healthz`、`/readyz` 同端口 |
 | `LOG_BODY_KEK` | gatewayd、controld | 空 | `log.body_mode=opt_in` 时加密 `t_request_body.ciphertext` 的 KEK，base64 编码的 32 字节。独立于 `CHANNEL_KEY_KEK`：渠道密钥轮换不得使历史正文失效。为空或非法时进程照常启动，正文不落库（gatewayd 记 `gw_log_body_dropped_total{reason="no_kek"}`），读取端把已存正文一律按 404 处理并记 `gw_log_body_open_failed_total`；请求与账务不受影响。两进程必须配置同一值，否则写入端与读取端互相解不开 |
+| `LOG_BODY_KEY_ID` | gatewayd、controld | `body-v1` | 当前正文 KEK 的版本标识，写入 `t_request_body.body_key_id`（varchar(32)，不得含 `:` 或 `,`）。不配置即沿用存量行已有的 `body-v1`，行为与改造前逐字节一致。轮换时把新 KEK 放进 `LOG_BODY_KEK` 并把本值改成新 id（如 `body-v2`） |
+| `LOG_BODY_KEK_PREVIOUS` | gatewayd、controld | 空 | 已退休正文 KEK，格式 `id:base64`，多段用逗号分隔（如 `body-v1:<base64>`）。读取端按行内 `body_key_id` 选 key，因此轮换后旧行在 180 天保留期内仍可解密。**旧 key 至少保留到该 key 加密的最后一行过期**，否则那些请求的正文接口会返回 404 并记 `gw_log_body_open_failed_total`（数据仍在，只是解不开）。id 与当前 id 重复、base64 非法或长度非 32 字节时进程照常启动但正文不落库，并在启动日志打印原因 |
 
 ## 命名空间分布
 

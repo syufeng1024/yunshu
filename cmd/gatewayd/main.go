@@ -259,13 +259,22 @@ func main() {
 	// does not stop the process and does not affect requests: bodies are
 	// simply not stored and gw_log_body_dropped_total{reason="no_kek"} keeps
 	// the condition visible.
-	bodyBox, bodyErr := cryptobox.NewBodyFromBase64(os.Getenv(config.EnvLogBodyKEK))
+	//
+	// It is a ring, not one key (G3): LOG_BODY_KEY_ID names the key that seals
+	// new rows and LOG_BODY_KEK_PREVIOUS keeps the retired ones readable for
+	// the rest of their 180-day window. A malformed rotation config degrades
+	// exactly like a missing key — loudly, in this line — instead of silently
+	// making stored bodies undecryptable.
+	bodyKeys, bodyErr := cryptobox.BuildBodyKeyRing(os.Getenv(config.EnvLogBodyKEK))
 	if bodyErr != nil {
-		logger.Warn(rootCtx, "log body KEK unavailable; request bodies will not be stored: "+bodyErr.Error(),
+		logger.Warn(rootCtx, "log body key ring unavailable; request bodies will not be stored: "+bodyErr.Error(),
 			obslog.Fields{Stage: "startup"})
-		bodyBox = nil
+		bodyKeys = nil
+	} else {
+		logger.Info(rootCtx, fmt.Sprintf("log body keys: current=%s configured=%v",
+			bodyKeys.CurrentID(), bodyKeys.KeyIDs()), obslog.Fields{Stage: "startup"})
 	}
-	usageWriter.BodyBox = bodyBox
+	usageWriter.BodyKeys = bodyKeys
 	usageWriter.Metrics = rec
 	usageWriter.BodyMode = func() string {
 		if v, ok := store.String(config.KeyLogBodyMode); ok {

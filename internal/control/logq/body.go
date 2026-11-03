@@ -35,14 +35,15 @@ type bodyStore interface {
 // pretending to be the stored content.
 type sqlBodyStore struct {
 	DB *sql.DB
-	// Box opens the body envelopes. Nil means "load LOG_BODY_KEK lazily"; a
-	// test injects a Box to exercise the success path without touching env.
-	Box *cryptobox.Box
+	// Keys opens the body envelopes by the key id stored on the row. Nil means
+	// "build the ring from the environment lazily"; a test injects a ring to
+	// exercise rotation without touching env.
+	Keys *cryptobox.BodyKeyRing
 	// Metrics counts open failures. Nil is safe.
 	Metrics *obsmetrics.Recorder
 
-	boxOnce sync.Once
-	boxErr  error
+	ringOnce sync.Once
+	ringErr  error
 }
 
 func (s *sqlBodyStore) fetch(ctx context.Context, uid int64, requestID string) (string, error) {
@@ -83,20 +84,26 @@ func (s *sqlBodyStore) fetch(ctx context.Context, uid int64, requestID string) (
 	if len(ciphertext) == 0 {
 		return "", errBodyNotFound
 	}
-	// The body key is independent of the channel KEK. A row naming a key this
-	// node does not know is not readable, so it gets the same 404 as a missing
-	// row; gw_log_body_open_failed_total is the operator-facing signal that
-	// separates "never stored" from "stored but the key is gone".
-	if !bodyKeyID.Valid || bodyKeyID.String != cryptobox.BodyKeyID {
+	// The body key is independent of the channel KEK, and it is versioned: the
+	// row names the key that sealed it, so a rotated key still opens the rows
+	// written under it (G3). A row naming a key this node does not know is not
+	// readable, so it gets the same 404 as a missing row;
+	// gw_log_body_open_failed_total is the operator-facing signal that
+	// separates "never stored" from "stored but that key is not configured".
+	keyID := ""
+	if bodyKeyID.Valid {
+		keyID = bodyKeyID.String
+	}
+	if keyID == "" {
 		s.openFailed()
 		return "", errBodyNotFound
 	}
-	box, err := s.bodyBox()
+	ring, err := s.bodyKeys()
 	if err != nil {
 		s.openFailed()
 		return "", errBodyNotFound
 	}
-	plaintext, err := box.Open(string(ciphertext))
+	plaintext, err := ring.Open(keyID, string(ciphertext))
 	if err != nil {
 		s.openFailed()
 		return "", errBodyNotFound
@@ -107,17 +114,19 @@ func (s *sqlBodyStore) fetch(ctx context.Context, uid int64, requestID string) (
 	return string(plaintext), nil
 }
 
-// bodyBox lazily loads LOG_BODY_KEK. A missing or malformed key makes every
+// bodyKeys lazily builds the key ring from LOG_BODY_KEK / LOG_BODY_KEY_ID /
+// LOG_BODY_KEK_PREVIOUS. A missing or malformed configuration makes every
 // retained body unreadable, which is reported as 404 with
-// gw_log_body_open_failed_total, never as 500.
-func (s *sqlBodyStore) bodyBox() (*cryptobox.Box, error) {
-	if s.Box != nil {
-		return s.Box, nil
+// gw_log_body_open_failed_total, never as 500 — a read path must not page
+// anyone, the write side already logs the same misconfiguration at startup.
+func (s *sqlBodyStore) bodyKeys() (*cryptobox.BodyKeyRing, error) {
+	if s.Keys != nil {
+		return s.Keys, nil
 	}
-	s.boxOnce.Do(func() {
-		s.Box, s.boxErr = cryptobox.NewBodyFromBase64(os.Getenv(config.EnvLogBodyKEK))
+	s.ringOnce.Do(func() {
+		s.Keys, s.ringErr = cryptobox.BuildBodyKeyRing(os.Getenv(config.EnvLogBodyKEK))
 	})
-	return s.Box, s.boxErr
+	return s.Keys, s.ringErr
 }
 
 func (s *sqlBodyStore) openFailed() {
