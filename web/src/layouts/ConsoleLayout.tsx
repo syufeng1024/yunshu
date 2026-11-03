@@ -1,11 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { Icon } from '@/components/Icon'
 import { Logo } from '@/components/Logo'
 import { ScrollRestorer } from '@/components/ScrollRestorer'
-import { resolveGatewayBaseUrl } from '@/lib/apiBase'
-import { writeClipboard } from '@/lib/clipboard'
-import { CONSOLE_NAV_GROUPS, ROUTES } from '@/lib/constants'
+import { CONSOLE_NAV_GROUPS, ROUTES, SITE_NAV } from '@/lib/constants'
 import { cn } from '@/lib/cn'
 import { useAuthStore } from '@/stores/auth'
 
@@ -19,66 +16,16 @@ function navClass({ isActive }: { isActive: boolean }): string {
 }
 
 /**
- * 常驻的「调用地址」条。
+ * 控制台外壳。
  *
- * 控制台里任何页面都看不到自己的网关地址，用户要写代码只能去猜或翻文档，
- * 所以这里把它钉在内容区最上方并支持一键复制。
+ * 布局要点：外层 `h-screen overflow-hidden`，侧栏与内容区各自滚动（侧栏
+ * `md:overflow-y-auto`，内容区 `flex-1 overflow-y-auto`）。原来是整页滚动，
+ * 菜单跟着长表格一起走——翻到一半想换页面得先把滚动条拉回顶部。
  *
- * 地址来源：`VITE_API_BASE_URL`（构建期注入，生产必须注入，见 OI-12 / G9）；
- * 未注入时回落到站点自身域名（本地/容器同源部署即如此）。**不硬编码任何域名**，
- * 否则换环境就会把流量指到别人的服务器。
+ * 顶栏放**站点导航**（首页/定价/模型价格/文档/工具集成）。这里原本钉着一条
+ * 「调用地址」，占了首屏最贵的一行，而那个地址在密钥详情与调试台的代码生成里
+ * 都有，不需要常驻。
  */
-function ApiBaseBar() {
-  const gatewayUrl = resolveGatewayBaseUrl()
-  const [copied, setCopied] = useState(false)
-  const [failed, setFailed] = useState(false)
-  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  useEffect(() => {
-    return () => {
-      if (resetTimer.current) clearTimeout(resetTimer.current)
-    }
-  }, [])
-
-  if (!gatewayUrl) return null
-
-  const handleCopy = async () => {
-    try {
-      await writeClipboard(gatewayUrl)
-      setFailed(false)
-      setCopied(true)
-      if (resetTimer.current) clearTimeout(resetTimer.current)
-      resetTimer.current = setTimeout(() => setCopied(false), 2_000)
-    } catch {
-      setCopied(false)
-      setFailed(true)
-    }
-  }
-
-  return (
-    <div className="border-b border-border bg-surface">
-      <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center gap-x-2 gap-y-1 px-4 py-1.5 sm:px-6 sm:py-2 lg:px-8">
-        <span className="text-xs font-medium text-ink-muted">调用地址</span>
-        <code className="min-w-0 flex-1 truncate font-mono text-xs text-ink">{gatewayUrl}</code>
-        <button
-          type="button"
-          onClick={() => void handleCopy()}
-          className="inline-flex shrink-0 items-center gap-1 rounded-sm px-2 py-1 text-xs text-ink-secondary transition-colors duration-fast hover:bg-surface-muted hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-          aria-label={copied ? '已复制调用地址' : '复制调用地址'}
-        >
-          <Icon name={copied ? 'check' : 'copy'} className="h-3.5 w-3.5" />
-          {copied ? '已复制' : '复制'}
-        </button>
-        {failed ? (
-          <span role="alert" className="text-xs text-danger">
-            复制失败，请手动选择地址复制。
-          </span>
-        ) : null}
-      </div>
-    </div>
-  )
-}
-
 export function ConsoleLayout() {
   const user = useAuthStore((state) => state.user)
   const logout = useAuthStore((state) => state.logout)
@@ -90,9 +37,9 @@ export function ConsoleLayout() {
   }
 
   return (
-    <div className="min-h-screen bg-canvas md:flex">
+    <div className="flex h-screen flex-col overflow-hidden bg-canvas md:flex-row">
       <ScrollRestorer />
-      <aside className="sticky top-0 z-30 flex w-full shrink-0 flex-row items-center gap-2 bg-sidebar-bg px-3 py-2 md:h-screen md:border-r md:border-sidebar-border md:w-sidebar md:flex-col md:items-stretch md:gap-6 md:px-4 md:py-5">
+      <aside className="flex shrink-0 flex-row items-center gap-2 bg-sidebar-bg px-3 py-2 md:h-full md:w-sidebar md:flex-col md:items-stretch md:gap-6 md:overflow-y-auto md:border-r md:border-sidebar-border md:px-4 md:py-5">
         <div className="flex items-center justify-between md:justify-start">
           <Logo size="sm" collapsible to={ROUTES.console} />
         </div>
@@ -142,17 +89,9 @@ export function ConsoleLayout() {
           <Icon name="logout" className="h-5 w-5" />
         </button>
 
+        {/* 桌面端底部只留账号与退出：回官网的入口已经挪到顶栏。 */}
         <div className="mt-auto hidden border-t border-sidebar-border pt-4 md:block">
           <p className="truncate text-xs text-sidebar-muted">{user?.email ?? ''}</p>
-          {/* 登录后 Logo 指向控制台自身，控制台里没有任何出口通向官网：
-              用户想回首页看价格/文档只能改地址栏。这里补一个显式入口。 */}
-          <Link
-            to={ROUTES.home}
-            className="mt-2 inline-flex items-center gap-2 rounded-md px-1 py-1 text-xs text-sidebar-muted transition-colors duration-fast hover:text-sidebar-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-          >
-            <Icon name="home" className="h-4 w-4" />
-            返回官网
-          </Link>
           <button
             type="button"
             onClick={handleLogout}
@@ -164,14 +103,26 @@ export function ConsoleLayout() {
         </div>
       </aside>
 
-      <div className="min-w-0 flex-1">
-        {/* 内容区最上方常驻调用地址：运营后台不加（运营不用自己的 Key 调模型）。 */}
-        <ApiBaseBar />
-        <main className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
-          {/* The announcement strip lives on the overview (T19): the ops
-              announcement API is not exposed to console users yet, so it
-              renders an explicit empty state there instead of sample copy. */}
-          <Outlet />
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="hidden shrink-0 items-center gap-6 border-b border-border bg-surface px-6 md:flex">
+          <nav aria-label="站点导航" className="flex h-14 items-center gap-5 text-sm">
+            {SITE_NAV.map((item) => (
+              <Link
+                key={item.to}
+                to={item.to}
+                className="text-ink-secondary transition-colors duration-fast hover:text-ink"
+              >
+                {item.label}
+              </Link>
+            ))}
+          </nav>
+          <span className="ml-auto text-xs text-ink-muted">控制台</span>
+        </header>
+
+        <main className="flex-1 overflow-y-auto">
+          <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+            <Outlet />
+          </div>
         </main>
       </div>
     </div>

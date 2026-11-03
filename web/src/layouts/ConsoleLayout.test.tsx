@@ -1,15 +1,17 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import { RouterProvider, createMemoryRouter } from 'react-router-dom'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import type { CurrentUser } from '@/stores/auth'
 import { useAuthStore } from '@/stores/auth'
 import { AdminLayout } from './AdminLayout'
 import { ConsoleLayout } from './ConsoleLayout'
 
 /**
- * 控制台必须让用户随时看到自己的调用地址（网关 `/v1` 前缀），并能一键复制。
+ * 控制台外壳：顶栏站点导航、侧栏分组、两列独立滚动。
  *
- * 背景：改造前控制台任何页面都看不到调用地址，用户写代码只能靠猜或翻文档。
+ * 背景：顶栏原本钉着「调用地址」，占掉首屏最贵的一行；而首页/文档/模型价格
+ * 这些入口只能从侧栏底部走。现在顶栏是站点导航，调用地址在密钥详情与调试台
+ * 的代码生成里都有。
  * 地址一律由 `VITE_API_BASE_URL` 推导，未注入时回落到站点自身域名——因此断言
  * 期望值只能用 `window.location.origin` 计算，不能写死任何域名。
  */
@@ -36,52 +38,35 @@ function signIn() {
   })
 }
 
-const writeText = vi.fn(() => Promise.resolve())
-
-beforeEach(() => {
-  writeText.mockClear()
-  Object.defineProperty(navigator, 'clipboard', {
-    configurable: true,
-    value: { writeText },
-  })
-})
-
 afterEach(() => {
   act(() => {
     useAuthStore.setState({ status: 'anonymous', user: null, error: null, hint: null })
   })
 })
 
-describe('控制台常驻调用地址', () => {
-  it('控制台显示由站点域名推导的 /v1 地址', async () => {
+describe('控制台外壳', () => {
+  // 顶栏从「调用地址」换成了站点导航：地址在密钥详情与调试台的代码生成里都有，
+  // 常驻占掉首屏最贵的一行不划算；而首页/文档/模型价格这些入口原来只能从侧栏底部走。
+  it('顶栏提供站点导航，且不再显示调用地址', () => {
     signIn()
     renderShell(<ConsoleLayout />, '/')
 
-    expect(screen.getByText('调用地址')).toBeInTheDocument()
-    expect(
-      screen.getByText(`${window.location.origin}/v1`),
-    ).toBeInTheDocument()
-  })
-
-  it('复制按钮把地址写入剪贴板并给出「已复制」反馈', async () => {
-    signIn()
-    renderShell(<ConsoleLayout />, '/')
-
-    // fireEvent keeps the clipboard stub installed in beforeEach: userEvent
-    // would swap navigator.clipboard for its own.
-    fireEvent.click(screen.getByRole('button', { name: '复制调用地址' }))
-
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/v1`))
-    expect(
-      await screen.findByRole('button', { name: '已复制调用地址' }),
-    ).toBeInTheDocument()
-  })
-
-  it('运营后台不显示调用地址', () => {
-    signIn()
-    renderShell(<AdminLayout />, '/')
-
+    const topNav = screen.getByRole('navigation', { name: '站点导航' })
+    expect(topNav).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '首页' })).toHaveAttribute('href', '/')
+    expect(screen.getByRole('link', { name: '文档' })).toBeInTheDocument()
     expect(screen.queryByText('调用地址')).not.toBeInTheDocument()
+  })
+
+  it('侧栏与内容区各自滚动，互不影响', () => {
+    signIn()
+    renderShell(<ConsoleLayout />, '/')
+
+    const aside = screen.getByRole('complementary')
+    // 整页不再滚动：外层撑满视口并裁掉溢出，两列各自持有滚动容器。
+    expect(aside.className).toContain('md:overflow-y-auto')
+    const main = screen.getByRole('main')
+    expect(main.className).toContain('overflow-y-auto')
   })
 
   // 侧边栏分组是「控制台与官网同一套语言」的一部分：一长条没有层次的菜单名

@@ -3,7 +3,7 @@ import { Badge } from '@/components/Badge'
 import { Icon } from '@/components/Icon'
 import { Logo } from '@/components/Logo'
 import { ScrollRestorer } from '@/components/ScrollRestorer'
-import { ADMIN_NAV_GROUPS, ROUTES, USER_ROLE_LABEL } from '@/lib/constants'
+import { ADMIN_NAV_GROUPS, ROUTES, SITE_NAV, USER_ROLE_LABEL } from '@/lib/constants'
 import { cn } from '@/lib/cn'
 import { useAuthStore } from '@/stores/auth'
 
@@ -16,6 +16,10 @@ function navClass({ isActive }: { isActive: boolean }): string {
   )
 }
 
+/**
+ * 运营后台外壳。布局与控制台一致：侧栏与内容区各自滚动，互不影响——运营页
+ * 表格往往比用户侧更长，整页滚动时换菜单要先回到顶部。
+ */
 export function AdminLayout() {
   const user = useAuthStore((state) => state.user)
   const logout = useAuthStore((state) => state.logout)
@@ -33,9 +37,9 @@ export function AdminLayout() {
   }
 
   return (
-    <div className="min-h-screen bg-canvas md:flex">
+    <div className="flex h-screen flex-col overflow-hidden bg-canvas md:flex-row">
       <ScrollRestorer />
-      <aside className="sticky top-0 z-30 flex w-full shrink-0 flex-row items-center gap-2 bg-sidebar-bg px-3 py-2 md:h-screen md:border-r md:border-sidebar-border md:w-sidebar md:flex-col md:items-stretch md:gap-5 md:px-4 md:py-5">
+      <aside className="flex shrink-0 flex-row items-center gap-2 bg-sidebar-bg px-3 py-2 md:h-full md:w-sidebar md:flex-col md:items-stretch md:gap-5 md:overflow-y-auto md:border-r md:border-sidebar-border md:px-4 md:py-5">
         <div className="flex items-center justify-between gap-2 md:justify-start">
           <Logo size="sm" collapsible to={ROUTES.admin} />
           {user ? (
@@ -92,15 +96,6 @@ export function AdminLayout() {
 
         <div className="mt-auto hidden border-t border-sidebar-border pt-4 md:block">
           <p className="truncate text-xs text-sidebar-muted">{user?.email ?? ''}</p>
-          {/* 运营后台同样没有回官网的出口：Logo 指向后台自身。补一个显式入口，
-              方便运营在核价/看公告时直接对照官网页面。 */}
-          <Link
-            to={ROUTES.home}
-            className="mt-2 inline-flex items-center gap-2 rounded-md px-1 py-1 text-xs text-sidebar-muted transition-colors duration-fast hover:text-sidebar-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-          >
-            <Icon name="home" className="h-4 w-4" />
-            返回官网
-          </Link>
           <button
             type="button"
             onClick={handleLogout}
@@ -112,9 +107,26 @@ export function AdminLayout() {
         </div>
       </aside>
 
-      <div className="min-w-0 flex-1">
-        <main className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
-          <Outlet />
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="hidden shrink-0 items-center gap-6 border-b border-border bg-surface px-6 md:flex">
+          <nav aria-label="站点导航" className="flex h-14 items-center gap-5 text-sm">
+            {SITE_NAV.map((item) => (
+              <Link
+                key={item.to}
+                to={item.to}
+                className="text-ink-secondary transition-colors duration-fast hover:text-ink"
+              >
+                {item.label}
+              </Link>
+            ))}
+          </nav>
+          <span className="ml-auto text-xs text-ink-muted">运营后台</span>
+        </header>
+
+        <main className="flex-1 overflow-y-auto">
+          <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+            <Outlet />
+          </div>
         </main>
       </div>
     </div>
