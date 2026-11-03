@@ -31,6 +31,13 @@ const testPaySecret = "test-callback-secret"
 
 var testDB *sql.DB
 
+// TestMain serialises this package against internal/acceptance, the other test
+// binary that drives the plan-grant path. Both run under `go test ./...` and
+// share one yunshu_test schema, and two concurrent applyPlanTx calls deadlock on
+// the uk_rlp_scope_active supremum gap lock (see ctltest.PlanGrantLock for the
+// InnoDB dump). The lock is a property of the *fixture*, not of one assertion,
+// so it is taken once here instead of in every test that happens to grant a
+// plan: missing one call site would put the flake straight back.
 func TestMain(m *testing.M) {
 	db, err := ctltest.SetupDB()
 	if err != nil {
@@ -38,14 +45,32 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	testDB = db
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	unlockPlanGrant, err := ctltest.LockPlanGrant(ctx, db, 5*time.Minute)
+	cancel()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fund tests: %v\n", err)
+		os.Exit(1)
+	}
+	// os.Exit skips deferred calls, so the lock is released explicitly.
 	code := redistest.Setup(m)
+	unlockPlanGrant()
 	_ = db.Close()
 	os.Exit(code)
 }
 
 func newTestService(t *testing.T) (*Service, *redisx.Client) {
 	t.Helper()
-	rdb := redisx.New(redisx.Options{Addr: redistest.Addr(), DB: redistest.DB(), PoolSize: 10})
+	// 2s command budget, not redisx.DefaultCommandTimeout (50ms): the 50ms is a
+	// production latency policy, and as a fixture budget it turns a stall of the
+	// one shared Redis server into auth_unavailable (503) under `go test ./...`.
+	rdb := redisx.New(redisx.Options{
+		Addr:           redistest.Addr(),
+		DB:             redistest.DB(),
+		PoolSize:       10,
+		CommandTimeout: 2 * time.Second,
+		LuaTimeout:     2 * time.Second,
+	})
 	t.Cleanup(func() { _ = rdb.Close() })
 	svc := New(testDB, rdb, nil, &audit.Writer{DB: testDB, Now: clock.Real{}}, clock.Real{}, nil)
 	svc.PaySecrets = map[string]string{

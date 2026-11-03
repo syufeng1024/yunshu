@@ -8,16 +8,13 @@ import (
 
 	"yunshu.dev/core/internal/control/mw"
 	"yunshu.dev/core/internal/platform/clock"
-	"yunshu.dev/core/internal/redisx"
-	"yunshu.dev/core/internal/redisx/redistest"
 )
 
 // newRouteMux builds the real control mux so these tests exercise the
 // permission middleware, not the handlers in isolation.
 func newRouteMux(t *testing.T) (*http.ServeMux, *mw.SessionManager) {
 	t.Helper()
-	rdb := redisx.New(redisx.Options{Addr: redistest.Addr(), DB: redistest.DB(), PoolSize: 5})
-	t.Cleanup(func() { _ = rdb.Close() })
+	rdb := newTestRedis(t)
 	sessMgr, err := mw.NewSessionManager(testDB, rdb, "0123456789abcdef")
 	if err != nil {
 		t.Fatalf("session manager: %v", err)

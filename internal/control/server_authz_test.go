@@ -35,6 +35,38 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// newTestRedis opens this package's test Redis client with a command budget
+// sized for a machine that runs a dozen package binaries at once, not for
+// production traffic.
+//
+// redisx.DefaultCommandTimeout is 50ms and it is a production latency policy:
+// a command that overruns it must fail fast. Reusing it as a fixture budget
+// turns a momentary stall of the single shared Redis server into a wrong
+// answer, because SessionManager spends one budget on the two dependent
+// commands of a revoke and discards the second one's error:
+//
+//   - Load's GET overruns: auth_unavailable (503) instead of the status this
+//     file asserts. Observed 4 times in 60 runs of TestSessionMutationRequiresCSRF
+//     while the rest of `go test ./...` was running on the same machine.
+//   - revoke's GET overruns: the pipeline that carries the DEL never leaves the
+//     client and `_, _ = pipe.Exec(cctx)` throws the error away, so Logout still
+//     answers 204, K20 survives and the replayed sid is accepted again.
+//
+// Neither has anything to do with the CSRF/session contract asserted here, so
+// the fixture asks for 2s. The assertions are unchanged.
+func newTestRedis(t *testing.T) *redisx.Client {
+	t.Helper()
+	rdb := redisx.New(redisx.Options{
+		Addr:           redistest.Addr(),
+		DB:             redistest.DB(),
+		PoolSize:       5,
+		CommandTimeout: 2 * time.Second,
+		LuaTimeout:     2 * time.Second,
+	})
+	t.Cleanup(func() { _ = rdb.Close() })
+	return rdb
+}
+
 // issueSession returns the signed sid cookie value and the CSRF token bound to
 // that session. Every request this package sends through the real mux must
 // carry both; tests that inject mw.WithSession directly bypass the middleware
@@ -146,8 +178,7 @@ var adminRoutes = []struct {
 }
 
 func TestPersonalAccountGets403OnEveryAdminRoute(t *testing.T) {
-	rdb := redisx.New(redisx.Options{Addr: redistest.Addr(), DB: redistest.DB(), PoolSize: 5})
-	t.Cleanup(func() { _ = rdb.Close() })
+	rdb := newTestRedis(t)
 	sessMgr, err := mw.NewSessionManager(testDB, rdb, "0123456789abcdef")
 	if err != nil {
 		t.Fatalf("session manager: %v", err)
@@ -176,8 +207,7 @@ func TestPersonalAccountGets403OnEveryAdminRoute(t *testing.T) {
 // PERSONAL account is 403 on the same route. Without this pair, the deny test
 // above could pass because the whole route table is broken.
 func TestOpsCanReadChannels(t *testing.T) {
-	rdb := redisx.New(redisx.Options{Addr: redistest.Addr(), DB: redistest.DB(), PoolSize: 5})
-	t.Cleanup(func() { _ = rdb.Close() })
+	rdb := newTestRedis(t)
 	sessMgr, err := mw.NewSessionManager(testDB, rdb, "0123456789abcdef")
 	if err != nil {
 		t.Fatalf("session manager: %v", err)
@@ -213,8 +243,7 @@ func TestOpsCanReadChannels(t *testing.T) {
 // for the same reason: log.read is PERSONAL/SUPER_ADMIN only. Ids in the path
 // are irrelevant because Require rejects before the handler runs.
 func TestOpsCannotReachAccountConsole(t *testing.T) {
-	rdb := redisx.New(redisx.Options{Addr: redistest.Addr(), DB: redistest.DB(), PoolSize: 5})
-	t.Cleanup(func() { _ = rdb.Close() })
+	rdb := newTestRedis(t)
 	sessMgr, err := mw.NewSessionManager(testDB, rdb, "0123456789abcdef")
 	if err != nil {
 		t.Fatalf("session manager: %v", err)
@@ -261,8 +290,7 @@ func TestOpsCannotReachAccountConsole(t *testing.T) {
 // console tickets and logs lists (the handlers then scope by uid). Without
 // this pair the 403 test above could pass because the whole surface is broken.
 func TestPersonalCanReachAccountConsole(t *testing.T) {
-	rdb := redisx.New(redisx.Options{Addr: redistest.Addr(), DB: redistest.DB(), PoolSize: 5})
-	t.Cleanup(func() { _ = rdb.Close() })
+	rdb := newTestRedis(t)
 	sessMgr, err := mw.NewSessionManager(testDB, rdb, "0123456789abcdef")
 	if err != nil {
 		t.Fatalf("session manager: %v", err)
@@ -426,8 +454,7 @@ func TestAccountAndChannelReadRequireSession(t *testing.T) {
 // CSRF double submit: a valid session alone is not enough for a mutation.
 // There is no "skip CSRF in tests" switch — the same middleware runs here.
 func TestSessionMutationRequiresCSRF(t *testing.T) {
-	rdb := redisx.New(redisx.Options{Addr: redistest.Addr(), DB: redistest.DB(), PoolSize: 5})
-	t.Cleanup(func() { _ = rdb.Close() })
+	rdb := newTestRedis(t)
 	sessMgr, err := mw.NewSessionManager(testDB, rdb, "0123456789abcdef")
 	if err != nil {
 		t.Fatalf("session manager: %v", err)
@@ -502,6 +529,19 @@ func TestSessionMutationRequiresCSRF(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("logout with CSRF status=%d body=%s, want 204", rec.Code, rec.Body.String())
 	}
+	// The 204 is only worth anything if K20 really went away: Logout ignores
+	// what Revoke did, so a dropped DEL still answers 204 and the replay below
+	// would be accepted. Assert the key itself so that case fails here, where
+	// the message names the cause instead of the next request's status code.
+	sid := strings.SplitN(cookieValue, ".", 2)[0]
+	exists, err := rdb.Raw().Exists(context.Background(), redisx.AdminSessionKey(sid)).Result()
+	if err != nil {
+		t.Fatalf("read K20 after logout: %v", err)
+	}
+	if exists != 0 {
+		t.Fatalf("logout answered 204 but %s still exists: the sid was not revoked",
+			redisx.AdminSessionKey(sid))
+	}
 
 	// Replaying the old token after logout: K20 is gone, so Load answers 401
 	// before the CSRF comparison runs. The token is dead with the session.
@@ -517,8 +557,7 @@ func TestSessionMutationRequiresCSRF(t *testing.T) {
 // whole mux were broken, and a site route accidentally wired through s.authed
 // would answer 401 here.
 func TestPublicSiteRoutesNeedNoSession(t *testing.T) {
-	rdb := redisx.New(redisx.Options{Addr: redistest.Addr(), DB: redistest.DB(), PoolSize: 5})
-	t.Cleanup(func() { _ = rdb.Close() })
+	rdb := newTestRedis(t)
 	sessMgr, err := mw.NewSessionManager(testDB, rdb, "0123456789abcdef")
 	if err != nil {
 		t.Fatalf("session manager: %v", err)

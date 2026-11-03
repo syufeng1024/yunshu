@@ -76,9 +76,43 @@ func TestMain(m *testing.M) {
 	_ = os.Setenv("CHANNEL_KEY_KEK", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
 	_ = os.Setenv("FP_HMAC_KEY", fingerprint)
 
+	// Serialise this binary against internal/control/fund: both drive the
+	// plan-grant path (G-09 claims a trial, fund's trial/confirm tests do the
+	// same) and two concurrent grants deadlock on the uk_rlp_scope_active
+	// supremum gap lock, which surfaces here as a 500 from /trial/claim. See
+	// ctltest.PlanGrantLock for the InnoDB deadlock dump.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	unlockPlanGrant, err := ctltest.LockPlanGrant(ctx, testDB, 5*time.Minute)
+	cancel()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "acceptance tests: %v\n", err)
+		os.Exit(1)
+	}
+
+	// os.Exit skips deferred calls, so the lock is released explicitly.
 	code := redistest.Setup(m)
+	unlockPlanGrant()
 	_ = db.Close()
 	os.Exit(code)
+}
+
+// newAcceptanceRedis opens this package's Redis client with a command budget
+// sized for a machine that runs a dozen package binaries at once.
+//
+// redisx.DefaultCommandTimeout is 50ms and it is a production latency policy.
+// As a fixture budget it turns a momentary stall of the one shared Redis server
+// into auth_unavailable (503) from SessionManager.Load — observed repeatedly
+// while `go test ./...` was running: G-09's third claim, and the CSRF test in
+// internal/control, both answered 503 where the assertion expects 409/204.
+// Nothing these tests assert is about Redis latency, so the fixture asks for 2s.
+func newAcceptanceRedis() *redisx.Client {
+	return redisx.New(redisx.Options{
+		Addr:           redistest.Addr(),
+		DB:             redistest.DB(),
+		PoolSize:       10,
+		CommandTimeout: 2 * time.Second,
+		LuaTimeout:     2 * time.Second,
+	})
 }
 
 // server builds the control plane exactly once. The closures mirror
@@ -87,7 +121,7 @@ func TestMain(m *testing.M) {
 func server(t *testing.T) (*control.Server, *http.ServeMux) {
 	t.Helper()
 	serverOnce.Do(func() {
-		rdb := redisx.New(redisx.Options{Addr: redistest.Addr(), DB: redistest.DB(), PoolSize: 10})
+		rdb := newAcceptanceRedis()
 		testRedis = rdb
 		sess, err := mw.NewSessionManager(testDB, rdb, "t21-acceptance-session-secret")
 		if err != nil {

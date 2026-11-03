@@ -44,7 +44,19 @@ func TestMain(m *testing.M) {
 
 func newAuthService(t *testing.T) (*Service, *mw.SessionManager, *redisx.Client) {
 	t.Helper()
-	rdb := redisx.New(redisx.Options{Addr: redistest.Addr(), DB: redistest.DB(), PoolSize: 10})
+	// 2s command budget, not redisx.DefaultCommandTimeout (50ms). The 50ms is a
+	// production latency policy; as a fixture budget it fails this package under
+	// `go test ./internal/control/...`, where a dozen binaries share one Redis:
+	// Issue answers "write K20/K30: context deadline exceeded" and Load answers
+	// auth_unavailable (503) for a session/cancel assertion that has nothing to
+	// do with latency.
+	rdb := redisx.New(redisx.Options{
+		Addr:           redistest.Addr(),
+		DB:             redistest.DB(),
+		PoolSize:       10,
+		CommandTimeout: 2 * time.Second,
+		LuaTimeout:     2 * time.Second,
+	})
 	t.Cleanup(func() { _ = rdb.Close() })
 	sessMgr, err := mw.NewSessionManager(testDB, rdb, "0123456789abcdef")
 	if err != nil {
