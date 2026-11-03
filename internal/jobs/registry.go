@@ -170,6 +170,7 @@ func TaskTable() []Task {
 		// so a sample is never staler than one rule evaluation; both queries
 		// are covered by an index and cost less than the scrape itself.
 		{Name: SettleBacklogTaskName, Period: 30 * time.Second, RequiresLeader: false, Timeout: time.Minute},
+		{Name: TicketSLATaskName, Period: 30 * time.Second, RequiresLeader: false, Timeout: time.Minute},
 	}
 }
 

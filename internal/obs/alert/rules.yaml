@@ -219,22 +219,28 @@ groups:
             正常态（见 docs/degradation.md「恢复」一节）。
           runbook: 'docs/ops-runbook.md §8 容量与限流告警'
 
-      # -------------------------------------------------- SLA 工单超时（无埋点）
-      # 无埋点：t_ticket 的首响超时没有导出成指标。目前唯一可读的出口是后台总览
-      # 接口 GET /api/admin/overview 的 alerts.sla_overdue 字段
-      # （internal/control/ops/overview.go：state='OPEN' AND first_responded_at IS NULL
-      # AND first_response_due_at < now 的计数）。
-      # 替代巡检：值班每 2 小时查一次该接口；若要把「超时」做成告警，需要先在
-      # jobsd 侧加一个 gauge（复用上面那条 SQL），本卡不擅自扩指标清单。
-      # 正式规则（埋点落地后取消注释）：
+      # --------------------------------------------------------- SLA 工单超时
+      # gw_ticket_sla_overdue 由 jobsd 每 30s 采样，SQL 是
+      # ticket.FirstResponseOverdueSQL（state='OPEN' AND first_responded_at IS NULL
+      # AND first_response_due_at < now），与 GET /api/admin/overview 的
+      # alerts.sla_overdue 是同一条语句——页面与告警不可能报出两个数（G25）。
       #
-      # - alert: TicketSLAFirstResponseOverdue
-      #   expr: gw_ticket_sla_overdue > 0
-      #   for: 0m
-      #   labels:
-      #     severity: P1
-      #     team: support
-      #   annotations:
-      #     summary: '工单首响超时 {{ $value }} 条'
-      #     description: 'PRD §9.2 承诺首次响应 ≤ 4 小时。'
-      #     runbook: 'docs/ops-runbook.md §8 容量与限流告警'
+      # 为什么是 gauge 而不是计数器：工单被回复或关闭后就不再超时，计数器只会一路上涨，
+      # 涨到多少都不说明当前欠了几张单。
+      #
+      # summary 里的 4 小时来自 PRD §9.2 对外承诺（首次响应 ≤ 4h）；阈值只能是 > 0：
+      # 承诺是对外写死的，欠一张就已经违约，没有「允许欠几张」的档位。
+      - alert: TicketSLAFirstResponseOverdue
+        expr: max(gw_ticket_sla_overdue) > 0
+        for: 0m
+        labels:
+          severity: P1
+          team: support
+        annotations:
+          summary: '工单首响超时 {{ $value }} 条（PRD §9.2 承诺 4 小时内首次响应）'
+          description: >-
+            已超时仍未首次回复的 OPEN 工单数。按 first_response_due_at 升序认领
+            （登录后台 /admin/tickets 打开「SLA 超时」筛选即可拿到同一份队列）。
+            不要用自动关闭「解决」它——那会把「平台没回」记成「工单已了结」，
+            SLA 数据从此不可信（PRD F21-2）。
+          runbook: 'docs/ops-runbook.md §8 容量与限流告警'

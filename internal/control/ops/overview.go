@@ -7,6 +7,7 @@ import (
 
 	"yunshu.dev/core/internal/apierr"
 	"yunshu.dev/core/internal/control/mw"
+	"yunshu.dev/core/internal/control/ticket"
 )
 
 // The operator overview is a fixed set of real aggregates. It deliberately
@@ -119,11 +120,13 @@ func (s *Service) Overview(w http.ResponseWriter, r *http.Request) {
 	}
 	resp.Alerts.ReconDiff = recon
 
-	slaOverdue, apiErr := s.overviewCount(ctx, `
-		SELECT COUNT(*) FROM t_ticket
-		 WHERE state = 'OPEN' AND first_responded_at IS NULL AND first_response_due_at < ?`, now)
-	if apiErr != nil {
-		mw.WriteError(w, r, apiErr)
+	// sla_overdue is the same predicate jobsd exports as gw_ticket_sla_overdue
+	// (G25). It lives in the ticket package so the operator page and the alert
+	// cannot drift: one statement, two consumers.
+	slaOverdue, err := ticket.CountFirstResponseOverdue(ctx, s.DB, now)
+	if err != nil {
+		s.logError(ctx, "admin_overview_sla_overdue_failed: "+err.Error())
+		mw.WriteError(w, r, apierr.New(apierr.CodeInternalError))
 		return
 	}
 	resp.Alerts.SLAOverdue = slaOverdue

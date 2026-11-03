@@ -339,3 +339,34 @@ func (s *Service) adminTicketByID(ctx context.Context, id int64) (*adminTicketIt
 	}
 	return item, nil
 }
+
+// FirstResponseOverdueSQL counts the tickets in the first-response alert zone:
+// still OPEN, nobody has answered yet, and the 4-hour deadline has passed
+// (PRD §9.2 / F21-2). It is the ONE definition of that predicate as a count.
+//
+// Two consumers read it and they must never disagree, because one of them is
+// what the platform promises and the other is how the platform notices:
+//   - GET /api/admin/overview returns it as alerts.sla_overdue (operator page);
+//   - jobsd exports it as gw_ticket_sla_overdue for TicketSLAFirstResponseOverdue
+//     (G25), so a breach is an alert instead of a twice-an-hour manual poll.
+//
+// The state literal is 'OPEN' rather than a bind parameter so the statement
+// stays a single countable string; TestFirstResponseOverdueSQLMatchesState
+// keeps it equal to StateOpen.
+const FirstResponseOverdueSQL = `SELECT COUNT(*) FROM t_ticket
+		 WHERE state = 'OPEN' AND first_responded_at IS NULL AND first_response_due_at < ?`
+
+// CountFirstResponseOverdue runs FirstResponseOverdueSQL. now is the instant
+// the caller considers "now" (the services pass their injectable clock);
+// passing a different instant here than the response uses would make the alert
+// and the page disagree by however long the request ran.
+func CountFirstResponseOverdue(ctx context.Context, db *sql.DB, now time.Time) (int64, error) {
+	if db == nil {
+		return 0, nil
+	}
+	var n int64
+	if err := db.QueryRowContext(ctx, FirstResponseOverdueSQL, now).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}

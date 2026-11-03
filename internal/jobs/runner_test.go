@@ -24,6 +24,7 @@ var wantTasks = []string{
 // exporting its gauge on whichever replica does not hold the lease.
 var wantReadOnlyTasks = []string{
 	SettleBacklogTaskName,
+	TicketSLATaskName,
 }
 
 // Every T09 task has a side effect, so every row in TaskTable must require the

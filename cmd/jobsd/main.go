@@ -261,6 +261,9 @@ func main() {
 			jobs.SettleBacklogTaskName: func(ctx context.Context, _ time.Time) error {
 				return obsSample.RunSettleBacklog(ctx)
 			},
+			jobs.TicketSLATaskName: func(ctx context.Context, _ time.Time) error {
+				return obsSample.RunTicketSLA(ctx)
+			},
 		},
 	}
 	if err := runner.Validate(); err != nil {

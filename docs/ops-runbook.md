@@ -165,6 +165,6 @@ UPDATE t_reconcile_diff
 | `GatewayLatencyP99High`（P2） | `histogram_quantile(0.99, …) > 120` | 120s 是非流式客户端超时预算。先看 `gw_upstream_attempts_total` 的失败分类与 `gw_circuit_state`，再按 `channel_id` 判断是否单渠道劣化 |
 | `CircuitBreakerOpen`（P2） | `gw_circuit_state == 1` 持续 2 分钟 | 单渠道 OPEN 看 `t_upstream_attempt` 的 `error_class`；全部渠道 OPEN 按「上游整体不可用」处理，**不要在网关侧反复重启**（重启不会恢复上游） |
 | `OrderAutoCloseFailing`（P1） | `increase(gw_order_auto_close_failed_total[15m]) > 0` | 见 §7 的 `close_expired_order` 行 |
-| 工单 SLA 超时 | **无埋点**，只能查 `GET /api/admin/overview` 的 `alerts.sla_overdue` | 每 2 小时巡检一次；超时工单按 `first_response_due_at` 升序处理。要做成告警需先在 jobsd 侧加 gauge（见 rules.yaml 里被注释掉的那条规则） |
+| `TicketSLAFirstResponseOverdue`（P1） | `max(gw_ticket_sla_overdue) > 0` | PRD §9.2 承诺首次响应 ≤ 4 小时，欠一张就已违约，所以阈值只能是 0。数值由 jobsd 每 30s 用 `ticket.FirstResponseOverdueSQL` 采样，与 `GET /api/admin/overview` 的 `alerts.sla_overdue` 同一条 SQL。按 `first_response_due_at` 升序认领（后台 `/admin/tickets` 的「SLA 超时」筛选）。**不要用自动关闭处置**——那会把「平台没回」记成「工单已了结」（PRD F21-2） |
 
 **降级期间的统一口径**：先看 `gw_ratelimit_degraded_total{dim}` 是否在涨（说明处于降级而不是故障），再看 reject 比例是否被降级放大。降级是**预期行为**，不要当成故障处理；但 `concurrency` 降级意味着实际并发上限按副本数缩小了，如果同时在扩缩容，需要把「名义值 ÷ 副本数」算给业务方。
