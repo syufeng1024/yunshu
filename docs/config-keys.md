@@ -73,7 +73,7 @@
 | `LOG_BODY_KEK_PREVIOUS` | gatewayd、controld | 空 | 已退休正文 KEK，格式 `id:base64`，多段用逗号分隔（如 `body-v1:<base64>`）。读取端按行内 `body_key_id` 选 key，因此轮换后旧行在 180 天保留期内仍可解密。**旧 key 至少保留到该 key 加密的最后一行过期**，否则那些请求的正文接口会返回 404 并记 `gw_log_body_open_failed_total`（数据仍在，只是解不开）。id 与当前 id 重复、base64 非法或长度非 32 字节时进程照常启动但正文不落库，并在启动日志打印原因 |
 | `AUTH_VERIFICATION_MODE` | controld | `log` | 注册/登录验证码的投递方式：`log`（验证码打到进程日志，仅开发与 CI）、`smtp`（发邮件）、`off`（不要求验证码，端点返回 400）。配成其他值、或配 `smtp` 却没有可用 SMTP 通道时**进程拒绝启动**——否则第一次注册才会暴露，看起来像产品故障 |
 | `AUTH_SMTP_CHANNEL` | controld | 见右 | 当前发信使用的 SMTP 通道名，大小写不敏感。缺省时：只有一个通道则用它；一个都没有则视为未配置 SMTP；**有多个通道却未指定则启动失败并列出候选名**——静默挑一个会让「为什么邮件从另一个账号发出」变成一下午的排查。配了它却没有任何通道时同样启动失败 |
-| `SMTP_HOST` / `SMTP_PORT` | controld | 空 / `587` | 邮件中继，DEFAULT 通道写法（无前缀，等价于 `SMTP_DEFAULT_*`）。`SMTP_PORT=465` 时配 `SMTP_TLS=implicit`（连上即 TLS），587 用默认 `starttls` |
+| `SMTP_HOST` / `SMTP_PORT` | controld | 空 / `587` | 邮件中继，DEFAULT 通道的主要写法（无前缀）。同一个通道也可以用 `SMTP_DEFAULT_HOST` 等**另一种拼写**声明，单独使用时效果相同；但两种拼写**混写**会被判为「同一通道被声明两次」而启动失败（大小写不同同理，见末行通道名规则）——所以「等价」只在另一种拼写缺席时成立，别把 `SMTP_HOST` 和 `SMTP_DEFAULT_HOST` 同时写上。`SMTP_PORT=465` 时配 `SMTP_TLS=implicit`（连上即 TLS），587 用默认 `starttls` |
 | `SMTP_USERNAME` / `SMTP_PASSWORD` | controld | 空 | SMTP 认证凭据。用户名非空而服务器不提供 STARTTLS 时**拒绝发送**（不把凭据裸奔在明文连接上）。凭据只走 env，不进 `t_config_item`，也不出现在启动日志与错误信息里 |
 | `SMTP_FROM` | controld | 空 | 信封发件人。含 CR/LF 直接启动失败（防头注入）。163/QQ 要求它与认证账号同址（否则 163 回 `553 Mail from must equal authorized user`） |
 | `SMTP_TLS` | controld | `starttls` | `starttls` 或 `implicit`；其他值启动失败 |

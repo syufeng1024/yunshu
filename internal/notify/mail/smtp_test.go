@@ -233,32 +233,54 @@ func TestChannelsEmptyTemplateIsNotConfigured(t *testing.T) {
 	}
 }
 
-// TestShippedTemplateStartsCleanly reads the template that the deploy docs tell
-// operators to copy, so the two cannot drift apart again. A style-only
-// declaration (SMTP_PORT=587 with an empty host) was once enough to abort
-// startup, and no hand-written fixture would have caught it.
-func TestShippedTemplateStartsCleanly(t *testing.T) {
+// TestDeployEnvTemplateYieldsNoChannels reads the template the deploy docs tell
+// operators to copy and feeds it through the public entry point, so the two
+// cannot drift apart again.
+//
+// This is a regression test with a real postmortem behind it: the template ships
+// SMTP_PORT=587 / SMTP_TLS=starttls as examples, and those were once counted as
+// "this channel is declared", so copying the template aborted controld's startup
+// while the docs promised it was harmless. A hand-written fixture did not catch
+// it because it set SMTP_PORT empty — only the real file does.
+func TestDeployEnvTemplateYieldsNoChannels(t *testing.T) {
+	// Neutralise whatever the developer's shell exports: this test is about the
+	// template alone. An empty value reads as "not set" to the parser, so
+	// t.Setenv is enough here.
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		if upper := strings.ToUpper(name); strings.HasPrefix(upper, PrefixDefault+"_") || upper == EnvChannel {
+			t.Setenv(name, "")
+		}
+	}
+
 	data, err := os.ReadFile(filepath.Join("..", "..", "..", "deploy", ".env.stack.example"))
 	if err != nil {
 		t.Fatalf("read deploy/.env.stack.example: %v", err)
 	}
-	vars := make([]string, 0, 32)
+	applied := 0
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "SMTP_") || strings.HasPrefix(line, "AUTH_SMTP_CHANNEL=") {
-			vars = append(vars, line)
+		if !strings.HasPrefix(line, PrefixDefault+"_") && !strings.HasPrefix(line, EnvChannel+"=") {
+			continue
 		}
+		name, value, ok := strings.Cut(line, "=")
+		if !ok {
+			t.Fatalf("template line is not KEY=VALUE: %q", line)
+		}
+		t.Setenv(name, value)
+		applied++
 	}
-	if len(vars) == 0 {
+	if applied == 0 {
 		t.Fatalf("no SMTP variables found in the template; the test is looking at the wrong file")
 	}
 
-	channels, err := channelsFromVars(t, vars...)
+	channels, err := ChannelsFromEnv()
 	if err != nil {
 		t.Fatalf("copying deploy/.env.stack.example must start cleanly, got: %v", err)
 	}
-	if len(channels.Configured) != 0 || channels.Sender != nil {
-		t.Fatalf("the template must not declare a channel, got %v", channels.Configured)
+	if len(channels.Configured) != 0 || channels.Sender != nil || channels.Selected != "" {
+		t.Fatalf("the template must not declare a channel, got configured=%v selected=%q",
+			channels.Configured, channels.Selected)
 	}
 }
 

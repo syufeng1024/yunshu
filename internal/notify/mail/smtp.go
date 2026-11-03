@@ -148,9 +148,19 @@ func (s *SMTP) GoString() string {
 // It predates named channels and is kept so existing callers keep working; new
 // code should use ChannelsFromEnv so AUTH_SMTP_CHANNEL is honoured.
 //
-// An empty SMTP_HOST reports ErrNotConfigured even when the other variables are
-// set: that has always been this function's contract, and a copied .env
-// template (SMTP_HOST= with a FROM filled in) must read as "no mail here".
+// The two entry points differ on purpose, and only for a half-written set of
+// variables:
+//
+//   - Empty SMTP_HOST reports ErrNotConfigured even when FROM or a credential is
+//     filled in. That has always been this function's contract (the host is read
+//     first and nothing else is looked at), and it keeps legacy callers that
+//     probe "is there a mailer at all?" from having to handle a hard error.
+//   - ChannelsFromEnv treats the same input as a configuration error: a channel
+//     that has been given a sender or a credential but no host is a mistake the
+//     operator should see at boot, not at the first send.
+//
+// Neither treats SMTP_PORT / SMTP_TLS alone as evidence of a channel: the
+// shipped .env.stack.example carries 587 / starttls as examples.
 func FromEnv() (*SMTP, error) {
 	if strings.TrimSpace(os.Getenv(EnvHost)) == "" {
 		return nil, ErrNotConfigured
