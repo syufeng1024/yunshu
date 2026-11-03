@@ -153,6 +153,24 @@ services:
       # CHANNEL_KEY_KEK / LOG_BODY_KEK 复用时，端点返回 503 config_unavailable。
       INTERNAL_CALL_SECRET: ${INTERNAL_CALL_SECRET:-}
       GATEWAY_INTERNAL_URL: ${GATEWAY_INTERNAL_URL:-http://gatewayd:8080}
+      # 注册/登录验证码。`docker compose --env-file` 只用于插值，**不会**把变量
+      # 注入容器，所以这里必须逐个透传，否则容器里的 controld 拿不到、启动日志
+      # 会报 "AUTH_VERIFICATION_MODE=smtp requires SMTP_HOST/SMTP_FROM" 并退出。
+      # SMTP 通道名是动态的（SMTP_<NAME>_*），新增通道时在下面追加 6 行。
+      AUTH_VERIFICATION_MODE: ${AUTH_VERIFICATION_MODE:-log}
+      AUTH_SMTP_CHANNEL: ${AUTH_SMTP_CHANNEL:-}
+      SMTP_163_HOST: ${SMTP_163_HOST:-}
+      SMTP_163_PORT: ${SMTP_163_PORT:-}
+      SMTP_163_TLS: ${SMTP_163_TLS:-}
+      SMTP_163_USERNAME: ${SMTP_163_USERNAME:-}
+      SMTP_163_PASSWORD: ${SMTP_163_PASSWORD:-}
+      SMTP_163_FROM: ${SMTP_163_FROM:-}
+      SMTP_QQ_HOST: ${SMTP_QQ_HOST:-}
+      SMTP_QQ_PORT: ${SMTP_QQ_PORT:-}
+      SMTP_QQ_TLS: ${SMTP_QQ_TLS:-}
+      SMTP_QQ_USERNAME: ${SMTP_QQ_USERNAME:-}
+      SMTP_QQ_PASSWORD: ${SMTP_QQ_PASSWORD:-}
+      SMTP_QQ_FROM: ${SMTP_QQ_FROM:-}
     ports:
       - "${CONTROL_PORT:-18081}:8081"
     depends_on:
