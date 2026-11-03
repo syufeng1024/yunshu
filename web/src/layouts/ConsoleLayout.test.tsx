@@ -83,4 +83,31 @@ describe('控制台常驻调用地址', () => {
 
     expect(screen.queryByText('调用地址')).not.toBeInTheDocument()
   })
+
+  // 侧边栏分组是「控制台与官网同一套语言」的一部分：一长条没有层次的菜单名
+  // 是后台感最强的来源。分组标题同时也是分组结构唯一的可见证据。
+  it('控制台侧边栏按分组渲染菜单', () => {
+    signIn()
+    renderShell(<ConsoleLayout />, '/')
+
+    for (const title of ['工作台', '用量与记录', '支持']) {
+      expect(screen.getByText(title)).toBeInTheDocument()
+    }
+    expect(screen.getByRole('link', { name: '概览' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '工单中心' })).toBeInTheDocument()
+  })
+
+  it('运营后台按角色过滤菜单项', () => {
+    act(() => {
+      useAuthStore.setState({ status: 'authenticated', user: { ...user, role: 'FINANCE' } })
+    })
+    renderShell(<AdminLayout />, '/')
+
+    // FINANCE sees the shared 运营概览 but not the OPS-only channels page.
+    expect(screen.getByRole('link', { name: '运营概览' })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: '渠道管理' })).not.toBeInTheDocument()
+    // 「财务」也是角色徽章的文字，用分组独有的标题断言分组本身。
+    expect(screen.getByText('审核与支持')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '订单与收款' })).toBeInTheDocument()
+  })
 })

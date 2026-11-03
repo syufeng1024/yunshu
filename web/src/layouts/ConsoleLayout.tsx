@@ -5,16 +5,16 @@ import { Logo } from '@/components/Logo'
 import { ScrollRestorer } from '@/components/ScrollRestorer'
 import { resolveGatewayBaseUrl } from '@/lib/apiBase'
 import { writeClipboard } from '@/lib/clipboard'
-import { CONSOLE_NAV, ROUTES } from '@/lib/constants'
+import { CONSOLE_NAV_GROUPS, ROUTES } from '@/lib/constants'
 import { cn } from '@/lib/cn'
 import { useAuthStore } from '@/stores/auth'
 
 function navClass({ isActive }: { isActive: boolean }): string {
   return cn(
-    'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+    'flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
     isActive
-      ? 'bg-sidebar-active text-sidebar-text'
-      : 'text-sidebar-muted hover:bg-sidebar-hover hover:text-sidebar-text',
+      ? 'bg-sidebar-active font-semibold text-sidebar-text'
+      : 'font-medium text-sidebar-muted hover:bg-sidebar-hover hover:text-sidebar-text',
   )
 }
 
@@ -92,27 +92,36 @@ export function ConsoleLayout() {
   return (
     <div className="min-h-screen bg-canvas md:flex">
       <ScrollRestorer />
-      <aside className="sticky top-0 z-30 flex w-full shrink-0 flex-row items-center gap-2 bg-sidebar-bg px-3 py-2 md:h-screen md:w-sidebar md:flex-col md:items-stretch md:gap-6 md:px-4 md:py-5">
+      <aside className="sticky top-0 z-30 flex w-full shrink-0 flex-row items-center gap-2 bg-sidebar-bg px-3 py-2 md:h-screen md:border-r md:border-sidebar-border md:w-sidebar md:flex-col md:items-stretch md:gap-6 md:px-4 md:py-5">
         <div className="flex items-center justify-between md:justify-start">
-          <Logo variant="dark" size="sm" collapsible to={ROUTES.console} />
+          <Logo size="sm" collapsible to={ROUTES.console} />
         </div>
 
         <nav
           aria-label="控制台导航"
-          className="flex flex-1 items-center gap-1 overflow-x-auto md:mt-2 md:flex-col md:items-stretch md:gap-1 md:overflow-visible"
+          className="flex flex-1 items-center gap-1 overflow-x-auto md:mt-2 md:flex-col md:items-stretch md:gap-2 md:overflow-visible"
         >
-          {CONSOLE_NAV.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.end}
-              className={navClass}
-              title={item.label}
-              aria-label={item.label}
-            >
-              <Icon name={item.icon} className="h-5 w-5" />
-              <span className="hidden whitespace-nowrap md:inline">{item.label}</span>
-            </NavLink>
+          {CONSOLE_NAV_GROUPS.map((group) => (
+            <div key={group.title} className="flex items-center gap-1 md:block">
+              <p className="hidden px-3 pb-1 text-xs font-medium text-ink-muted md:block">
+                {group.title}
+              </p>
+              <div className="flex items-center gap-1 md:flex-col md:items-stretch md:gap-1">
+                {group.items.map((item) => (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    end={item.end}
+                    className={navClass}
+                    title={item.label}
+                    aria-label={item.label}
+                  >
+                    <Icon name={item.icon} className="h-5 w-5" />
+                    <span className="hidden whitespace-nowrap md:inline">{item.label}</span>
+                  </NavLink>
+                ))}
+              </div>
+            </div>
           ))}
         </nav>
 

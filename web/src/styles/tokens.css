@@ -39,14 +39,17 @@
   --info: #0284c7;
   --info-soft: #f0f9ff;
 
-  /* Console / admin sidebar (dark in both ends) */
-  --sidebar-bg: #0f1729;
-  --sidebar-surface: #1e293b;
-  --sidebar-hover: #1e293b;
-  --sidebar-active: #312e81;
-  --sidebar-text: #f8fafc;
-  --sidebar-muted: #94a3b8;
-  --sidebar-border: #1e293b;
+  /* Console / admin sidebar — 与官网同一套浅色基底。
+     之前这里是深色（#0f1729），首页与控制台并排看像两个产品；深色侧栏还让
+     选中态只能靠底色明度差表达，反而更弱。现在选中项用 surface-2 圆角块 +
+     深色文字，与官网的卡片语言一致。 */
+  --sidebar-bg: #ffffff;
+  --sidebar-surface: #f8fafc;
+  --sidebar-hover: #f1f5f9;
+  --sidebar-active: #f1f5f9;
+  --sidebar-text: #0f1729;
+  --sidebar-muted: #475569;
+  --sidebar-border: #e2e8f0;
 
   /* Typography */
   --font-sans: Inter, "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei",

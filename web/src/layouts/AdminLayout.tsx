@@ -3,16 +3,16 @@ import { Badge } from '@/components/Badge'
 import { Icon } from '@/components/Icon'
 import { Logo } from '@/components/Logo'
 import { ScrollRestorer } from '@/components/ScrollRestorer'
-import { ADMIN_NAV, ROUTES, USER_ROLE_LABEL } from '@/lib/constants'
+import { ADMIN_NAV_GROUPS, ROUTES, USER_ROLE_LABEL } from '@/lib/constants'
 import { cn } from '@/lib/cn'
 import { useAuthStore } from '@/stores/auth'
 
 function navClass({ isActive }: { isActive: boolean }): string {
   return cn(
-    'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+    'flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
     isActive
-      ? 'bg-sidebar-active text-sidebar-text'
-      : 'text-sidebar-muted hover:bg-sidebar-hover hover:text-sidebar-text',
+      ? 'bg-sidebar-active font-semibold text-sidebar-text'
+      : 'font-medium text-sidebar-muted hover:bg-sidebar-hover hover:text-sidebar-text',
   )
 }
 
@@ -20,7 +20,12 @@ export function AdminLayout() {
   const user = useAuthStore((state) => state.user)
   const logout = useAuthStore((state) => state.logout)
   const navigate = useNavigate()
-  const visibleNav = ADMIN_NAV.filter((item) => user !== null && item.roles.includes(user.role))
+  // 按角色过滤后为空的组直接不渲染：FINANCE 看不到「运营」组时，留一个只有
+  // 标题的空段落比不显示更让人困惑。
+  const visibleGroups = ADMIN_NAV_GROUPS.map((group) => ({
+    title: group.title,
+    items: group.items.filter((item) => user !== null && item.roles.includes(user.role)),
+  })).filter((group) => group.items.length > 0)
 
   const handleLogout = async () => {
     await logout()
@@ -30,9 +35,9 @@ export function AdminLayout() {
   return (
     <div className="min-h-screen bg-canvas md:flex">
       <ScrollRestorer />
-      <aside className="sticky top-0 z-30 flex w-full shrink-0 flex-row items-center gap-2 bg-sidebar-bg px-3 py-2 md:h-screen md:w-sidebar md:flex-col md:items-stretch md:gap-5 md:px-4 md:py-5">
+      <aside className="sticky top-0 z-30 flex w-full shrink-0 flex-row items-center gap-2 bg-sidebar-bg px-3 py-2 md:h-screen md:border-r md:border-sidebar-border md:w-sidebar md:flex-col md:items-stretch md:gap-5 md:px-4 md:py-5">
         <div className="flex items-center justify-between gap-2 md:justify-start">
-          <Logo variant="dark" size="sm" collapsible to={ROUTES.admin} />
+          <Logo size="sm" collapsible to={ROUTES.admin} />
           {user ? (
             <span className="hidden md:inline-flex">
               <Badge variant="info">{USER_ROLE_LABEL[user.role]}</Badge>
@@ -42,20 +47,29 @@ export function AdminLayout() {
 
         <nav
           aria-label="运营后台导航"
-          className="flex flex-1 items-center gap-1 overflow-x-auto md:mt-1 md:flex-col md:items-stretch md:gap-1 md:overflow-visible"
+          className="flex flex-1 items-center gap-1 overflow-x-auto md:mt-1 md:flex-col md:items-stretch md:gap-2 md:overflow-visible"
         >
-          {visibleNav.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.end}
-              className={navClass}
-              title={item.label}
-              aria-label={item.label}
-            >
-              <Icon name={item.icon} className="h-5 w-5" />
-              <span className="hidden whitespace-nowrap md:inline">{item.label}</span>
-            </NavLink>
+          {visibleGroups.map((group) => (
+            <div key={group.title} className="flex items-center gap-1 md:block">
+              <p className="hidden px-3 pb-1 text-xs font-medium text-ink-muted md:block">
+                {group.title}
+              </p>
+              <div className="flex items-center gap-1 md:flex-col md:items-stretch md:gap-1">
+                {group.items.map((item) => (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    end={item.end}
+                    className={navClass}
+                    title={item.label}
+                    aria-label={item.label}
+                  >
+                    <Icon name={item.icon} className="h-5 w-5" />
+                    <span className="hidden whitespace-nowrap md:inline">{item.label}</span>
+                  </NavLink>
+                ))}
+              </div>
+            </div>
           ))}
         </nav>
 

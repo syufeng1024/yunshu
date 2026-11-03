@@ -114,6 +114,17 @@ export interface NavItem {
   end?: boolean
 }
 
+/**
+ * 侧边栏分组。中文后台的菜单一多就会变成一长条没有层次的名字列表，
+ * 分组标题是唯一不占额外宽度的分节手段（52pay 的控制台也是这么分的）。
+ *
+ * 扁平数组由分组派生，避免「分组改了、扁平列表忘了同步」。
+ */
+export interface NavGroup<T extends NavItem = NavItem> {
+  title: string
+  items: readonly T[]
+}
+
 export const SITE_NAV: readonly NavItem[] = [
   { to: ROUTES.home, label: '首页', icon: 'home', end: true },
   { to: ROUTES.pricing, label: '定价', icon: 'tag' },
@@ -121,16 +132,31 @@ export const SITE_NAV: readonly NavItem[] = [
   { to: ROUTES.integrations, label: '工具集成', icon: 'plug' },
 ]
 
-export const CONSOLE_NAV: readonly NavItem[] = [
-  { to: ROUTES.console, label: '概览', icon: 'home', end: true },
-  { to: ROUTES.consoleKeys, label: '密钥管理', icon: 'key' },
-  { to: ROUTES.consoleModels, label: '模型广场', icon: 'grid' },
-  { to: ROUTES.consoleUsage, label: '用量与账单', icon: 'chart' },
-  { to: ROUTES.consoleRecharge, label: '充值中心', icon: 'wallet' },
-  { to: ROUTES.consoleLogs, label: '请求日志', icon: 'terminal' },
-  { to: ROUTES.consolePlayground, label: '在线调试台', icon: 'terminal' },
-  { to: ROUTES.consoleTickets, label: '工单中心', icon: 'ticket' },
+export const CONSOLE_NAV_GROUPS: readonly NavGroup[] = [
+  {
+    title: '工作台',
+    items: [
+      { to: ROUTES.console, label: '概览', icon: 'home', end: true },
+      { to: ROUTES.consoleKeys, label: '密钥管理', icon: 'key' },
+      { to: ROUTES.consoleModels, label: '模型广场', icon: 'grid' },
+      { to: ROUTES.consolePlayground, label: '在线调试台', icon: 'terminal' },
+    ],
+  },
+  {
+    title: '用量与记录',
+    items: [
+      { to: ROUTES.consoleUsage, label: '用量与账单', icon: 'chart' },
+      { to: ROUTES.consoleLogs, label: '请求日志', icon: 'terminal' },
+      { to: ROUTES.consoleRecharge, label: '充值中心', icon: 'wallet' },
+    ],
+  },
+  {
+    title: '支持',
+    items: [{ to: ROUTES.consoleTickets, label: '工单中心', icon: 'ticket' }],
+  },
 ]
+
+export const CONSOLE_NAV: readonly NavItem[] = CONSOLE_NAV_GROUPS.flatMap((group) => group.items)
 
 export type UserRole = 'PERSONAL' | 'OPS' | 'FINANCE' | 'SUPER_ADMIN'
 export type UserStatus = 'NORMAL' | 'DISABLED' | 'FROZEN_OVERDRAFT'
@@ -186,34 +212,51 @@ export interface AdminNavItem extends NavItem {
  * 接口对 FINANCE 全 403，给 FINANCE 显示一个空壳页只是误导，故整页只对
  * ADMIN_PRICING_ROLES 开放（2026-11-02 需求方裁定）。
  */
-export const ADMIN_NAV: readonly AdminNavItem[] = [
-  { to: ROUTES.admin, label: '运营概览', icon: 'home', end: true, roles: ADMIN_ROLES },
-  { to: ROUTES.adminChannels, label: '渠道管理', icon: 'plug', roles: ['OPS', 'SUPER_ADMIN'] },
-  { to: ROUTES.adminUsers, label: '用户管理', icon: 'users', roles: ['OPS', 'SUPER_ADMIN'] },
+export const ADMIN_NAV_GROUPS: readonly NavGroup<AdminNavItem>[] = [
   {
-    to: ROUTES.adminAnnouncements,
-    label: '公告与风控',
-    icon: 'megaphone',
-    roles: ['OPS', 'SUPER_ADMIN'],
+    title: '运营',
+    items: [
+      { to: ROUTES.admin, label: '运营概览', icon: 'home', end: true, roles: ADMIN_ROLES },
+      { to: ROUTES.adminChannels, label: '渠道管理', icon: 'plug', roles: ['OPS', 'SUPER_ADMIN'] },
+      { to: ROUTES.adminUsers, label: '用户管理', icon: 'users', roles: ['OPS', 'SUPER_ADMIN'] },
+      {
+        to: ROUTES.adminAnnouncements,
+        label: '公告与风控',
+        icon: 'megaphone',
+        roles: ['OPS', 'SUPER_ADMIN'],
+      },
+      { to: ROUTES.adminModels, label: '模型主数据', icon: 'database', roles: ['OPS', 'SUPER_ADMIN'] },
+    ],
   },
   {
-    to: ROUTES.adminOrders,
-    label: '订单与收款',
-    icon: 'wallet',
-    roles: ['FINANCE', 'SUPER_ADMIN'],
+    title: '财务',
+    items: [
+      {
+        to: ROUTES.adminOrders,
+        label: '订单与收款',
+        icon: 'wallet',
+        roles: ['FINANCE', 'SUPER_ADMIN'],
+      },
+      {
+        to: ROUTES.adminRedeemCodes,
+        label: '兑换码',
+        icon: 'ticket',
+        roles: ['FINANCE', 'SUPER_ADMIN'],
+      },
+    ],
   },
   {
-    to: ROUTES.adminRedeemCodes,
-    label: '兑换码',
-    icon: 'ticket',
-    roles: ['FINANCE', 'SUPER_ADMIN'],
+    title: '审核与支持',
+    items: [
+      {
+        to: ROUTES.adminReviews,
+        label: '审核中心',
+        icon: 'shield',
+        roles: ['OPS', 'FINANCE', 'SUPER_ADMIN'],
+      },
+      { to: ROUTES.adminTickets, label: '工单处理', icon: 'ticket', roles: ['OPS', 'SUPER_ADMIN'] },
+    ],
   },
-  {
-    to: ROUTES.adminReviews,
-    label: '审核中心',
-    icon: 'shield',
-    roles: ['OPS', 'FINANCE', 'SUPER_ADMIN'],
-  },
-  { to: ROUTES.adminTickets, label: '工单处理', icon: 'ticket', roles: ['OPS', 'SUPER_ADMIN'] },
-  { to: ROUTES.adminModels, label: '模型主数据', icon: 'database', roles: ['OPS', 'SUPER_ADMIN'] },
 ]
+
+export const ADMIN_NAV: readonly AdminNavItem[] = ADMIN_NAV_GROUPS.flatMap((group) => group.items)
