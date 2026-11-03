@@ -166,6 +166,12 @@ func TaskTable() []Task {
 		// nightly tasks: the finance queue is read all day, and an order that
 		// expired at 09:31 must not still look payable at 09:40.
 		{Name: "close_expired_order", Period: 5 * time.Minute, RequiresLeader: true, Timeout: 5 * time.Minute},
+		// 「用户关闭即删」: once log.body_mode is meta_only, every retained body
+		// is a broken promise (TDS 4318 / B-67). It is a write, so it needs the
+		// lease; 60s keeps the window between "operator switched it off" and
+		// "bodies are gone" inside a minute, while a run that finds nothing
+		// costs one index probe.
+		{Name: PurgeBodyModeTaskName, Period: 60 * time.Second, RequiresLeader: true, Timeout: 10 * time.Minute},
 		// Gauge samplers. 30s matches the alert group's evaluation interval,
 		// so a sample is never staler than one rule evaluation; both queries
 		// are covered by an index and cost less than the scrape itself.

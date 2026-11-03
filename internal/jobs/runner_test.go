@@ -15,6 +15,7 @@ var wantTasks = []string{
 	"daily_reconcile",
 	"expire_batch",
 	"prehold_release",
+	"purge_body_mode",
 	"purge_log",
 	"rollup",
 }

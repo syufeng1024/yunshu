@@ -185,6 +185,11 @@ func main() {
 		&audit.Writer{DB: mainDB, Now: clock.Real{}}, logger, clock.Real{})
 	closeExpired.Metrics = rec
 
+	// 「用户关闭即删」(G2): log.body_mode=meta_only 时删除已存正文。复用 purge 的
+	// 批删循环（批大小/200ms 间隔/ctx 取消），审计走同一张 t_admin_audit_log。
+	purgeBody := jobs.NewPurgeBodiesOnMetaOnly(mainDB, purge,
+		&audit.Writer{DB: mainDB, Now: clock.Real{}}, logger, clock.Real{})
+
 	// Point-in-time gauges (G24/G25). jobsd is the only process that both holds
 	// the main DB handle and runs on a timer; the gateway must not pay for a
 	// COUNT(*) on the request path, so the numbers are produced here and read
@@ -263,6 +268,22 @@ func main() {
 			},
 			jobs.TicketSLATaskName: func(ctx context.Context, _ time.Time) error {
 				return obsSample.RunTicketSLA(ctx)
+			},
+			// Deletes bodies while log.body_mode is meta_only. Leader-only: it
+			// is a write, and BodyMode defaults to reading t_config_item, so a
+			// follower must not race the leader into the same DELETE.
+			jobs.PurgeBodyModeTaskName: func(ctx context.Context, _ time.Time) error {
+				res, err := purgeBody.Run(ctx)
+				if err != nil {
+					return err
+				}
+				if res.Deleted > 0 || res.Skipped {
+					logger.Info(ctx, fmt.Sprintf(
+						"purge_body_mode deleted=%d batches=%d truncated=%t mode=%s skipped=%t",
+						res.Deleted, res.Batches, res.Truncated, res.Mode, res.Skipped),
+						obslog.Fields{Stage: jobs.PurgeBodyModeTaskName})
+				}
+				return nil
 			},
 		},
 	}
