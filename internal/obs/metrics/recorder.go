@@ -91,7 +91,7 @@ func NewRecorder(reg *Registry) *Recorder {
 			"Rate-limit rejections by dimension.",
 			"dim"),
 		ratelimitDegraded: reg.Counter("gw_ratelimit_degraded_total",
-			"Rate-limit decisions served by the node-local concurrency counter.",
+			"Rate-limit decisions taken by the node-local concurrency counter because Redis was unavailable.",
 			"dim"),
 		ratelimitUnavailable: reg.Counter("gw_ratelimit_unavailable_total",
 			"Rate-limit decisions that failed closed because Redis was unavailable.",

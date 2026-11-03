@@ -670,8 +670,14 @@ func TestA8ConcurrencyDegradation(t *testing.T) {
 	if exists := raw.Exists(t.Context(), redisx.ConcurrencyKey(50)).Val(); exists != 0 {
 		t.Fatal("degraded path wrote K3")
 	}
-	if len(metrics.degraded) == 0 || metrics.degraded[0] != "concurrency" {
-		t.Fatalf("degraded metric = %v", metrics.degraded)
+	// G29: Redis is healthy here, so concurrency is local only because the mode
+	// says so — that is a configuration, not a degradation event. The counter
+	// used to move on this path, which turned it into an admission counter and
+	// destroyed the outage signal. Its "moves during a real outage" half is
+	// TestDegradedCounterCountsOutagesNotAdmissions.
+	if len(metrics.degraded) != 0 {
+		t.Fatalf("degraded metric moved on a healthy Redis (%v): it must only count "+
+			"Redis-driven fallbacks (G29)", metrics.degraded)
 	}
 	if _, err := limiter.Release(t.Context(), ReleaseInput{
 		KeyID: 50, UserID: 50, RequestID: "deg-a",

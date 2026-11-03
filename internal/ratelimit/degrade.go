@@ -34,13 +34,17 @@ const EnvDegradeMode = "GW_RATELIMIT_DEGRADE_MODE"
 // G31 made the concurrency fallback reachable: Replicas() is now a cached
 // last-known value refreshed in the background, so concurrency_only no longer
 // pays two extra Redis reads per request or returns 503 just because the
-// divisor cannot be read. The default still stays off for two reasons:
+// divisor cannot be read.
+//
+// G29 removed the second reason the default used to be off — "turning it on
+// rewrites gw_ratelimit_degraded_total into an admission counter". That counter
+// now only moves while Redis is actually failing, in either mode. What remains:
 //
 //  1. concurrency_only relaxes only the concurrency dimension; RPM/TPM/daily
 //     still fail closed, so the availability gain is partial by design.
-//  2. Turning it on rewrites the meaning of gw_ratelimit_degraded_total{dim=
-//     "concurrency"}, which would then count admitted requests instead of
-//     outages, blurring the outage signal.
+//  2. Flipping the default changes the degradation posture of a running
+//     service, which is a product decision, not a code default. It is tracked
+//     in docs/go-live-checklist.md (item 19) and stays off until answered.
 //
 // The switch is read from EnvDegradeMode; an unknown value stops the process
 // rather than being ignored. TDS :3073 lists concurrency_only as V1's only
@@ -109,6 +113,12 @@ type Degrader struct {
 	// path (no Redis) and refreshed by RefreshReplicas in the heartbeat loop,
 	// so a Redis outage keeps the last divisor instead of blocking admission.
 	replicas atomic.Int64
+	// redisDown is the last observed reachability of Redis on the degraded
+	// path. It is not a health probe: it is memory of the previous request's
+	// outcome, used to tell "we are counting locally because Redis is broken"
+	// apart from "we are counting locally because the mode says so" — the
+	// difference gw_ratelimit_degraded_total must report (G29).
+	redisDown atomic.Bool
 }
 
 // NewDegrader builds a degrader. nodeID must be stable for the process
@@ -135,6 +145,35 @@ func NewDegrader(client *redisx.Client, clock *redisx.Clock, nodeID string, mode
 
 // Enabled reports whether concurrency is locally counted.
 func (d *Degrader) Enabled() bool { return d != nil && d.mode == ModeConcurrencyOnly }
+
+// MarkRedisDown records that the Redis-backed half of the admission check just
+// failed. The next request knows it is degraded *because of Redis*, not because
+// the mode asked for it (G29).
+func (d *Degrader) MarkRedisDown() {
+	if d == nil {
+		return
+	}
+	d.redisDown.Store(true)
+}
+
+// MarkRedisUp records that the Redis-backed half of the admission check just
+// succeeded, so the outage observation no longer applies.
+func (d *Degrader) MarkRedisUp() {
+	if d == nil {
+		return
+	}
+	d.redisDown.Store(false)
+}
+
+// RedisDown reports whether the last Redis-backed admission check failed.
+//
+// It is per-process memory, not a shared truth: two gateway replicas can
+// disagree for one request. That is deliberate and harmless — the value only
+// decides whether a degraded admission is attributed to an outage, and being
+// wrong for a single request costs one count, never an admission decision.
+// Erring toward "not down" keeps a healthy mode=concurrency_only deployment
+// from being reported as an outage.
+func (d *Degrader) RedisDown() bool { return d != nil && d.redisDown.Load() }
 
 // Replicas returns the cached replica count, never below one. It never touches
 // Redis, so the degraded concurrency path stays reachable during an outage:

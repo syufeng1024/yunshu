@@ -168,4 +168,4 @@ UPDATE t_reconcile_diff
 | `OrderAutoCloseFailing`（P1） | `increase(gw_order_auto_close_failed_total[15m]) > 0` | 见 §7 的 `close_expired_order` 行 |
 | `TicketSLAFirstResponseOverdue`（P1） | `max(gw_ticket_sla_overdue) > 0` | PRD §9.2 承诺首次响应 ≤ 4 小时，欠一张就已违约，所以阈值只能是 0。数值由 jobsd 每 30s 用 `ticket.FirstResponseOverdueSQL` 采样，与 `GET /api/admin/overview` 的 `alerts.sla_overdue` 同一条 SQL。按 `first_response_due_at` 升序认领（后台 `/admin/tickets` 的「SLA 超时」筛选）。**不要用自动关闭处置**——那会把「平台没回」记成「工单已了结」（PRD F21-2） |
 
-**降级期间的统一口径**：先看 `gw_ratelimit_degraded_total{dim}` 是否在涨（说明处于降级而不是故障），再看 reject 比例是否被降级放大。降级是**预期行为**，不要当成故障处理；但 `concurrency` 降级意味着实际并发上限按副本数缩小了，如果同时在扩缩容，需要把「名义值 ÷ 副本数」算给业务方。
+**降级期间的统一口径**：先看 `gw_ratelimit_unavailable_total` 是否在涨（Redis 真不可用），再看 `gw_ratelimit_degraded_total{dim}` 是否同时在涨（并发维度确实退到了节点内计数）；两者的语义自 G29 起是分开的——`degraded` **只在因 Redis 失败而本地判定时**自增，`GW_RATELIMIT_DEGRADE_MODE=concurrency_only` 本身不会让它涨。然后再看 reject 比例是否被降级放大。降级是**预期行为**，不要当成故障处理；但 `concurrency` 降级意味着实际并发上限按副本数缩小了，如果同时在扩缩容，需要把「名义值 ÷ 副本数」算给业务方。

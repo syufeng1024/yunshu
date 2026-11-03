@@ -36,8 +36,15 @@
 降级姿态由启动参数 `GW_RATELIMIT_DEGRADE_MODE` 决定（`ratelimit.ModeFromEnv`），取值 `off` / `concurrency_only`，**其它值启动失败**（不静默回落），启动日志打印 `ratelimit degrade mode=<姿态>`。在此之前该值是硬编码的 `ModeOff`，连启动参数都没读，属于 E-12 裁定「T07 从启动参数读取」未落实。
 
 **② 默认 `off`，理由与代价**
-TDS :3073 写「V1 唯一取值 `concurrency_only`」。G31 修好后这条路径已可达（§③），但默认仍 `off`，理由有二：(1) `concurrency_only` 只放宽并发一维，RPM/TPM/日额度仍 fail-close，可用性收益本就是局部的；(2) 开启会把 `gw_ratelimit_degraded_total{dim="concurrency"}` 的语义从「降级事件」改成「放行次数」，降级信号反而更模糊。
-默认 `off` 下该计数器**只反映真实降级**，不再被放行路径污染（有用例 `TestDegradedCounterStaysQuietInOffMode` 钉住）。
+TDS :3073 写「V1 唯一取值 `concurrency_only`」。G31 修好后这条路径已可达（§③），但默认仍 `off`：
+(1) `concurrency_only` 只放宽并发一维，RPM/TPM/日额度仍 fail-close，可用性收益本就是局部的；
+(2) 改默认值是**降级姿态**的产品决策，不是代码默认值问题，见 `docs/go-live-checklist.md` 第 19 项，未定之前不动。
+
+**`gw_ratelimit_degraded_total` 的语义已收口（G29）**：该计数器现在记的是「因为 **Redis 失败**才由节点内计数器做判定的请求」，不是「走了降级路径的请求」。埋点从 `acquireDegraded` 的成功路径挪到了 `Acquire` 的降级分支，并且只在 `Degrader.RedisDown()`（上一次 Redis 检查失败的记忆）为真时自增。因此：
+- `mode=off` 与 `mode=concurrency_only` 在 **Redis 健康**时该计数器**都不动**——模式开关不再污染故障信号；
+- 真正故障时它随请求增长，失败本身仍记在 `gw_ratelimit_unavailable_total`（**排查以 unavailable 为准**）；
+- 代价是 **±1 个请求的滞后**：故障后第一个请求还不知道 Redis 已坏（不计入 degraded），恢复后第一个请求仍带着上一条的「坏」记忆（计入 degraded）。这是把健康探测挡在热路径之外的必然代价，不是缺陷。
+用例 `TestDegradedCounterCountsOutagesNotAdmissions`（三段时间线：健康 / 故障 / 恢复）钉住这三条。
 
 **③ 已修（G31）：副本数改为缓存 + 周期刷新**
 `Replicas()` 已拆成「热路径读缓存」+「后台 `RefreshReplicas`」，Redis 不可用时并发维度用上次已知值算本地上限，不再因为读不到 K18' 而直接不可达。RPM/TPM/日额度 fail-close 不变：Redis 完全不可用时仍是「本地满 → 429 `concurrency_limit_exceeded`、未满 → 503 `rate_limiter_unavailable`」。`TestDegradedModeRejectsLocallyWhenRedisIsDown` 钉住这两条分支。
@@ -114,8 +121,8 @@ TDS :3073 写「V1 唯一取值 `concurrency_only`」。G31 修好后这条路�
 
 | 现象 | 指标 / 日志 | 说明 |
 | :--- | :--- | :--- |
-| 某维度正在降级 | `gw_ratelimit_degraded_total{dim}` + `WARN ratelimit_degraded` | `dim ∈ {rpm,tpm,concurrency,daily}` |
-| fail-close 已发生 | `gw_ratelimit_unavailable_total{dim}` | 每一次都是 503，对应 PRD §9.3 可用性分子 |
+| 某维度正在因 Redis 故障降级 | `gw_ratelimit_degraded_total{dim}` | `dim ∈ {rpm,tpm,concurrency,daily}`。**只在该维度因 Redis 检查失败而走本地判定时自增**（G29），Redis 健康时无论 `GW_RATELIMIT_DEGRADE_MODE` 取什么值都不动；有 ±1 个请求的滞后 |
+| fail-close 已发生 | `gw_ratelimit_unavailable_total{dim}` | 每一次都是 503，对应 PRD §9.3 可用性分子。**判断「是否真的在故障」看这个，不看 degraded** |
 | 降级期拒绝趋势 | `gw_ratelimit_rejected_total{dim}` | 按维度看降级是不是把拒绝推高了；告警见 `RatelimitRejectRatioHigh`（PRD §9.5，全局拒绝率） |
 
 告警规则见 `internal/obs/alert/rules.yaml`（`RatelimitUnavailable` 是降级/故障信号本身；降级把拒绝推高时由 `RatelimitRejectRatioHigh` / `RatelimitRejectRatioHighByDim` 反映）。

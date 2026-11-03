@@ -191,6 +191,17 @@ func (l *Limiter) Acquire(ctx context.Context, in AcquireInput) (Verdict, error)
 	}
 
 	if l.degrader != nil && l.degrader.Enabled() {
+		// gw_ratelimit_degraded_total means "this admission was decided by the
+		// node-local counter *because Redis was failing*", not "the mode is
+		// concurrency_only". Recording it here unconditionally turned the
+		// outage counter into an admission counter: with the mode switched on
+		// it moved on every healthy request, so it could no longer be used to
+		// tell an outage from a quiet minute (G29). The flag is set by the
+		// previous request's Redis outcome, which is the only per-request
+		// evidence available without paying for a health probe on the hot path.
+		if l.degrader.RedisDown() {
+			l.degraded("concurrency")
+		}
 		return l.acquireDegraded(ctx, in, nowMS, minEpoch, day)
 	}
 	verdict, err := l.callAcquire(ctx, in, nowMS, minEpoch, day, true)
@@ -225,14 +236,18 @@ func (l *Limiter) acquireDegraded(ctx context.Context, in AcquireInput, nowMS, m
 
 	verdict, err := l.callAcquire(ctx, in, nowMS, minEpoch, day, false)
 	if err != nil {
+		// Remember that Redis, not the mode, is why this request took the
+		// local path. The request itself still fails closed: RPM/TPM/daily
+		// protect quota and money and are never answered locally (T06 #7).
+		l.degrader.MarkRedisDown()
 		l.degrader.ReleaseLocal(in.KeyID, in.RequestID)
 		return Verdict{}, err
 	}
+	l.degrader.MarkRedisUp()
 	if !verdict.Allowed {
 		l.degrader.ReleaseLocal(in.KeyID, in.RequestID)
 		return verdict, nil
 	}
-	l.degraded("concurrency")
 	verdict.ConcurrencyMode = ConcurrencyLocal
 	return verdict, nil
 }
