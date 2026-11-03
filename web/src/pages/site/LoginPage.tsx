@@ -55,6 +55,16 @@ export default function LoginPage() {
   const resetDocsRef = useRef<HTMLAnchorElement>(null)
   const [claimNotice, setClaimNotice] = useState(false)
 
+  // A signed-in visitor should never sit on the login form. Before this, the
+  // header kept offering 登录 even after a successful sign-in, so clicking it
+  // showed the form again and looked like the session had been dropped.
+  const currentUser = useAuthStore((state) => state.user)
+  useEffect(() => {
+    if (authStatus === 'authenticated') {
+      navigate(safeNextPath(next, currentUser?.role ?? null), { replace: true })
+    }
+  }, [authStatus, navigate, next, currentUser?.role])
+
   const clearFeedback = () => {
     setError(null)
     setHint(null)

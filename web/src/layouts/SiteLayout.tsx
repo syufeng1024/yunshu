@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import type { ReactNode } from 'react'
 import { Link, NavLink, Outlet } from 'react-router-dom'
 import { buttonVariants } from '@/components/Button'
@@ -8,6 +9,7 @@ import { SERVICE_TERMS_SECTION_ID } from '@/content/legal'
 import { cn } from '@/lib/cn'
 import { BRAND_DESCRIPTION, ROUTES, SITE_NAV } from '@/lib/constants'
 import { PENDING_BEFORE_LAUNCH } from '@/lib/placeholders'
+import { useAuthStore } from '@/stores/auth'
 
 function navLinkClass({ isActive }: { isActive: boolean }): string {
   return cn(
@@ -49,6 +51,21 @@ const AGREEMENT_LINKS = [
 ] as const
 
 export function SiteLayout() {
+  const status = useAuthStore((state) => state.status)
+  const user = useAuthStore((state) => state.user)
+  const bootstrap = useAuthStore((state) => state.bootstrap)
+
+  // Public pages have to learn who the visitor is too. Only RequireAuth called
+  // bootstrap before, so arriving at "/" by URL — or reloading it — left the
+  // store at "unknown" and the header showed 登录 / 免费开始 to a signed-in
+  // user. That reads as "I got logged out" even though the session cookie was
+  // fine (the first report of this bug was exactly that).
+  useEffect(() => {
+    if (status === 'unknown') void bootstrap()
+  }, [status, bootstrap])
+
+  const authenticated = status === 'authenticated'
+
   return (
     <div className="flex min-h-screen flex-col bg-canvas">
       <ScrollRestorer />
@@ -69,15 +86,31 @@ export function SiteLayout() {
           </nav>
 
           <div className="flex items-center gap-2">
-            <Link to={ROUTES.login} className={buttonVariants({ variant: 'ghost', size: 'sm' })}>
-              登录
-            </Link>
-            <Link
-              to={`${ROUTES.login}?tab=register`}
-              className={buttonVariants({ variant: 'primary', size: 'sm' })}
-            >
-              免费开始
-            </Link>
+            {authenticated ? (
+              <>
+                <span className="hidden max-w-[12rem] truncate text-xs text-ink-secondary sm:inline">
+                  {user?.email ?? ''}
+                </span>
+                <Link
+                  to={ROUTES.console}
+                  className={buttonVariants({ variant: 'primary', size: 'sm' })}
+                >
+                  进入控制台
+                </Link>
+              </>
+            ) : (
+              <>
+                <Link to={ROUTES.login} className={buttonVariants({ variant: 'ghost', size: 'sm' })}>
+                  登录
+                </Link>
+                <Link
+                  to={`${ROUTES.login}?tab=register`}
+                  className={buttonVariants({ variant: 'primary', size: 'sm' })}
+                >
+                  免费开始
+                </Link>
+              </>
+            )}
           </div>
         </div>
 
@@ -107,7 +140,9 @@ export function SiteLayout() {
 
             <div className="grid grid-cols-2 gap-6 sm:grid-cols-4">
               <FooterGroup title="产品">
-                {PRODUCT_LINKS.map((item) => (
+                {/* 页脚的「登录」和 header 同理：已登录时留着它只会让人以为
+                    会话没了。控制台入口本来就在同一组里，不需要替换。 */}
+                {PRODUCT_LINKS.filter((item) => !(authenticated && item.label === '登录')).map((item) => (
                   <li key={item.label}>
                     <Link to={item.to} className="hover:text-ink">
                       {item.label}

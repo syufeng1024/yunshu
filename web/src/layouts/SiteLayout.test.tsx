@@ -1,7 +1,9 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { RouterProvider, createMemoryRouter } from 'react-router-dom'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { ROUTES } from '@/lib/constants'
 import { PENDING_BEFORE_LAUNCH } from '@/lib/placeholders'
+import { useAuthStore } from '@/stores/auth'
 import { SiteLayout } from './SiteLayout'
 
 // SiteLayout renders <ScrollRestorer />, which requires a data router, so the
@@ -28,6 +30,12 @@ function footerGroup(name: string): HTMLElement {
 }
 
 describe('SiteLayout', () => {
+  // Anonymous by default: "unknown" would make the layout bootstrap against a
+  // backend that does not exist in this test file.
+  beforeEach(() => {
+    useAuthStore.setState({ status: 'anonymous', user: null, error: null, hint: null })
+  })
+
   it('A23: footer carries product, docs, agreement and filing groups', () => {
     renderLayout()
 
@@ -70,5 +78,37 @@ describe('SiteLayout', () => {
       'href',
       '/login?tab=register',
     )
+  })
+
+  // Regression: the header used to be static, so a signed-in visitor who went
+  // back to the site saw 登录 / 免费开始 and concluded the session was gone.
+  it('shows the console entry instead of login CTAs once signed in', () => {
+    useAuthStore.setState({
+      status: 'authenticated',
+      user: {
+        id: '1',
+        email: 'user@example.com',
+        display_name: 'user@example.com',
+        role: 'PERSONAL',
+        status: 'NORMAL',
+        csrf_token: '',
+      },
+      error: null,
+      hint: null,
+    })
+
+    renderLayout()
+
+    const header = screen.getByRole('banner')
+    expect(within(header).getByRole('link', { name: '进入控制台' })).toHaveAttribute(
+      'href',
+      ROUTES.console,
+    )
+    expect(within(header).getByText('user@example.com')).toBeInTheDocument()
+    // Neither the header nor the footer may keep offering 登录 to a signed-in
+    // visitor: that is exactly what made the session look dropped.
+    expect(within(header).queryByRole('link', { name: '免费开始' })).toBeNull()
+    expect(within(header).queryByRole('link', { name: '登录' })).toBeNull()
+    expect(screen.queryByRole('link', { name: '登录' })).toBeNull()
   })
 })
