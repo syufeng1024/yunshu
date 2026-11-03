@@ -71,6 +71,19 @@
 
 ---
 
+## 附：正文密钥轮换（仅 `log.body_mode=opt_in` 时）
+
+不做轮换可跳过本节；做轮换则必须按顺序，否则历史正文会变成 404（数据还在，只是解不开，见 `docs/log-retention.md`「正文密钥轮换」）。
+
+| # | 检查 | 怎么验 | 不通过怎么办 |
+| :--- | :--- | :--- | :--- |
+| K-1 | 旧 key 先进 `LOG_BODY_KEK_PREVIOUS`，再换 `LOG_BODY_KEK` 与 `LOG_BODY_KEY_ID` | 三者的值与顺序在 `.env.stack` 里逐行核对；顺序颠倒会让切换窗口内的新行用新 key 写、旧 key 解 | 顺序错就回退到旧配置重启，确认正文可读后再重做 |
+| K-2 | gatewayd 与 controld **同时**重启到同一份配置 | 两个进程启动日志都有 `log body keys: current=<新 id> configured=[...]` | 只重启一边会出现「写新 id、读端不认识」→ 正文接口 404 且 `gw_log_body_open_failed_total` 上涨 |
+| K-3 | 旧 key 覆盖 180 天内所有行 | 取 `SELECT MIN(created_at) FROM t_request_body`，确认早于该时刻的行的 `body_key_id` 都在 `configured` 列表里 | 缺少某个 id：把对应 KEK 补回 `LOG_BODY_KEK_PREVIOUS` 并重启读取端；**不要**删除这些行来「消除 404」 |
+| K-4 | 轮换后抽检可读 | 随机取一条最老的 `t_request_body.request_id`，用拥有者的账号调 `GET /api/console/logs/{request_id}/body` → 200 且正文正确；`gw_log_body_open_failed_total` 无新增 | 404 说明 key/id 对不上；按 K-1/K-2 排查，确认前不要再轮换下一轮 |
+
+---
+
 ## 与其他文档的关系
 
 | 文档 | 回答的问题 |

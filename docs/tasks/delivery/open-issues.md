@@ -20,6 +20,7 @@
 | OI-11 | G-13：A 项布局空白带四次测量未复现（PageDown 后上方约 500px 全白；`/pricing` 标题与卡片间约 90px）。见 `BACKLOG.md` G13、T28 §9、T29 §8 | 无法定位根因，无法判断是否为环境 / 缩放 / 浏览器版本相关 | 等需求方提供 Chrome 版本、页面缩放、进入路径、录屏；信息到位前禁止加 padding 盲改 | 需求方（环境信息） | **否**（无证据、非资金；但不得当作已修复） |
 | OI-12 | G9 生产构建未注入 `VITE_API_BASE_URL` 时，调试台「查看代码」的 base_url 回退到 `window.location.origin`。见 `BACKLOG.md` G9、`PlaygroundPage.tsx:174` | 生成的示例代码域名错误，用户复制后调不通。**这是门槛 6 的唯一剩余阻塞项**（八条门槛现为 7/8） | ① 在 `deploy/.env.stack` / CI 构建参数注入生产 API 域名；② **用生产构建产物**打开 `/console/playground` →「查看代码」，确认域名已是生产 API 域名而非 `window.location.origin`。两步均在 `go-live.md` §四 的 B-1 / B-2 打勾后方可发版 | 运维 / 发布 | **是**（上线 Blocking：发布配置项，非代码缺陷） |
 | OI-13 | 套餐配置无写入路径：`plan_min_margin_bp`（10% 地板）与 `max_bonus_ratio_bp`（赠送 30% 护栏）只有配置键，`t_plan` 仅由迁移 `0009` 种子写入，仓库里既无 `/api/admin/plans` 端点，运营定价页也没有套餐 tab | F16-5 的套餐分支无法实现与验证；运营想调套餐只能直接改库（无校验、无审计） | 需产品决策范围：① 在 V1.0 内新增「套餐配置」管理面（端点 + 页面 + λ 四步校验），或 ② 明确「V1.0 套餐固定、随版本发布」，同时把 F16-5 的套餐分支标注为不适用 | 产品 + 后端 | **否**（不阻塞主交易路径，但 F16-5 无法转 ✅） |
+| OI-17 | **G33 / G34 已修，待生产观察**（不是开放缺陷）。G33：并发购买在 `uk_rlp_scope_active` 上死锁 → 1213 → 500，已由 `843ed03` 修（去掉多余 `FOR UPDATE`、关闭现存行改为主键 IN 更新）；G34：登出删除会话失败仍回 204，已由 `20a3047` 修（失败回 503 并保留 cookie）。两者都只在本机验证（40 轮双用户并发、坏 Redis 用例 + 反证），生产影响面未知 | 若修复不完整，用户仍会在并发购买时看到 500，或登出后旧会话仍可用 | 上线后观察 7 天：① MySQL `SHOW GLOBAL STATUS LIKE 'Innodb_deadlocks'` 增量应回到基线（不再由 plan-grant 贡献）；② 控制面 5xx 中 `internal_error` 占比与 `auth_unavailable` 在 logout 路径的计数；③ 若仍出现，按 G33 的 InnoDB dump 流程重新取证，不要再用测试侧 `GET_LOCK` 掩盖 | 运维 + 后端 | **否**（已修；本项只跟踪观察） |
 
 ## 与 Go/No-Go 门槛的对应
 
