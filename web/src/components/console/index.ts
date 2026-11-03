@@ -30,3 +30,5 @@ export { RefundDialog } from './RefundDialog'
 export type { RefundDialogProps } from './RefundDialog'
 export { UsageDetailTable } from './UsageDetailTable'
 export type { UsageDetailTableProps } from './UsageDetailTable'
+
+export { GettingStarted } from './GettingStarted'

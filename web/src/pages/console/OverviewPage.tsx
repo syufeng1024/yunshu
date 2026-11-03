@@ -5,6 +5,7 @@ import { Button, ErrorState, LineChart, PageHeader, StatCard } from '@/component
 import {
   AnnouncementSlot,
   EtaHint,
+  GettingStarted,
   QuotaBar,
   RaiseQuotaDialog,
 } from '@/components/console'
@@ -113,6 +114,8 @@ export default function ConsoleOverviewPage() {
           </Button>
         }
       />
+
+      <GettingStarted />
 
       {error ? (
         <ErrorState
