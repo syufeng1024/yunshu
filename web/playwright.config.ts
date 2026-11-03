@@ -43,6 +43,11 @@ const backendEnv: Record<string, string> = {
   CHANNEL_KEY_KEK: E2E_CHANNEL_KEY_KEK,
   FP_HMAC_KEY: 'e2e-only-fp-hmac-key',
   EXPORT_HMAC_KEY: 'e2e-only-export-hmac-key',
+  // The security specs create their accounts through POST /auth/register and
+  // have no mailbox to read a code from. "off" is the documented mode for
+  // deployments that do not verify mailboxes; the code path itself is covered
+  // by internal/control/auth's unit tests, not by the browser suite.
+  AUTH_VERIFICATION_MODE: 'off',
 }
 
 // Local Windows machines use the installed Chrome; CI has only the bundled

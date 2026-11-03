@@ -65,15 +65,24 @@ func (s *Service) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	code := strings.TrimSpace(req.Code)
-	if code == "" {
-		mw.WriteError(w, r, mw.InvalidField("code"))
-		return
-	}
-	// Consumed before the insert, so a wrong code cannot create the account.
-	// The purpose namespace ("register") is what stops a login code from being
-	// replayed here, and the code is deleted on success (one use only).
-	if apiErr := s.consumeVerificationCode(r.Context(), ident, PurposeRegister, code); apiErr != nil {
-		mw.WriteError(w, r, apiErr)
+	if s.verificationRequired() {
+		if code == "" {
+			mw.WriteError(w, r, mw.InvalidField("code"))
+			return
+		}
+		// Consumed before the insert, so a wrong code cannot create the account.
+		// The purpose namespace ("register") is what stops a login code from
+		// being replayed here, and the code is deleted on success (one use only).
+		if apiErr := s.consumeVerificationCode(r.Context(), ident, PurposeRegister, code); apiErr != nil {
+			mw.WriteError(w, r, apiErr)
+			return
+		}
+	} else if code != "" {
+		// Mode "off" means the deployment does not verify mailboxes at all.
+		// Accepting the field in silence would let the caller believe the
+		// address was proven when nothing was checked.
+		mw.WriteError(w, r, mw.InvalidField("code").
+			WithHint("本部署未启用验证码"))
 		return
 	}
 	if err := validatePassword(req.Password); err != nil {

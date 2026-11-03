@@ -301,3 +301,29 @@ func TestMailFailureDropsCode(t *testing.T) {
 		t.Fatalf("a code survived a failed delivery")
 	}
 }
+
+// TestVerificationOffModeChangesRegisterBehaviour pins the "off" contract:
+// registration works without a code, and a code that was sent anyway is
+// rejected rather than ignored. The browser suite relies on exactly this (it
+// creates accounts over the API and has no mailbox), so a change here breaks
+// e2e/security before it breaks a unit test.
+func TestVerificationOffModeChangesRegisterBehaviour(t *testing.T) {
+	svc, _ := verifierService(t)
+	svc.VerificationMode = VerificationOff
+
+	rec := callRegister(t, svc, map[string]string{
+		"identifier": uniqueVerifyEmail(t, "vc-off"), "password": "Str0ng-Passw0rd!",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("register without a code in off mode status=%d body=%s, want 201",
+			rec.Code, rec.Body.String())
+	}
+
+	withCode := callRegister(t, svc, map[string]string{
+		"identifier": uniqueVerifyEmail(t, "vc-off2"), "password": "Str0ng-Passw0rd!", "code": "123456",
+	})
+	if withCode.Code != http.StatusBadRequest {
+		t.Fatalf("a code sent in off mode status=%d body=%s, want 400",
+			withCode.Code, withCode.Body.String())
+	}
+}
