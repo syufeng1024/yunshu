@@ -195,4 +195,3 @@ func ruleExpr(t *testing.T, block string) string {
 	t.Fatalf("no expr found in rule block:\n%s", block)
 	return ""
 }
-

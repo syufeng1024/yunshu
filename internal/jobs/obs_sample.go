@@ -105,7 +105,8 @@ func (s *ObsSample) now() time.Time {
 	return s.Clock.Now().UTC()
 }
 
-func (s *ObsSample) warn(ctx context.Context, msg string) {	if s == nil || s.Logger == nil {
+func (s *ObsSample) warn(ctx context.Context, msg string) {
+	if s == nil || s.Logger == nil {
 		return
 	}
 	s.Logger.Warn(ctx, msg, obslog.Fields{Stage: "obs_sample"})

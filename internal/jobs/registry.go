@@ -173,4 +173,3 @@ func TaskTable() []Task {
 		{Name: TicketSLATaskName, Period: 30 * time.Second, RequiresLeader: false, Timeout: time.Minute},
 	}
 }
-

@@ -117,7 +117,7 @@ func TestTicketSLAOverdueRuleIsEnabled(t *testing.T) {
 		}
 	}
 	if idx < 0 {
-		t.Fatalf("TicketSLAFirstResponseOverdue is missing or still commented out; "+
+		t.Fatalf("TicketSLAFirstResponseOverdue is missing or still commented out; " +
 			"the gauge would have no consumer (G25)")
 	}
 	block := strings.Join(lines[idx:], "\n")

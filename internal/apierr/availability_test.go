@@ -154,7 +154,7 @@ func TestErrorCodesDocListsWhitelist(t *testing.T) {
 			"Regenerate the file from apierr.MarkdownTable()", got, want)
 	}
 	if !strings.Contains(section, "`"+CodeUpstreamKeyUnavailable+"`") {
-		t.Fatalf("the whitelist section no longer explains which upstream codes are excluded; "+
+		t.Fatalf("the whitelist section no longer explains which upstream codes are excluded; " +
 			"a reader would 'fix' the doc by adding them back")
 	}
 }
