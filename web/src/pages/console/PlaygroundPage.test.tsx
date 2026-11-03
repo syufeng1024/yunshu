@@ -134,7 +134,8 @@ function terminalError(
 }
 
 async function waitForReady() {
-  await screen.findByRole('option', { name: 'Text Large' })
+  // 模型选择器是需要聚焦才展开的 combobox，列表项不再常驻 DOM；等输入框拿到
+  // 选中值即可判定就绪。
   await waitFor(() => expect(screen.getByLabelText('模型')).toHaveValue('text-large'))
   await waitFor(() => expect(screen.getByLabelText('密钥')).toHaveValue('31'))
 }

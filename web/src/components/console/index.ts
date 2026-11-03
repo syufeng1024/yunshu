@@ -32,3 +32,4 @@ export { UsageDetailTable } from './UsageDetailTable'
 export type { UsageDetailTableProps } from './UsageDetailTable'
 
 export { GettingStarted } from './GettingStarted'
+export { ModelPicker } from './ModelPicker'

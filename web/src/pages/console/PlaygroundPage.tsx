@@ -20,6 +20,7 @@ import {
   PageHeader,
   Select,
 } from '@/components'
+import { ModelPicker } from '@/components/console'
 import { resolveApiBaseUrl } from '@/lib/apiBase'
 import { cn } from '@/lib/cn'
 import { usePageTitle } from '@/lib/usePageTitle'
@@ -616,11 +617,12 @@ export default function PlaygroundPage() {
         </div>
 
         <div className="min-w-[10rem] flex-1 basis-56 space-y-1.5">
-          <Select
+          <ModelPicker
             label="模型"
             value={model}
-            onChange={(event) => setModel(event.target.value)}
+            onChange={setModel}
             options={modelOptions}
+            placeholder="搜索模型名"
           />
           {modelsError ? (
             <ErrorState

@@ -196,6 +196,8 @@ describe('RechargePage', () => {
     const user = userEvent.setup()
     renderWithProviders(<RechargePage />)
 
+    await user.click(screen.getByRole('tab', { name: '订单' }))
+    await user.click(screen.getByRole('tab', { name: '订单' }))
     await screen.findByText('20261027120000abcdefghijklmn')
     await user.type(screen.getByLabelText('按订单号搜索'), '202610')
     await user.selectOptions(screen.getByLabelText('订单状态'), 'pending')
@@ -257,7 +259,11 @@ describe('RechargePage', () => {
     const user = userEvent.setup()
     renderWithProviders(<RechargePage />)
 
+    await user.click(screen.getByRole('tab', { name: '订单' }))
+    await user.click(screen.getByRole('tab', { name: '订单' }))
     await screen.findByText('20261027120000abcdefghijklmn')
+    await user.click(screen.getByRole('tab', { name: '购买' }))
+    await user.click(screen.getByRole('tab', { name: '购买' }))
     await user.type(screen.getByLabelText('兑换码'), 'ABC123XYZ')
     await user.click(screen.getByRole('button', { name: '兑换' }))
 
@@ -281,7 +287,11 @@ describe('RechargePage', () => {
     const user = userEvent.setup()
     renderWithProviders(<RechargePage />)
 
+    await user.click(screen.getByRole('tab', { name: '订单' }))
+    await user.click(screen.getByRole('tab', { name: '订单' }))
     await screen.findByText('20261027120000abcdefghijklmn')
+    await user.click(screen.getByRole('tab', { name: '购买' }))
+    await user.click(screen.getByRole('tab', { name: '购买' }))
     await user.type(screen.getByLabelText('兑换码'), 'ABC123XYZ')
     await user.click(screen.getByRole('button', { name: '兑换' }))
 
@@ -306,6 +316,8 @@ describe('RechargePage', () => {
     const user = userEvent.setup()
     renderWithProviders(<RechargePage />)
 
+    await user.click(screen.getByRole('tab', { name: '订单' }))
+    await user.click(screen.getByRole('tab', { name: '订单' }))
     await screen.findByText('20261027120000abcdefghijklmn')
     await user.click(screen.getByRole('button', { name: '退款' }))
 
@@ -332,6 +344,8 @@ describe('RechargePage', () => {
     const user = userEvent.setup()
     renderWithProviders(<RechargePage />)
 
+    await user.click(screen.getByRole('tab', { name: '订单' }))
+    await user.click(screen.getByRole('tab', { name: '订单' }))
     await screen.findByText('20261027120000abcdefghijklmn')
     await user.click(screen.getByRole('button', { name: '开票' }))
 

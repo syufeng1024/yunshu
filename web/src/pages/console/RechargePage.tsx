@@ -61,6 +61,13 @@ const REFUND_STATUS_OPTIONS: { value: RefundFilter; label: string }[] = [
 
 const INVOICE_PAGE_SIZE_OPTIONS = [10, 20, 50] as const
 
+// 页面原本四块内容纵向堆叠，滚到底要找发票得滑很久。分三栏：买、看订单、处理售后。
+const RECHARGE_TABS: readonly { id: 'buy' | 'orders' | 'billing'; label: string }[] = [
+  { id: 'buy', label: '购买' },
+  { id: 'orders', label: '订单' },
+  { id: 'billing', label: '退款与发票' },
+]
+
 const INVOICE_STATUS_OPTIONS: { value: InvoiceFilter; label: string }[] = [
   { value: 'ALL', label: '全部状态' },
   { value: 'applied', label: '已申请' },
@@ -230,6 +237,7 @@ export default function RechargePage() {
     pageSize: 10,
   })
 
+  const [tab, setTab] = useState<'buy' | 'orders' | 'billing'>('buy')
   const [invoiceStatus, setInvoiceStatus] = useState<InvoiceFilter>('ALL')
   const [invoicePage, setInvoicePage] = useState(1)
   const [invoicePageSize, setInvoicePageSize] = useState(10)
@@ -496,6 +504,35 @@ export default function RechargePage() {
         description="套餐、自定义充值、兑换码与订单退款开票的统一入口。"
       />
 
+      <div
+        role="tablist"
+        aria-label="充值中心分栏"
+        className="flex gap-1 overflow-x-auto border-b border-border"
+      >
+        {RECHARGE_TABS.map((item) => {
+          const selected = tab === item.id
+          return (
+            <button
+              key={item.id}
+              type="button"
+              role="tab"
+              aria-selected={selected}
+              tabIndex={selected ? 0 : -1}
+              onClick={() => setTab(item.id)}
+              className={
+                selected
+                  ? 'shrink-0 border-b-2 border-primary px-3 py-2 text-sm font-medium text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary'
+                  : 'shrink-0 border-b-2 border-transparent px-3 py-2 text-sm font-medium text-ink-secondary transition-colors hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary'
+              }
+            >
+              {item.label}
+            </button>
+          )
+        })}
+      </div>
+
+      {tab === 'buy' ? (
+        <>
       <section className="space-y-3">
         <div className="space-y-1">
           <h2 className="text-sm font-semibold text-ink">套餐</h2>
@@ -639,7 +676,10 @@ export default function RechargePage() {
           ) : null}
         </section>
       </div>
+        </>
+      ) : null}
 
+      {tab === 'orders' ? (
       <section className="space-y-3">
         <div className="space-y-1">
           <h2 className="text-sm font-semibold text-ink">订单记录</h2>
@@ -692,7 +732,9 @@ export default function RechargePage() {
           }
         />
       </section>
+      ) : null}
 
+      {tab === 'billing' ? (
       <div className="grid gap-4 xl:grid-cols-2">
         <section className="space-y-3">
           <div className="flex flex-wrap items-end justify-between gap-2">
@@ -786,6 +828,7 @@ export default function RechargePage() {
           />
         </section>
       </div>
+      ) : null}
 
       <PayModal
         open={payTarget !== null}
