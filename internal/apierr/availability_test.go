@@ -158,3 +158,35 @@ func TestErrorCodesDocListsWhitelist(t *testing.T) {
 			"a reader would 'fix' the doc by adding them back")
 	}
 }
+
+// TestMarkdownAvailabilitySectionIsGenerated exercises the generator itself.
+//
+// TestErrorCodesDocListsWhitelist only proves the checked-in file matches; if
+// MarkdownAvailabilitySection() started emitting a broken table, the doc would
+// still pass until someone regenerated it. This is also the only caller that
+// keeps the function off 0% coverage, which the apierr gate is sensitive to
+// (it sits at 90%).
+func TestMarkdownAvailabilitySectionIsGenerated(t *testing.T) {
+	section := MarkdownAvailabilitySection()
+	if !strings.Contains(section, "PRD §9.3") {
+		t.Fatalf("generated section does not name PRD §9.3:\n%s", section)
+	}
+	for _, code := range PlatformAvailabilityCodes() {
+		if !strings.Contains(section, "| `"+code+"` |") {
+			t.Fatalf("generated section has no table row for whitelisted code %s:\n%s", code, section)
+		}
+	}
+	// The four OwnerPlatform-but-not-whitelisted codes must appear in prose at
+	// most; a table row for one of them would publish the wrong numerator.
+	for _, code := range []string{
+		CodePriceNotConfigured,
+		CodeUpstreamAuthFailed,
+		CodeUpstreamModelNotFound,
+		CodeUpstreamKeyUnavailable,
+	} {
+		if strings.Contains(section, "| `"+code+"` |") {
+			t.Fatalf("%s must not be a row in the availability table (it is not in the "+
+				"§9.3 numerator):\n%s", code, section)
+		}
+	}
+}
