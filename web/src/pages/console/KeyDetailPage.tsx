@@ -6,6 +6,7 @@ import {
   useConsoleModels,
   useKeyAudit,
   useKeyDetail,
+  useKeyUsage,
   useRotateKey,
   useUpdateKey,
 } from '@/api/console'
@@ -14,6 +15,7 @@ import {
   Badge,
   Button,
   ErrorState,
+  LineChart,
   PageHeader,
   Skeleton,
   Table,
@@ -30,6 +32,7 @@ import { writeClipboard } from '@/lib/clipboard'
 import { auditActionLabel, auditFieldLabel, groupLabel } from '@/lib/consoleLabels'
 import { ROUTES, consoleKeyDetailPath } from '@/lib/constants'
 import {
+  creditsFromMicro,
   formatCreditAmount,
   formatDateTime,
   formatInteger,
@@ -92,6 +95,24 @@ function RealtimeCell({
 export default function KeyDetailPage() {
   usePageTitle('密钥详情')
   const { id } = useParams<{ id: string }>()
+
+  // 趋势区间：24 小时看当下是否在用，7 天看是否还有必要保留这把密钥。
+  const [usageRange, setUsageRange] = useState<'24h' | '7d'>('24h')
+  const usageHours = usageRange === '24h' ? 24 : 168
+  const usage = useKeyUsage(id, usageHours)
+  const usageData = useMemo(
+    () =>
+      (usage.data?.points ?? []).map((point) => ({
+        label:
+          usageRange === '24h'
+            ? point.hour.slice(11, 16)
+            : point.hour.slice(5, 10),
+        requests: point.requests,
+        credits: creditsFromMicro(point.consumed_micro),
+      })),
+    [usage.data, usageRange],
+  )
+  const usageError = usage.isError ? errorMessage(usage.error) : null
   const navigate = useNavigate()
   const toast = useToast()
 
@@ -348,6 +369,50 @@ export default function KeyDetailPage() {
         </div>
       </section>
 
+
+      <section className="rounded-xl border border-border bg-surface p-5 shadow-card">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="space-y-1">
+            <h2 className="text-sm font-semibold text-ink">用量趋势</h2>
+            <p className="text-xs text-ink-secondary">
+              按东八区自然小时统计；空小时补 0，曲线不会跨过没有调用的空档。
+            </p>
+          </div>
+          <div className="flex gap-1">
+            {(['24h', '7d'] as const).map((option) => (
+              <button
+                key={option}
+                type="button"
+                aria-pressed={usageRange === option}
+                onClick={() => setUsageRange(option)}
+                className={
+                  usageRange === option
+                    ? 'rounded-md border border-primary bg-primary-soft px-2.5 py-1 text-xs font-medium text-primary'
+                    : 'rounded-md border border-border bg-surface px-2.5 py-1 text-xs text-ink-secondary hover:bg-surface-muted'
+                }
+              >
+                {option === '24h' ? '近 24 小时' : '近 7 天'}
+              </button>
+            ))}
+          </div>
+        </div>
+        <LineChart
+          className="mt-4"
+          data={usageData}
+          xKey="label"
+          series={[
+            { key: 'requests', name: '请求数' },
+            { key: 'credits', name: '消耗积分' },
+          ]}
+          height={240}
+          loading={usage.isLoading}
+          error={usageError}
+          onRetry={() => void usage.refetch()}
+          ariaLabel="密钥用量趋势图"
+          emptyTitle="这段时间没有调用"
+          emptyDescription="换一个区间试试，或确认这把密钥是否仍在使用。"
+        />
+      </section>
       <section className="rounded-xl border border-border bg-surface p-5 shadow-card">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="space-y-1">

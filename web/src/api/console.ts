@@ -733,6 +733,31 @@ export function useKeyDetail(id: string | undefined) {
   })
 }
 
+export interface KeyUsagePoint {
+  /** 东八区自然小时，`YYYY-MM-DD HH:00:00`。 */
+  hour: string
+  requests: number
+  consumed_micro: number
+}
+
+export interface KeyUsage {
+  key_id: number
+  hours: number
+  points: KeyUsagePoint[]
+  total_requests: number
+  total_consumed_micro: number
+}
+
+/** 密钥维度的用量趋势；账户级概览只给总量，看不出单把密钥的使用情况。 */
+export function useKeyUsage(id: string | undefined, hours: number) {
+  return useQuery({
+    queryKey: ['console', 'keys', 'usage', id, hours],
+    queryFn: () => api.get<KeyUsage>(`/api/console/keys/${id as string}/usage?hours=${hours}`),
+    enabled: Boolean(id),
+    placeholderData: keepPreviousData,
+  })
+}
+
 export function useKeyAudit(id: string | undefined, page: number) {
   return useQuery({
     queryKey: ['console', 'keys', 'audit', id, page],

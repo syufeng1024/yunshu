@@ -271,6 +271,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("PATCH /api/console/keys/{id}", s.authed(mw.PermKeyWrite, s.keys.Update))
 	mux.Handle("DELETE /api/console/keys/{id}", s.authed(mw.PermKeyWrite, s.keys.Delete))
 	mux.Handle("GET /api/console/keys/{id}/audit", s.authed(mw.PermKeyRead, s.keys.ListAudit))
+	// 密钥维度的用量趋势：详情页判断「这把密钥还用不用」的依据。
+	mux.Handle("GET /api/console/keys/{id}/usage", s.authed(mw.PermKeyRead, s.keys.Usage))
 	mux.Handle("POST /api/console/keys/{id}/rotate", s.authed(mw.PermKeyWrite, s.keys.Rotate))
 	// T27 playground. key.read is enough: the handler proves the key belongs to
 	// the session and is ENABLED, then relays to gatewayd where P06..P14 run.
