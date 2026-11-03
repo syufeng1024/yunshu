@@ -327,3 +327,31 @@ func TestVerificationOffModeChangesRegisterBehaviour(t *testing.T) {
 			withCode.Code, withCode.Body.String())
 	}
 }
+
+// TestWrongCodeMessageDoesNotMentionPassword pins the wording fix (G36).
+//
+// invalid_credentials defaults to "账号或密码不正确". In a code-only register or
+// login there is no password at all, so that sentence sends the user looking
+// for the wrong problem — which is exactly what the bug report described.
+func TestWrongCodeMessageDoesNotMentionPassword(t *testing.T) {
+	svc, _ := verifierService(t)
+	rec := callRegister(t, svc, map[string]string{
+		"identifier": uniqueVerifyEmail(t, "vc-msg"),
+		"password":   "Str0ng-Passw0rd!",
+		"code":       "000000",
+	})
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d body=%s, want 401", rec.Code, rec.Body.String())
+	}
+	body := decodeError(t, rec)
+	if strings.Contains(body.Error.Message, "密码") {
+		t.Fatalf("message=%q still talks about a password", body.Error.Message)
+	}
+	if !strings.Contains(body.Error.Message, "验证码") {
+		t.Fatalf("message=%q does not name the verification code", body.Error.Message)
+	}
+	// The machine-readable code must not change: clients branch on it.
+	if body.Error.Code != "invalid_credentials" {
+		t.Fatalf("code=%q, want invalid_credentials", body.Error.Code)
+	}
+}

@@ -13,6 +13,12 @@ import type { CurrentUser } from '@/stores/auth'
 
 type LoginMode = 'password' | 'code'
 
+// The server accepts exactly six digits. Checking here keeps an incomplete code
+// from being sent at all: every rejected attempt counts against the five-try
+// budget and burns the code, so a typo would cost the user a whole new e-mail.
+const VERIFICATION_CODE_RE = /^\d{6}$/
+const CODE_FORMAT_HINT = '验证码是 6 位数字，请检查是否输完整。'
+
 interface AuthResponse {
   user: CurrentUser
 }
@@ -94,8 +100,8 @@ export default function LoginPage() {
       setError('请输入密码。')
       return
     }
-    if (loginMode === 'code' && !code.trim()) {
-      setError('请输入验证码。')
+    if (loginMode === 'code' && !VERIFICATION_CODE_RE.test(code.trim())) {
+      setError(CODE_FORMAT_HINT)
       return
     }
 
@@ -123,8 +129,8 @@ export default function LoginPage() {
       setError('请输入邮箱或手机号。')
       return
     }
-    if (!code.trim()) {
-      setError('请输入验证码。')
+    if (!VERIFICATION_CODE_RE.test(code.trim())) {
+      setError(CODE_FORMAT_HINT)
       return
     }
     if (!password) {

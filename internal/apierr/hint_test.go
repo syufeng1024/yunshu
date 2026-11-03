@@ -140,3 +140,26 @@ func TestOtherHitsLabelUnknownDimension(t *testing.T) {
 		t.Fatalf("message names the dimension %d times, want 1 (dedup)", n)
 	}
 }
+
+// WithMessage overrides the wording without changing the code or status: a
+// shared code applied in a narrower context can be actively misleading (G36 —
+// invalid_credentials shouting about a password when only a code was sent).
+func TestWithMessageOverridesWordingButKeepsCode(t *testing.T) {
+	e := New(CodeInvalidCredentials).WithMessage("验证码不正确或已过期")
+	body := e.object()
+	if body.Message != "验证码不正确或已过期" {
+		t.Fatalf("message=%q, want the override", body.Message)
+	}
+	if body.Code != CodeInvalidCredentials {
+		t.Fatalf("code=%q, must stay %s", body.Code, CodeInvalidCredentials)
+	}
+	if e.HTTPStatus != 401 {
+		t.Fatalf("status=%d, must stay 401", e.HTTPStatus)
+	}
+	// nil receiver must not panic: the builder is chained on values that may be
+	// nil in error paths.
+	var nilErr *APIError
+	if nilErr.WithMessage("x") != nil {
+		t.Fatalf("nil receiver returned non-nil")
+	}
+}

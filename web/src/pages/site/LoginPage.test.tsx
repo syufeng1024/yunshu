@@ -110,4 +110,26 @@ describe('LoginPage', () => {
     })
     expect(screen.getByRole('button', { name: /后重发/ })).toBeDisabled()
   })
+
+  // Reported bug: a five-digit code was sent to the server, came back as
+  // "账号或密码不正确", and burned one of the five attempts. An incomplete code
+  // must be caught locally.
+  it('stops an incomplete verification code before it reaches the server', async () => {
+    const user = userEvent.setup()
+    const post = vi.mocked(api.post)
+    const { container } = render(
+      <MemoryRouter initialEntries={['/login?tab=register']}>
+        <LoginPage />
+      </MemoryRouter>,
+    )
+
+    const inputs = container.querySelectorAll('input')
+    await user.type(inputs[0], 'someone@example.com')
+    await user.type(inputs[1], '12345')
+    await user.type(inputs[2], 'Str0ng-Passw0rd!')
+    await user.click(screen.getByRole('button', { name: '注册' }))
+
+    expect(screen.getByText('验证码是 6 位数字，请检查是否输完整。')).toBeInTheDocument()
+    expect(post).not.toHaveBeenCalled()
+  })
 })

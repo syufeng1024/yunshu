@@ -167,6 +167,22 @@ func (e *APIError) WithHint(hint string) *APIError {
 	return e
 }
 
+// WithMessage replaces the code's default message for this instance. It exists
+// for the same reason WithHint does: a code shared by several resources can be
+// applied in a narrower context where the table's wording is simply wrong.
+//
+// invalid_credentials says "账号或密码不正确". When the caller submitted only a
+// verification code there is no password involved, and the user goes hunting
+// for a password problem that does not exist (reported as a bug). The code and
+// the HTTP status are unchanged, so clients that branch on `code` are not
+// affected — only the sentence they show.
+func (e *APIError) WithMessage(msg string) *APIError {
+	if e != nil {
+		e.Message = msg
+	}
+	return e
+}
+
 // WithRateLimitSnapshot supplies the five 429/200 rate-limit headers. The
 // limiter's Verdict only describes the main dimension, so callers that know
 // the full snapshot must pass it explicitly.

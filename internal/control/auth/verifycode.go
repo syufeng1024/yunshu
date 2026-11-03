@@ -281,10 +281,16 @@ func (s *Service) verifyRedis() (*redisx.Client, error) {
 }
 
 // verificationInvalid is the single answer for a wrong, expired, missing or
-// exhausted code. The hint names all three so support does not need a lookup.
+// exhausted code.
+//
+// The message is overridden on purpose: invalid_credentials defaults to
+// "账号或密码不正确", which is misleading here — a code-only login or a
+// registration has no password to be wrong. The code and 401 status stay the
+// same so clients keep branching on `code` (G36).
 func verificationInvalid() *apierr.APIError {
 	return apierr.New(apierr.CodeInvalidCredentials).
-		WithHint("验证码错误或已过期，请重新获取")
+		WithMessage("验证码不正确或已过期").
+		WithHint("请确认 6 位数字是否输完整；已过期就重新获取")
 }
 
 // randomDigits returns a uniformly random n-digit string (zero-padded).
