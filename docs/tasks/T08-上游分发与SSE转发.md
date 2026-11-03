@@ -73,7 +73,7 @@
 15. **流式不返回 `X-Credits-Consumed`**：只返回 `X-Request-Id` / `X-Credits-Preheld` / `X-Credits-Remaining`。这是物理约束（头在首帧前定型），**不得**为了"对账方便"擅自加。
 16. **不得缓存或落盘上游响应体全文**（除 `full_log_enabled` 用户且经信封加密，属 T22 范围）。
 17. **渠道 Key 只从配置快照解密取用**，禁止出现在日志、`t_upstream_attempt`、错误体。
-18. **`relaykit` 与 `internal/` 的 `.go`/`.sql` 不得出现 `QuantumNous`，也不得成段照搬 new-api 的代码**。理由不是"不允许二次开发"，而是本项目闭源、并入 AGPL 代码即成为衍生作品（errata E-23）；**借鉴其 SSE / 转发思路不需要署名**，注释里可以写来源。
+18. **复用上游代码**：本项目 AGPL-3.0，可成段复用 new-api 的代码（见 errata 文档 E-41 条）；复用文件须保留其版权头并登记到 `NOTICE`。仅借鉴思路不需要任何标注。
 19. **单一 IR（D-15）**：`relaykit/ir` 是唯一 IR 定义。`internal/gw/ir.go` 的 `IRRequest` / `IRMessage` / `IRTool` **必须删除**，`Ctx.IR` 改为 `*ir.IRRequest`，P04/P09 与相关测试同步调整。**禁止**保留两套 IR——两套结构下「未知字段透传」守不住。
 20. **渠道载荷按 D-14 补齐**：`ChannelEntry` 增加 `base_url`、`upstream_key_enc`(base64)、`timeout_connect_ms`/`timeout_first_byte_ms`/`timeout_total_ms`、`retry_max`、`stream_usage_mode`、`upstream_model_name_map`，与 TDS §1.4 选路 SQL 的列一致。缺字段时按最安全默认拒绝（503 `config_unavailable`），**不得**猜默认值。
 21. **Key 解密只在发送前一刻**：`upstream_key_enc` 解出明文后只活在本次请求的局部变量里，**不得**进 `Ctx`、日志、`t_upstream_attempt`、错误体、metric 标签。KEK 缺失或密文不合法 → 503 `config_unavailable`，不得回退明文。

@@ -1,0 +1,42 @@
+yunshu-api notices
+
+Copyright (c) 2026 yunshu-api contributors
+
+This project is licensed under the GNU Affero General Public License v3.0.
+See LICENSE for the full terms.
+
+---
+
+Third-party code and references
+===============================
+
+new-api
+-------
+Project:  https://github.com/QuantumNous/new-api
+Copyright (c) QuantumNous and contributors
+License:  GNU Affero General Public License v3.0
+
+The console information architecture and several UI patterns in this project were
+modelled on new-api. Where a source file is copied or adapted from new-api, the
+original copyright header is kept in that file and the file is listed below.
+
+Files copied or adapted from new-api: (none yet — this project currently
+implements its own code and only references the upstream design)
+
+Because both projects are AGPL-3.0, distributing this project together with
+new-api code is compatible; the combined work stays under AGPL-3.0 and this
+NOTICE must be kept.
+
+---
+
+Source code availability
+========================
+
+AGPL-3.0 section 13 requires that users interacting with this software over a
+network be able to obtain its source. This project satisfies that by publishing
+the complete source at:
+
+  https://github.com/syufeng1024/yunshu-api
+
+The site footer links to the same location. If you deploy a modified version,
+you must publish your modified source under AGPL-3.0 as well.
