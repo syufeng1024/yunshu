@@ -122,7 +122,7 @@ func csrfProtected(r *http.Request) bool {
 
 func csrfExemptPath(path string) bool {
 	switch path {
-	case "/api/v1/auth/login", "/api/v1/auth/register":
+	case "/api/v1/auth/login", "/api/v1/auth/register", "/api/v1/auth/verification-code":
 		return true
 	}
 	return strings.HasPrefix(path, "/api/v1/pay/callback/")

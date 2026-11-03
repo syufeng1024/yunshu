@@ -370,12 +370,28 @@ Key 开启 `ip_whitelist_mode=ON` 时，白名单必须包含 controld 所在网
 | 登出 | 删除 K20、从 K30 `SREM`、清除 `sid` 与 `csrf` cookie；旧 token 随旧 sid 一起失效 |
 | 改密 | `POST /api/v1/auth/password`，验证旧密码后更新 bcrypt 哈希，删除该 uid 的全部 K20 与 K30；旧 sid 再请求返回 401 `session_expired` |
 
+### 验证码（邮箱）
+
+`POST /api/v1/auth/verification-code`，无会话，body `{identifier, purpose}`，`purpose` 为 `login` 或 `register`。
+
+| 行为 | 说明 |
+| :--- | :--- |
+| 发送 | 6 位数字，存 Redis `vc:code:<purpose>:<sha256(identifier)[:32]>`，值只存 SHA-256 摘要，TTL 10 分钟 |
+| 限流 | 同一地址同一 purpose 60 秒一次（`SETNX`）、每天 20 条；超限返回 429 `rpm_limit_exceeded` 并带 `retry_after_seconds` |
+| 消费 | 注册/验证码登录时一次性消费；输错 5 次即作废该码；错误码统一 `invalid_credentials` + hint，不区分“过期/错误/未申请” |
+| 命名空间 | `login` 与 `register` 分开，登录码不能用于注册 |
+| 手机号 | **暂未开放**：返回 400 `invalid_request_body` + hint「短信验证码暂未开放，请使用邮箱」，不写 Redis、不调用任何供应商（按条计费） |
+| 通道 | `AUTH_VERIFICATION_MODE=log`（默认，验证码打到日志，仅开发/CI）或 `smtp`（发邮件）；`smtp` 但未配 `SMTP_*` 时进程启动失败 |
+
+登录 body 二选一：`{identifier, password}` 或 `{identifier, code}`；两者同时提交返回 400（避免“看起来两项都验过”）。验证码登录与密码登录共用同一套账号/IP 锁定计数。
+
 CSRF 校验只作用于**会话鉴权**的状态变更方法：`POST` / `PATCH` / `PUT` / `DELETE`，且路径以 `/api/` 开头。豁免：
 
 | 路径 | 原因 |
 | :--- | :--- |
 | `POST /api/v1/auth/login` | 无会话；token 无从派生 |
 | `POST /api/v1/auth/register` | 无会话；token 无从派生 |
+| `POST /api/v1/auth/verification-code` | 无会话；token 无从派生（注册前、登录前都要能调用） |
 | `POST /api/v1/pay/callback/*` | 公开回调，认证靠请求体 HMAC，不依赖浏览器会话 |
 
 CSRF 失败返回 403 `permission_denied`，不是 400 `invalid_request_body`：请求体本身没有错，改 body 也修不好；缺的是“请求来自本站”的证明。客户端处理方式是刷新页面重新获取 `csrf` cookie，并把当前 token 放进 `X-CSRF-Token`。

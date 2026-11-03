@@ -190,3 +190,20 @@ func IdemHash(scope string, apiKeyID int64, idemKey string) string {
 	sum := sha1.Sum([]byte(scope + "|" + strconv.FormatInt(apiKeyID, 10) + "|" + idemKey))
 	return hex.EncodeToString(sum[:])
 }
+
+// Verification-code keys (K-VC series). The identifier is hashed by the caller
+// before it becomes part of a key name: Redis is readable by anyone with access
+// to the instance, and an e-mail address in a key would hand over the user
+// list. Purpose is "login" or "register" so one mailbox can hold both codes
+// without the login code being usable to register (and vice versa).
+func VerifyCodeKey(purpose, identHash string) string {
+	return "vc:code:" + purpose + ":" + identHash
+}
+
+func VerifyCodeCooldownKey(purpose, identHash string) string {
+	return "vc:cool:" + purpose + ":" + identHash
+}
+
+func VerifyCodeQuotaKey(purpose, identHash string) string {
+	return "vc:quota:" + purpose + ":" + identHash
+}

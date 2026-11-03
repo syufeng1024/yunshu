@@ -71,6 +71,11 @@
 | `LOG_BODY_KEK` | gatewayd、controld | 空 | `log.body_mode=opt_in` 时加密 `t_request_body.ciphertext` 的 KEK，base64 编码的 32 字节。独立于 `CHANNEL_KEY_KEK`：渠道密钥轮换不得使历史正文失效。为空或非法时进程照常启动，正文不落库（gatewayd 记 `gw_log_body_dropped_total{reason="no_kek"}`），读取端把已存正文一律按 404 处理并记 `gw_log_body_open_failed_total`；请求与账务不受影响。两进程必须配置同一值，否则写入端与读取端互相解不开 |
 | `LOG_BODY_KEY_ID` | gatewayd、controld | `body-v1` | 当前正文 KEK 的版本标识，写入 `t_request_body.body_key_id`（varchar(32)，不得含 `:` 或 `,`）。不配置即沿用存量行已有的 `body-v1`，行为与改造前逐字节一致。轮换时把新 KEK 放进 `LOG_BODY_KEK` 并把本值改成新 id（如 `body-v2`） |
 | `LOG_BODY_KEK_PREVIOUS` | gatewayd、controld | 空 | 已退休正文 KEK，格式 `id:base64`，多段用逗号分隔（如 `body-v1:<base64>`）。读取端按行内 `body_key_id` 选 key，因此轮换后旧行在 180 天保留期内仍可解密。**旧 key 至少保留到该 key 加密的最后一行过期**，否则那些请求的正文接口会返回 404 并记 `gw_log_body_open_failed_total`（数据仍在，只是解不开）。id 与当前 id 重复、base64 非法或长度非 32 字节时进程照常启动但正文不落库，并在启动日志打印原因 |
+| `AUTH_VERIFICATION_MODE` | controld | `log` | 注册/登录验证码的投递方式：`log`（验证码打到进程日志，仅开发与 CI）、`smtp`（发邮件）、`off`（不要求验证码，端点返回 400）。配成其他值、或配 `smtp` 却没有 `SMTP_HOST`/`SMTP_FROM` 时**进程拒绝启动**——否则第一次注册才会暴露，看起来像产品故障 |
+| `SMTP_HOST` / `SMTP_PORT` | controld | 空 / `587` | 邮件中继。`SMTP_PORT=465` 时配 `SMTP_TLS=implicit`（连上即 TLS），587 用默认 `starttls` |
+| `SMTP_USERNAME` / `SMTP_PASSWORD` | controld | 空 | SMTP 认证凭据。用户名非空而服务器不提供 STARTTLS 时**拒绝发送**（不把凭据裸奔在明文连接上）。凭据只走 env，不进 `t_config_item` |
+| `SMTP_FROM` | controld | 空 | 信封发件人。含 CR/LF 直接启动失败（防头注入） |
+| `SMTP_TLS` | controld | `starttls` | `starttls` 或 `implicit`；其他值启动失败 |
 
 ## 命名空间分布
 

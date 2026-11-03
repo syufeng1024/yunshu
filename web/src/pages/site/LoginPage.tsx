@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { api, errorHint, errorMessage } from '@/api/client'
@@ -43,10 +43,12 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null)
   const [hint, setHint] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
-  // Verification codes and password reset are not implemented server-side
-  // (no mail/SMS delivery), so these flags are intentionally never set.
-  const [sendingCode] = useState(false)
-  const [codeSent] = useState(false)
+  // Verification codes are issued by POST /api/v1/auth/verification-code. The
+  // server enforces a 60s cooldown; the countdown below only mirrors it so the
+  // button is not clickable during a window that would answer 429.
+  const [sendingCode, setSendingCode] = useState(false)
+  const [codeSent, setCodeSent] = useState(false)
+  const [cooldown, setCooldown] = useState(0)
   const [resetOpen, setResetOpen] = useState(false)
   // 面板展开后把焦点交到真实可用的下一步（开发者文档）上；点击「发送重置链接」
   // 不会编造「已发送」，只会把用户带到真能继续的地方。
@@ -147,12 +149,38 @@ export default function LoginPage() {
       setError('请先填写邮箱或手机号。')
       return
     }
-    // The backend has no mail/SMS delivery (T11 deferred verification codes for
-    // exactly that reason), so calling it would only produce a 404. Say so
-    // instead of pretending a code was sent.
-    setError('验证码登录暂未开放，请使用密码登录。')
-    void purpose
+    // SMS delivery is billed per message and has no provider yet. The server
+    // refuses it too (400 + hint); stopping here keeps the click from looking
+    // like a delivery failure.
+    if (!account.includes('@')) {
+      setError('短信验证码暂未开放，请使用邮箱。')
+      return
+    }
+    setSendingCode(true)
+    try {
+      await api.post<{ channel: string; expires_in: number; resend_after: number }>(
+        '/api/v1/auth/verification-code',
+        { identifier: account, purpose },
+      )
+      setCodeSent(true)
+      setCooldown(60)
+    } catch (err) {
+      setError(errorMessage(err))
+      setHint(errorHint(err))
+    } finally {
+      setSendingCode(false)
+    }
   }
+
+  // One timer for both tabs: the cooldown is per address on the server, so
+  // switching from register to login must not unlock the button.
+  useEffect(() => {
+    if (cooldown <= 0) return
+    const timer = window.setInterval(() => {
+      setCooldown((left) => (left <= 1 ? 0 : left - 1))
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [cooldown])
 
   const handleReset = async () => {
     clearFeedback()
@@ -240,11 +268,12 @@ export default function LoginPage() {
             type="button"
             className="shrink-0 whitespace-nowrap"
             loading={sendingCode}
+            disabled={cooldown > 0}
             onClick={() => {
               void handleSendCode('login')
             }}
           >
-            {codeSent ? '重新获取' : '获取验证码'}
+            {cooldown > 0 ? `${cooldown}s 后重发` : codeSent ? '重新获取' : '获取验证码'}
           </Button>
         </div>
       )}
@@ -336,11 +365,12 @@ export default function LoginPage() {
           type="button"
           className="shrink-0 whitespace-nowrap"
           loading={sendingCode}
+          disabled={cooldown > 0}
           onClick={() => {
             void handleSendCode('register')
           }}
         >
-          {codeSent ? '重新获取' : '获取验证码'}
+          {cooldown > 0 ? `${cooldown}s 后重发` : codeSent ? '重新获取' : '获取验证码'}
         </Button>
       </div>
 

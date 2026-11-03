@@ -31,22 +31,38 @@ type loginResponse struct {
 	CSRFToken string `json:"csrf_token"`
 }
 
-// Login implements POST /api/v1/auth/login with email/phone + password.
+// Login implements POST /api/v1/auth/login.
+//
+// Two mutually exclusive bodies are accepted:
+//
+//	{identifier, password}  password login (unchanged)
+//	{identifier, code}      verification-code login, for accounts that can read
+//	                        the address they registered with
+//
+// Sending both is rejected rather than picking one: a client that sends a code
+// and a password is confused about which factor it is proving, and silently
+// ignoring the code would look like the code was accepted.
 func (s *Service) Login(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 	if _, apiErr := decodeJSON(w, r, &req); apiErr != nil {
 		mw.WriteError(w, r, apiErr)
 		return
 	}
-	if strings.TrimSpace(req.Code) != "" {
-		s.warn(r.Context(), "login_code_rejected: verification is not enabled in segment 1")
-		mw.WriteError(w, r, mw.InvalidField("code"))
+	code := strings.TrimSpace(req.Code)
+	password := strings.TrimSpace(req.Password)
+	if code != "" && password != "" {
+		mw.WriteError(w, r, mw.InvalidField("code").
+			WithHint("验证码登录与密码登录不能同时提交"))
 		return
 	}
 	ident, err := NormalizeIdentifier(req.Identifier)
-	if err != nil || strings.TrimSpace(req.Password) == "" {
+	if err != nil || (password == "" && code == "") {
 		s.auditLogin(r.Context(), r, 0, "ANONYMOUS", "-", "REJECTED_BY_GUARD")
 		mw.WriteError(w, r, apierr.New(apierr.CodeInvalidCredentials))
+		return
+	}
+	if code != "" {
+		s.loginWithCode(w, r, ident, code)
 		return
 	}
 
@@ -98,6 +114,60 @@ func (s *Service) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.finishLogin(w, r, row, ident)
+}
+
+// loginWithCode proves identity with a mailbox code instead of a password.
+//
+// The lock is checked first, exactly like the password path: without it a code
+// (six digits, five attempts) would be a cheaper brute-force target than a
+// password, and the attempt counter alone would let an attacker rotate
+// sessions. A failure here counts toward the same account/IP budget, so a
+// stolen mailbox does not reset the password-guessing counters either.
+func (s *Service) loginWithCode(w http.ResponseWriter, r *http.Request, ident Identifier, code string) {
+	ip := clientIP(r)
+	lock, lockErr := s.loginLockState(r.Context(), ident, ip)
+	if lockErr != nil {
+		s.errorLog(r.Context(), "login_lock_check_failed: "+lockErr.Error())
+		mw.WriteError(w, r, apierr.New(apierr.CodeAuthUnavailable))
+		return
+	}
+	if lock.locked() {
+		s.auditLogin(r.Context(), r, 0, "ANONYMOUS", "-", "REJECTED_BY_GUARD")
+		mw.WriteError(w, r, s.lockError(lock))
+		return
+	}
+
+	row, findErr := s.findUser(r.Context(), ident)
+	if findErr != nil {
+		if errors.Is(findErr, sql.ErrNoRows) {
+			// Do not touch the code store: there is no code for an address that
+			// was never registered, and answering differently here would turn
+			// the login endpoint into an account oracle.
+			s.recordLoginFailure(r.Context(), ident, ip)
+			s.auditLogin(r.Context(), r, 0, "ANONYMOUS", "-", "REJECTED_BY_GUARD")
+			mw.WriteError(w, r, apierr.New(apierr.CodeInvalidCredentials))
+			return
+		}
+		s.errorLog(r.Context(), "login_lookup_failed: "+findErr.Error())
+		mw.WriteError(w, r, apierr.New(apierr.CodeAuthUnavailable))
+		return
+	}
+
+	if apiErr := s.consumeVerificationCode(r.Context(), ident, PurposeLogin, code); apiErr != nil {
+		s.recordLoginFailure(r.Context(), ident, ip)
+		s.auditLogin(r.Context(), r, row.uid, row.role, strconv.FormatInt(row.uid, 10), "REJECTED_BY_GUARD")
+		mw.WriteError(w, r, apiErr)
+		return
+	}
+	s.clearAccountFailures(r.Context(), ident)
+	s.finishLogin(w, r, row, ident)
+}
+
+// finishLogin applies the account-status gate and issues the session. Shared by
+// the password and code paths so a status rule cannot apply to only one of
+// them — a disabled account must not be reachable by switching login method.
+func (s *Service) finishLogin(w http.ResponseWriter, r *http.Request, row userRow, ident Identifier) {
 	switch row.status {
 	case "NORMAL":
 	case "DISABLED":

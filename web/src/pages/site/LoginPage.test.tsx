@@ -2,6 +2,7 @@ import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { api } from '@/api/client'
 import { usePublicPlans } from '@/api/public'
 import { fixtureResponses } from '@/fixtures/public'
 import { useAuthStore } from '@/stores/auth'
@@ -10,6 +11,11 @@ import LoginPage from './LoginPage'
 vi.mock('@/api/public', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/public')>()
   return { ...actual, usePublicPlans: vi.fn() }
+})
+
+vi.mock('@/api/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/client')>()
+  return { ...actual, api: { ...actual.api, post: vi.fn() } }
 })
 
 const plans = fixtureResponses['/api/public/plans'].data
@@ -72,5 +78,36 @@ describe('LoginPage', () => {
     expect(
       screen.getByText(/完成注册后，请在控制台主动领取体验积分/),
     ).toBeInTheDocument()
+  })
+
+  it('requests an e-mail code and never calls the API for a phone number', async () => {
+    const user = userEvent.setup()
+    const post = vi.mocked(api.post)
+    post.mockResolvedValue({ channel: 'email', expires_in: 600, resend_after: 60 })
+
+    render(
+      <MemoryRouter initialEntries={['/login?tab=register']}>
+        <LoginPage />
+      </MemoryRouter>,
+    )
+
+    const account = screen.getByPlaceholderText('you@example.com')
+    const send = screen.getByRole('button', { name: '获取验证码' })
+
+    // SMS is billed per message and has no provider: the click must stop at the
+    // client, and say why, instead of looking like a delivery failure.
+    await user.type(account, '13800138000')
+    await user.click(send)
+    expect(screen.getByText('短信验证码暂未开放，请使用邮箱。')).toBeInTheDocument()
+    expect(post).not.toHaveBeenCalled()
+
+    await user.clear(account)
+    await user.type(account, 'someone@example.com')
+    await user.click(send)
+    expect(post).toHaveBeenCalledWith('/api/v1/auth/verification-code', {
+      identifier: 'someone@example.com',
+      purpose: 'register',
+    })
+    expect(screen.getByRole('button', { name: /后重发/ })).toBeDisabled()
   })
 })

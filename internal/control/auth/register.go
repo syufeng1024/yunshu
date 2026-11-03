@@ -33,9 +33,11 @@ const bcryptCost = 12
 // Defined as an alias rather than a copy so there is one literal to change.
 const BcryptCost = bcryptCost
 
-// registerRequest is the first-segment registration body. `code` is accepted
-// in the struct only to reject it explicitly: silently ignoring a verification
-// code would let a caller believe the mailbox was proven when it was not.
+// registerRequest is the registration body. `code` is the mailbox code issued
+// by POST /api/v1/auth/verification-code with purpose=register. It is required
+// because the address is the account name: an unverified address would let
+// anyone register someone else's mailbox and then receive that person's
+// password-reset mail.
 type registerRequest struct {
 	Identifier       string `json:"identifier"`
 	Password         string `json:"password"`
@@ -57,16 +59,21 @@ func (s *Service) Register(w http.ResponseWriter, r *http.Request) {
 		mw.WriteError(w, r, apiErr)
 		return
 	}
-	if strings.TrimSpace(req.Code) != "" {
-		// Verification codes are a second-segment deliverable. Rejecting the
-		// field is deliberate: accepting it would imply verification happened.
-		s.warn(r.Context(), "register_code_rejected: verification is not enabled in segment 1")
-		mw.WriteError(w, r, mw.InvalidField("code"))
-		return
-	}
 	ident, err := NormalizeIdentifier(req.Identifier)
 	if err != nil {
 		mw.WriteError(w, r, mw.InvalidField("identifier"))
+		return
+	}
+	code := strings.TrimSpace(req.Code)
+	if code == "" {
+		mw.WriteError(w, r, mw.InvalidField("code"))
+		return
+	}
+	// Consumed before the insert, so a wrong code cannot create the account.
+	// The purpose namespace ("register") is what stops a login code from being
+	// replayed here, and the code is deleted on success (one use only).
+	if apiErr := s.consumeVerificationCode(r.Context(), ident, PurposeRegister, code); apiErr != nil {
+		mw.WriteError(w, r, apiErr)
 		return
 	}
 	if err := validatePassword(req.Password); err != nil {

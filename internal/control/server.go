@@ -76,8 +76,13 @@ type Deps struct {
 	PaySecrets map[string]string
 
 	// Mailer is the outbound e-mail seam. Nil is allowed: notifications fall
-	// back to the in-app row plus a WARN.
+	// back to the in-app row plus a WARN, and verification codes answer 503
+	// instead of pretending a message was sent.
 	Mailer fund.Mailer
+
+	// VerificationMode is AUTH_VERIFICATION_MODE for /api/v1/auth: "off",
+	// "log" or "smtp". Empty means "log" (see auth.verificationMode).
+	VerificationMode string
 
 	// FingerprintKey is FP_HMAC_KEY from the environment (the YUNSHU_ prefix
 	// is accepted as a fallback). Empty makes the trial claim answer 503
@@ -172,11 +177,15 @@ func New(d Deps) (*Server, error) {
 	// one entry_no generator.
 	reviews := review.New(d.DB, d.Audit, d.Now, d.Logger, funds)
 	authSvc := &auth.Service{
-		DB:       d.DB,
-		Sessions: d.Sessions,
-		Audit:    d.Audit,
-		Logger:   d.Logger,
-		Now:      d.Now,
+		DB:               d.DB,
+		Sessions:         d.Sessions,
+		Audit:            d.Audit,
+		Logger:           d.Logger,
+		Now:              d.Now,
+		VerificationMode: d.VerificationMode,
+	}
+	if d.Mailer != nil {
+		authSvc.Mailer = d.Mailer
 	}
 	authSvc.CancellableCheck = tickets.CheckAccountCancellable
 	// Log reads go to LogDB when a separate log database is configured. The
@@ -224,6 +233,7 @@ func New(d Deps) (*Server, error) {
 func (s *Server) Register(mux *http.ServeMux) {
 	// Public: unauthenticated by design.
 	mux.Handle("POST /api/v1/auth/register", s.public(s.auth.Register))
+	mux.Handle("POST /api/v1/auth/verification-code", s.public(s.auth.SendVerificationCode))
 	mux.Handle("POST /api/v1/auth/login", s.public(s.auth.Login))
 
 	// Website data. Read-only and session-free: the marketing pages are

@@ -32,6 +32,13 @@ type Service struct {
 	Logger   *obslog.Logger
 	Now      clock.Clock
 
+	// Mailer delivers verification codes when VerificationMode is "smtp".
+	// Nil is allowed; the send endpoint then answers 503 instead of pretending.
+	Mailer Sender
+	// VerificationMode is AUTH_VERIFICATION_MODE: "off", "log" or "smtp".
+	// Empty means "log" — see verificationMode for why that is the default.
+	VerificationMode string
+
 	// CancellableCheck is ticket.CheckAccountCancellable. It is a function seam
 	// rather than a *ticket.Service field so the auth package does not import
 	// the ticket console; the error's OutstandingTicketNos method is the only

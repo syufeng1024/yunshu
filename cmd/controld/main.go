@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"yunshu.dev/core/internal/control/audit"
 	"yunshu.dev/core/internal/control/mw"
 	"yunshu.dev/core/internal/cryptobox"
+	"yunshu.dev/core/internal/notify/mail"
 	"yunshu.dev/core/internal/obs/health"
 	obslog "yunshu.dev/core/internal/obs/log"
 	obsmetrics "yunshu.dev/core/internal/obs/metrics"
@@ -142,7 +144,44 @@ func main() {
 		internalSecret = ""
 	}
 
-	ctl, err := control.New(control.Deps{
+	// Verification codes need a delivery channel. "log" prints the code to this
+	// process log and is the development/CI default; "smtp" e-mails it and is
+	// the production setting. Asking for smtp without SMTP settings fails at
+	// boot rather than at the first registration, which would look like a
+	// product outage with no visible cause.
+	verificationMode := strings.TrimSpace(os.Getenv("AUTH_VERIFICATION_MODE"))
+	if verificationMode == "" {
+		verificationMode = "log"
+	}
+	if verificationMode != "log" && verificationMode != "smtp" && verificationMode != "off" {
+		logger.Error(rootCtx, "AUTH_VERIFICATION_MODE must be log, smtp or off, got "+verificationMode,
+			obslog.Fields{Stage: "startup", Status: 1})
+		os.Exit(1)
+	}
+	mailer, mailErr := mail.FromEnv()
+	switch {
+	case mailErr == nil:
+		logger.Info(rootCtx, "smtp mailer configured: host="+mailer.Host+" from="+mailer.From,
+			obslog.Fields{Stage: "startup"})
+	case errors.Is(mailErr, mail.ErrNotConfigured):
+		logger.Warn(rootCtx, "SMTP is not configured; verification codes can only be issued in log mode",
+			obslog.Fields{Stage: "startup"})
+	default:
+		logger.Error(rootCtx, "SMTP configuration is invalid: "+mailErr.Error(),
+			obslog.Fields{Stage: "startup", Status: 1})
+		os.Exit(1)
+	}
+	if verificationMode == "smtp" && mailer == nil {
+		logger.Error(rootCtx, "AUTH_VERIFICATION_MODE=smtp requires SMTP_HOST/SMTP_FROM; refusing to start",
+			obslog.Fields{Stage: "startup", Status: 1})
+		os.Exit(1)
+	}
+	if verificationMode == "log" {
+		logger.Warn(rootCtx, "AUTH_VERIFICATION_MODE=log: codes are printed to this log, not e-mailed — "+
+			"set AUTH_VERIFICATION_MODE=smtp before production", obslog.Fields{Stage: "startup"})
+	}
+
+	deps := control.Deps{
 		DB:       mainDB,
 		LogDB:    logDB,
 		Redis:    rdb,
@@ -164,7 +203,12 @@ func main() {
 
 		GatewayInternalURL: internalURL,
 		InternalCallSecret: internalSecret,
-	})
+		VerificationMode:   verificationMode,
+	}
+	if mailer != nil {
+		deps.Mailer = mailer
+	}
+	ctl, err := control.New(deps)
 	if err != nil {
 		logger.Error(rootCtx, "control server: "+err.Error(), obslog.Fields{Stage: "startup", Status: 1})
 		os.Exit(1)
