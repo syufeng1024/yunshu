@@ -293,26 +293,45 @@ func (m *SessionManager) Middleware() func(http.Handler) http.Handler {
 }
 
 // Revoke deletes K20 so the old sid stops working immediately.
-func (m *SessionManager) Revoke(ctx context.Context, sid string) {
-	m.revoke(ctx, sid)
+//
+// It returns an error when the DEL was not acknowledged. The caller must not
+// report a successful logout in that case: with a 204 the client believes the
+// session is gone while the server-side key is still alive, which is exactly
+// the "logged out everywhere, except actually" failure this signature exists to
+// prevent (G34).
+func (m *SessionManager) Revoke(ctx context.Context, sid string) error {
+	return m.revoke(ctx, sid)
 }
 
-func (m *SessionManager) revoke(ctx context.Context, sid string) {
+func (m *SessionManager) revoke(ctx context.Context, sid string) error {
 	if sid == "" {
-		return
+		return nil
 	}
-	cctx, cancel := m.Redis.CommandContext(ctx)
-	defer cancel()
+	// The uid read and the DEL get **separate** command budgets. They used to
+	// share one 50ms context: a slow GET consumed it, the DEL was never sent,
+	// pipe.Exec's error was discarded and Logout still answered 204 — the
+	// session survived a logout that reported success (G34).
+	//
 	// Read the uid before deleting K20 so the K30 member can be removed in the
-	// same round trip. A logout that leaves the sid in K30 is harmless (the
-	// password-change delete is idempotent) but accumulates dead members.
-	uidRaw, _ := m.Redis.Raw().Get(cctx, redisx.AdminSessionKey(sid)).Result()
+	// same round trip. This read is best-effort: a logout that leaves the sid
+	// in K30 is harmless (RevokeAll is idempotent) but accumulates dead
+	// members, so failing it must not block the delete that actually matters.
+	readCtx, readCancel := m.Redis.CommandContext(ctx)
+	uidRaw, _ := m.Redis.Raw().Get(readCtx, redisx.AdminSessionKey(sid)).Result()
+	readCancel()
+
 	pipe := m.Redis.Raw().Pipeline()
+	delCtx, delCancel := m.Redis.CommandContext(ctx)
+	defer delCancel()
 	if uid, err := strconv.ParseInt(strings.TrimSpace(uidRaw), 10, 64); err == nil && uid > 0 {
-		pipe.SRem(cctx, redisx.AdminUserSessionSetKey(uid), sid)
+		pipe.SRem(delCtx, redisx.AdminUserSessionSetKey(uid), sid)
 	}
-	pipe.Del(cctx, redisx.AdminSessionKey(sid))
-	_, _ = pipe.Exec(cctx)
+	pipe.Del(delCtx, redisx.AdminSessionKey(sid))
+	if _, err := pipe.Exec(delCtx); err != nil {
+		// No sid in the error: it is a bearer credential.
+		return fmt.Errorf("mw: revoke session: %w", err)
+	}
+	return nil
 }
 
 // revokeAllScript deletes every K20 named by the K30 member set and then the

@@ -14,6 +14,7 @@ import (
 	"yunshu.dev/core/internal/apierr"
 	"yunshu.dev/core/internal/control/audit"
 	"yunshu.dev/core/internal/control/mw"
+	obslog "yunshu.dev/core/internal/obs/log"
 )
 
 type loginRequest struct {
@@ -157,10 +158,23 @@ func (s *Service) Me(w http.ResponseWriter, r *http.Request) {
 
 // Logout implements POST /api/v1/auth/logout. Deleting K20 makes the old sid
 // unusable immediately; the browser cookie is cleared as a convenience.
+//
+// A failed delete answers 503, not 204, and deliberately leaves the cookies in
+// place: the session is still alive server-side, so clearing them would remove
+// the only credential the client could retry with. Answering 204 here is what
+// made a Redis stall look like a successful logout (G34).
 func (s *Service) Logout(w http.ResponseWriter, r *http.Request) {
 	sess, ok := mw.SessionFrom(r.Context())
 	if ok {
-		s.Sessions.Revoke(r.Context(), sess.SID)
+		if err := s.Sessions.Revoke(r.Context(), sess.SID); err != nil {
+			if s.Logger != nil {
+				s.Logger.Warn(r.Context(), "logout_revoke_failed: "+err.Error(),
+					obslog.Fields{Stage: "auth.logout"})
+			}
+			mw.WriteError(w, r, apierr.New(apierr.CodeAuthUnavailable).
+				WithHint("退出登录未完成，请重试"))
+			return
+		}
 	}
 	s.Sessions.ClearCookie(w)
 	s.Sessions.ClearCSRFCookie(w)
