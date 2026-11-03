@@ -176,22 +176,61 @@ groups:
             按 err_code 排序先修占比最高的那条码；样本 < 100 次时不断言（and 条件）。
           runbook: 'docs/ops-runbook.md §8 容量与限流告警'
 
-      # 延迟。120s = 非流式客户端超时预算，超了说明请求注定失败（TDS §5.3）。
+      # ------------------------------------------------------------- 延迟（分流式）
+      # 120s 的来源：`gw.DefaultClientBudgetMS = 120_000`（= 种子值
+      # gw.client_timeout_budget_ms），即**非流式**请求的客户端超时预算
+      # （TDS §5.3）。超过它，这条请求在客户端侧已经断了，网关再快也没意义。
+      #
+      # 必须带 {stream="false"}：`gw_request_duration_seconds` 同时记流式与非流式，
+      # 而流式的预算是 600s（`gw.DefaultStreamBudgetMS`）。不分流的后果是——一条
+      # 健康的长流式请求（比如 8 分钟的大输出）会把 P99 顶过 120s，触发一条不说明
+      # 任何问题的 P2（G27）。埋点本身不用改：`stream` 标签一直都在。
       - alert: GatewayLatencyP99High
         expr: >-
           histogram_quantile(0.99,
-            sum by (le) (rate(gw_request_duration_seconds_bucket[5m]))
+            sum by (le) (rate(gw_request_duration_seconds_bucket{stream="false"}[5m]))
           ) > 120
         for: 10m
         labels:
           severity: P2
           team: platform
         annotations:
-          summary: '网关 P99 延迟 {{ $value | printf "%.1f" }}s（阈值 120s）'
+          summary: '网关非流式 P99 延迟 {{ $value | printf "%.1f" }}s（阈值 120s = 客户端超时预算）'
           description: >-
-            120s 是非流式硬上限：P99 触到它就意味着至少 1% 的请求在客户端侧已经超时。
+            只统计非流式请求。120s 是 gw.client_timeout_budget_ms 的种子值：
+            P99 触到它就意味着至少 1% 的非流式请求在客户端侧已经超时。
             先看 gw_upstream_attempts_total 的失败分类与 gw_circuit_state，
             再看是否单渠道劣化（按 channel_id 拆分）。
+          runbook: 'docs/ops-runbook.md §8 容量与限流告警'
+
+      # 流式单独一条，阈值从 600s 的流式总预算推导：540s = 90% × 600s
+      # （`gw.DefaultStreamBudgetMS` = 种子值 gw.stream_total_ms）。与非流式那条
+      # 的 120s 无关，**不要复用**——两个预算是两个数量级的事。
+      #
+      # 为什么是 90% 而不是 600s：到了 600s 网关会主动收尾（TDS §5.3 的
+      # StreamTotal 上限），P99 卡在 600 说明已经有 1% 的流被截断，那是故障而不是
+      # 预警。540s 留出一分钟给值班判断「是不是上游在挤牙膏」。
+      #
+      # 桶边界：gw_request_duration_seconds 的桶现在到 600s（见
+      # metrics.DurationBuckets），否则 histogram_quantile 在 +Inf 桶里只能返回
+      # 最高有限边界（300s），这条规则会永远为假——那才是真正没人发现的假绿。
+      - alert: GatewayStreamLatencyP99High
+        expr: >-
+          histogram_quantile(0.99,
+            sum by (le) (rate(gw_request_duration_seconds_bucket{stream="true"}[5m]))
+          ) > 540
+        for: 10m
+        labels:
+          severity: P2
+          team: platform
+        annotations:
+          summary: '网关流式 P99 延迟 {{ $value | printf "%.1f" }}s（阈值 540s = 600s 流式预算的 90%）'
+          description: >-
+            只统计流式请求。540s 逼近 gw.stream_total_ms 的种子值 600s：
+            持续超过说明整体在接近「请求被网关主动收尾」的边界。
+            先看 gw_ttft_seconds（P99 15s）判断是首字节慢还是生成慢，
+            再看 gw_upstream_attempts_total 的失败分类与单渠道状态。
+            单个长请求不是问题，P99 才是——不要把这条告警当成「有人发了长请求」。
           runbook: 'docs/ops-runbook.md §8 容量与限流告警'
 
       # 熔断。1=OPEN。

@@ -68,9 +68,17 @@ const (
 
 // DurationBuckets are the fixed histogram bounds from TDS §5.4. 15s and 120s
 // are deliberately present: they are the P99 alert thresholds for TTFT and
-// request duration, so a bucket edge sits exactly on each threshold.
+// non-stream request duration, so a bucket edge sits exactly on each threshold.
+//
+// 540 and 600 were added for the streaming half of the latency alert (G27):
+// histogram_quantile returns the highest finite bucket bound when the quantile
+// falls in the +Inf bucket, so a threshold above the last edge can never be
+// reached — a 540s stream alert against a 300s ceiling would be a rule that is
+// false forever, which is worse than no rule. 540s = 90% of the 600s stream
+// budget (gw.DefaultStreamBudgetMS); 600 is its hard edge.
 var DurationBuckets = []float64{
 	0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 15, 30, 60, 120, 300,
+	540, 600,
 }
 
 // Label is one name/value pair in export order.
