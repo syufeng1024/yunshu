@@ -16,6 +16,21 @@ internal/platform/migrate/checksums.golden text eol=lf
 # scripts/check-eol.sh deliberately leaves Lua out of its mandatory list.
 *.lua text eol=lf
 
+# Go sources are pinned for the same reason shell scripts are: the local Git
+# config must not decide whether the tree is formatted. With core.autocrlf=true
+# a Windows checkout writes CRLF into every .go file, and `gofmt -l` reports
+# every one of them — on this host 96 files, with zero real formatting issues
+# (the same tree exported with `git archive`, which applies these attributes,
+# is fully gofmt-clean). Pinning the attribute makes the LF form the checked-out
+# form, so `gofmt -l` and the golangci-lint / CI formatting step agree with a
+# Linux checkout instead of reporting noise that hides a real drift (G17).
+#
+# This is the only rule here that has to be paired with a one-off
+# `git add --renormalize .` + re-checkout of the working tree: the index was
+# already LF, so the attribute alone does not rewrite files that were checked
+# out before it existed.
+*.go text eol=lf
+
 # Shell scripts must survive a Windows checkout. With core.autocrlf=true the
 # working tree gets CRLF, which turns the shebang into `#!/usr/bin/env bash\r`
 # and makes strict shells refuse to exec the file at all; scripts that happen
