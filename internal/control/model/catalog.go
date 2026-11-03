@@ -158,13 +158,29 @@ func (s *Service) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 默认按推荐权重排（运营手工调的顺序）；列表页允许按名称/上下文窗口重排。
+	// 白名单而不是拼 `page.Sort`：那是用户输入，直接进 ORDER BY 是注入面。
+	orderBy := "m.recommend_weight DESC, m.published_at DESC"
+	switch page.Sort {
+	case "model_name", "context_length":
+		column := "m.model_name"
+		if page.Sort == "context_length" {
+			column = "m.context_length"
+		}
+		direction := "DESC"
+		if strings.EqualFold(page.Order, "asc") {
+			direction = "ASC"
+		}
+		// id 作为决胜列，否则同值的行在翻页之间会换位置。
+		orderBy = column + " " + direction + ", m.id " + direction
+	}
 	pageArgs := append(append([]any{}, args...), page.Size, page.OffsetInt64())
 	rows, err := s.DB.QueryContext(r.Context(), `
 		SELECT m.id, m.model_name, m.display_name, m.model_type, m.context_length,
 		       m.capability_mask, m.recommend_weight, m.published_at, p.code
 		  FROM t_model m JOIN t_protocol p ON p.id = m.protocol_id
 		 WHERE `+whereSQL+`
-		 ORDER BY m.recommend_weight DESC, m.published_at DESC
+		 ORDER BY `+orderBy+`
 		 LIMIT ? OFFSET ?`, pageArgs...)
 	if err != nil {
 		s.logError(r.Context(), "model_catalog_failed: "+err.Error())

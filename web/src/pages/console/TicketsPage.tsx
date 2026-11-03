@@ -21,6 +21,7 @@ import { formatDateTimeMs } from '@/lib/format'
 import { usePageTitle } from '@/lib/usePageTitle'
 
 const PAGE_SIZE = 20
+const PAGE_SIZE_OPTIONS = [20, 50, 100] as const
 
 const STATE_OPTIONS: readonly { value: TicketState | 'all'; label: string }[] = [
   { value: 'all', label: '全部状态' },
@@ -88,6 +89,7 @@ function buildColumns(
     {
       key: 'created_at',
       header: '创建时间',
+      sortable: true,
       render: (row) => (
         <span className="whitespace-nowrap tabular-nums text-xs">
           {formatDateTimeMs(row.created_at)}
@@ -118,6 +120,9 @@ export default function TicketsPage() {
   const [stateFilter, setStateFilter] = useState<TicketState | 'all'>('all')
   const [typeFilter, setTypeFilter] = useState<TicketType | 'all'>('all')
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(PAGE_SIZE)
+  // 工单只按创建时间排，所以这里只存方向；点表头切换正/倒序。
+  const [order, setOrder] = useState<'asc' | 'desc'>('desc')
   const [createOpen, setCreateOpen] = useState(false)
   const [selectedTicketId, setSelectedTicketId] = useState<number | null>(null)
 
@@ -130,9 +135,10 @@ export default function TicketsPage() {
       state: stateFilter,
       type: typeFilter,
       page,
-      pageSize: PAGE_SIZE,
+      pageSize,
+      order,
     }),
-    [stateFilter, typeFilter, page],
+    [stateFilter, typeFilter, page, pageSize, order],
   )
 
   const tickets = useTickets(params)
@@ -194,13 +200,23 @@ export default function TicketsPage() {
               </Button>
             )
           }
+          sort={{ key: 'created_at', direction: order }}
+          onSortChange={(next) => {
+            setOrder(next.direction)
+            setPage(1)
+          }}
           pagination={
             tickets.data
               ? {
                   page: tickets.data.page,
                   pageSize: tickets.data.page_size,
                   total: tickets.data.total,
+                  pageSizeOptions: PAGE_SIZE_OPTIONS,
                   onPageChange: setPage,
+                  onPageSizeChange: (size) => {
+                    setPageSize(size)
+                    setPage(1)
+                  },
                 }
               : undefined
           }

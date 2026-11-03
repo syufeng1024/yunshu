@@ -18,7 +18,7 @@ import {
   type RefundStatusFilter,
 } from '@/api/console'
 import { Badge, Button, ErrorState, Input, PageHeader, Select, Table } from '@/components'
-import type { BadgeVariant, TableColumn } from '@/components'
+import type { BadgeVariant, TableColumn, TableSort } from '@/components'
 import { InvoiceDialog, PayModal, RefundDialog } from '@/components/console'
 import type { PayTarget } from '@/components/console'
 import { invoiceStateLabel, orderStateLabel, refundStateLabel } from '@/lib/consoleLabels'
@@ -58,6 +58,8 @@ const REFUND_STATUS_OPTIONS: { value: RefundFilter; label: string }[] = [
   { value: 'rejected', label: '已驳回' },
   { value: 'failed', label: '退款失败' },
 ]
+
+const INVOICE_PAGE_SIZE_OPTIONS = [10, 20, 50] as const
 
 const INVOICE_STATUS_OPTIONS: { value: InvoiceFilter; label: string }[] = [
   { value: 'ALL', label: '全部状态' },
@@ -230,10 +232,16 @@ export default function RechargePage() {
 
   const [invoiceStatus, setInvoiceStatus] = useState<InvoiceFilter>('ALL')
   const [invoicePage, setInvoicePage] = useState(1)
+  const [invoicePageSize, setInvoicePageSize] = useState(10)
+  // 默认按申请时间倒序，与后端默认一致；开票时间另开一列，否则「按开票时间排」
+  // 在界面上看不出依据。
+  const [invoiceSort, setInvoiceSort] = useState<TableSort>({ key: 'created', direction: 'desc' })
   const invoices = useInvoices({
     status: invoiceStatus === 'ALL' ? undefined : invoiceStatus,
     page: invoicePage,
-    pageSize: 10,
+    pageSize: invoicePageSize,
+    sort: invoiceSort.key === 'issued' ? 'issued_at' : 'created_at',
+    order: invoiceSort.direction,
   })
 
   const [refundOrder, setRefundOrder] = useState<Order | null>(null)
@@ -446,9 +454,21 @@ export default function RechargePage() {
     {
       key: 'created',
       header: '申请时间',
+      sortable: true,
       render: (row) => (
         <span className="text-xs text-ink-secondary">{formatDateTime(row.created_at)}</span>
       ),
+    },
+    {
+      key: 'issued',
+      header: '开票时间',
+      sortable: true,
+      render: (row) =>
+        row.issued_at ? (
+          <span className="text-xs text-ink-secondary">{formatDateTime(row.issued_at)}</span>
+        ) : (
+          <span className="text-xs text-ink-muted">—</span>
+        ),
     },
     {
       key: 'file',
@@ -743,13 +763,23 @@ export default function RechargePage() {
             onRetry={() => void invoices.refetch()}
             emptyTitle="暂无开票申请"
             emptyDescription="在订单列表对已支付订单申请开票。"
+            sort={invoiceSort}
+            onSortChange={(next) => {
+              setInvoiceSort(next)
+              setInvoicePage(1)
+            }}
             pagination={
               invoices.data
                 ? {
                     page: invoices.data.page,
                     pageSize: invoices.data.page_size,
                     total: invoices.data.total,
+                    pageSizeOptions: INVOICE_PAGE_SIZE_OPTIONS,
                     onPageChange: setInvoicePage,
+                    onPageSizeChange: (size) => {
+                      setInvoicePageSize(size)
+                      setInvoicePage(1)
+                    },
                   }
                 : undefined
             }

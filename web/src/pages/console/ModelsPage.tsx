@@ -7,7 +7,7 @@ import {
   type ModelType,
 } from '@/api/console'
 import { Badge, Input, PageHeader, Select, Table } from '@/components'
-import type { TableColumn } from '@/components'
+import type { TableColumn, TableSort } from '@/components'
 import { modelTypeLabel, protocolLabel } from '@/lib/consoleLabels'
 import {
   formatCreditAmount,
@@ -21,6 +21,7 @@ type TypeFilter = 'ALL' | ModelType
 type ProtocolFilter = string
 
 const PAGE_SIZE = 20
+const PAGE_SIZE_OPTIONS = [20, 50, 100] as const
 
 const MODEL_TYPE_OPTIONS = [
   { value: 'ALL', label: '全部类型' },
@@ -82,6 +83,10 @@ export default function ConsoleModelsPage() {
   const [type, setType] = useState<TypeFilter>('ALL')
   const [protocol, setProtocol] = useState<ProtocolFilter>('ALL')
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(PAGE_SIZE)
+  // Default is the API's recommended order; only the two columns the backend
+  // whitelists are sortable, so a click never becomes a silently ignored param.
+  const [sort, setSort] = useState<TableSort | null>(null)
   const debouncedSearch = useDebouncedValue(search, 300)
 
   useEffect(() => {
@@ -90,10 +95,12 @@ export default function ConsoleModelsPage() {
 
   const catalog = useModelCatalog({
     page,
-    pageSize: PAGE_SIZE,
+    pageSize,
     modelType: type === 'ALL' ? undefined : type,
     protocol: protocol === 'ALL' ? undefined : protocol,
     q: debouncedSearch,
+    sort: sort?.key === 'model' ? 'model_name' : sort?.key === 'context' ? 'context_length' : undefined,
+    order: sort?.direction,
   })
 
   // The API does not expose a protocol dictionary; the listed models are the
@@ -115,6 +122,7 @@ export default function ConsoleModelsPage() {
     {
       key: 'model',
       header: '模型',
+      sortable: true,
       render: (model) => (
         <div className="space-y-0.5">
           <p className="font-medium text-ink">{model.display_name}</p>
@@ -134,6 +142,7 @@ export default function ConsoleModelsPage() {
       key: 'context',
       header: '上下文',
       align: 'right',
+      sortable: true,
       render: (model) => (
         <span className="tabular-nums text-xs text-ink-secondary">
           {formatTokens(model.context_length)}
@@ -204,6 +213,11 @@ export default function ConsoleModelsPage() {
       <Table
         ariaLabel="模型广场列表"
         columns={columns}
+        sort={sort}
+        onSortChange={(next) => {
+          setSort(next)
+          setPage(1)
+        }}
         rows={catalog.data?.items ?? []}
         rowKey={(model) => String(model.id)}
         loading={catalog.isLoading}
@@ -221,7 +235,12 @@ export default function ConsoleModelsPage() {
                 page: catalog.data.page,
                 pageSize: catalog.data.page_size,
                 total: catalog.data.total,
+                pageSizeOptions: PAGE_SIZE_OPTIONS,
                 onPageChange: setPage,
+                onPageSizeChange: (size) => {
+                  setPageSize(size)
+                  setPage(1)
+                },
               }
             : undefined
         }

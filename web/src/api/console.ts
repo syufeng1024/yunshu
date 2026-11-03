@@ -331,6 +331,9 @@ export interface ModelCatalogParams {
   modelType?: ModelType
   protocol?: string
   q?: string
+  /** Backend whitelist: model_name, context_length. Omitted = recommended order. */
+  sort?: 'model_name' | 'context_length'
+  order?: 'asc' | 'desc'
 }
 
 // ---------------------------------------------------------------------------
@@ -586,6 +589,9 @@ export interface InvoiceListParams {
   status?: InvoiceStatusFilter
   page?: number
   pageSize?: number
+  /** Backend whitelist: issued_at, otherwise created_at. */
+  sort?: 'created_at' | 'issued_at'
+  order?: 'asc' | 'desc'
 }
 
 export interface CreateInvoiceInput {
@@ -819,6 +825,8 @@ function modelCatalogQuery(params: ModelCatalogParams): string {
   search.set('page_size', String(params.pageSize ?? 20))
   if (params.modelType) search.set('model_type', params.modelType)
   if (params.protocol) search.set('protocol', params.protocol)
+  if (params.sort) search.set('sort', params.sort)
+  if (params.order) search.set('order', params.order)
   const q = params.q?.trim()
   if (q) search.set('q', q)
   return search.toString()
@@ -942,6 +950,8 @@ function invoicesQuery(params: InvoiceListParams): string {
   search.set('page', String(params.page ?? 1))
   search.set('page_size', String(params.pageSize ?? 20))
   if (params.status) search.set('status', params.status)
+  if (params.sort) search.set('sort', params.sort)
+  if (params.order) search.set('order', params.order)
   return search.toString()
 }
 
@@ -1268,6 +1278,8 @@ export interface TicketListParams {
   type?: TicketType | 'all'
   page?: number
   pageSize?: number
+  /** The list is always ordered by created_at; only the direction is settable. */
+  order?: 'asc' | 'desc'
 }
 
 export interface CreateTicketInput {
@@ -1309,7 +1321,7 @@ function ticketsQuery(params: TicketListParams): string {
   if (params.state && params.state !== 'all') search.set('state', params.state)
   if (params.type && params.type !== 'all') search.set('type', params.type)
   search.set('sort', 'created_at')
-  search.set('order', 'desc')
+  search.set('order', params.order ?? 'desc')
   return search.toString()
 }
 
