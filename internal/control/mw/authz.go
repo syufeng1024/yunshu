@@ -42,6 +42,10 @@ const (
 	// diagnostics. It is never an operator-wide read: swapping it for user.read
 	// is a cross-account disclosure, see above.
 	PermAccountRead Permission = "account.read"
+	// PermAccountWrite is the customer editing their *own* profile (nickname).
+	// It is deliberately separate from user.write: that one is the operator
+	// scope and can change any account's status, plan and disable reason.
+	PermAccountWrite Permission = "account.write"
 	// PermUserRead is the operator scope: read any account, including each
 	// row's status, plan and disable reason. OPS and SUPER_ADMIN only. FINANCE
 	// deliberately does not hold it — finance works from orders, invoices and
@@ -127,7 +131,8 @@ const (
 // model cost sheet are all it needs, and the account directory is not.
 var rolePermissions = map[string]map[Permission]bool{
 	"PERSONAL": {
-		PermAccountRead: true,
+		PermAccountRead:  true,
+		PermAccountWrite: true,
 		PermKeyRead:     true,
 		PermKeyWrite:    true,
 		PermModelRead:   true,
@@ -163,6 +168,7 @@ var rolePermissions = map[string]map[Permission]bool{
 	},
 	"SUPER_ADMIN": {
 		PermAccountRead:  true,
+		PermAccountWrite: true,
 		PermUserRead:     true,
 		PermUserWrite:    true,
 		PermKeyRead:      true,

@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -8,7 +8,7 @@ import AccountPage from './AccountPage'
 
 vi.mock('@/api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/client')>()
-  return { ...actual, api: { ...actual.api, post: vi.fn() } }
+  return { ...actual, api: { ...actual.api, post: vi.fn(), patch: vi.fn() } }
 })
 
 beforeEach(() => {
@@ -68,6 +68,35 @@ describe('AccountPage', () => {
     await user.click(screen.getByRole('button', { name: '更新密码' }))
     expect(screen.getByText('两次输入的新密码不一致。')).toBeInTheDocument()
     expect(post).not.toHaveBeenCalled()
+  })
+
+  it('saves the nickname and refreshes the session user', async () => {
+    const user = userEvent.setup()
+    const patch = vi.mocked(api.patch)
+    patch.mockResolvedValue({
+      user: {
+        id: '7',
+        email: 'demo@yunshu.test',
+        display_name: '小明',
+        role: 'PERSONAL',
+        status: 'NORMAL',
+        csrf_token: 'csrf',
+      },
+    })
+
+    renderPage()
+    const input = screen.getByLabelText('显示名称')
+    await user.clear(input)
+    await user.type(input, '小明')
+    await user.click(screen.getByRole('button', { name: '保存昵称' }))
+
+    await waitFor(() =>
+      expect(patch).toHaveBeenCalledWith('/api/v1/auth/profile', { nickname: '小明' }),
+    )
+    // The sidebar/header read from the store, so a stale store would show the
+    // old name right after a successful save.
+    expect(useAuthStore.getState().user?.display_name).toBe('小明')
+    expect(await screen.findByText('昵称已保存')).toBeInTheDocument()
   })
 
   it('requires the full e-mail before closing the account', async () => {

@@ -5,6 +5,7 @@ import { api, errorHint, errorMessage } from '@/api/client'
 import { Badge, Button, Input, PageHeader } from '@/components'
 import { ROUTES, USER_ROLE_LABEL, USER_STATUS_LABEL } from '@/lib/constants'
 import { usePageTitle } from '@/lib/usePageTitle'
+import type { CurrentUser } from '@/stores/auth'
 import { useAuthStore } from '@/stores/auth'
 
 /**
@@ -19,6 +20,11 @@ export default function AccountPage() {
   const logout = useAuthStore((state) => state.logout)
   const navigate = useNavigate()
 
+  const [nickname, setNickname] = useState(user?.display_name ?? '')
+  const [profileSaving, setProfileSaving] = useState(false)
+  const [profileError, setProfileError] = useState<string | null>(null)
+  const [profileSaved, setProfileSaved] = useState(false)
+
   const [oldPassword, setOldPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -31,6 +37,24 @@ export default function AccountPage() {
   const [cancelError, setCancelError] = useState<string | null>(null)
   const [cancelHint, setCancelHint] = useState<string | null>(null)
   const [cancelSubmitting, setCancelSubmitting] = useState(false)
+
+  const saveNickname = async () => {
+    setProfileSaving(true)
+    setProfileError(null)
+    setProfileSaved(false)
+    try {
+      const data = await api.patch<{ user: CurrentUser }>('/api/v1/auth/profile', {
+        nickname: nickname.trim(),
+      })
+      // 直接写回 store：否则侧边栏与页头仍是旧名字，看起来像没保存成功。
+      useAuthStore.setState({ user: data.user })
+      setProfileSaved(true)
+    } catch (error) {
+      setProfileError(errorMessage(error))
+    } finally {
+      setProfileSaving(false)
+    }
+  }
 
   const handlePassword = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -98,9 +122,39 @@ export default function AccountPage() {
             <dt className="text-xs text-ink-muted">登录邮箱</dt>
             <dd className="mt-1 text-ink">{user?.email ?? '—'}</dd>
           </div>
-          <div>
+          <div className="sm:col-span-2">
             <dt className="text-xs text-ink-muted">显示名称</dt>
-            <dd className="mt-1 text-ink">{user?.display_name ?? '—'}</dd>
+            <dd className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
+              <div className="sm:max-w-xs sm:flex-1">
+                <Input
+                  aria-label="显示名称"
+                  value={nickname}
+                  onChange={(event) => {
+                    setNickname(event.target.value)
+                    setProfileSaved(false)
+                  }}
+                  placeholder="留空则显示登录邮箱"
+                />
+              </div>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => void saveNickname()}
+                loading={profileSaving}
+              >
+                保存昵称
+              </Button>
+            </dd>
+            {profileError ? (
+              <p role="alert" className="mt-1 text-xs text-danger">
+                {profileError}
+              </p>
+            ) : null}
+            {profileSaved ? (
+              <p role="status" className="mt-1 text-xs text-success">
+                昵称已保存
+              </p>
+            ) : null}
           </div>
           <div>
             <dt className="text-xs text-ink-muted">账号角色</dt>
@@ -118,7 +172,7 @@ export default function AccountPage() {
           </div>
         </dl>
         <p className="mt-4 text-xs text-ink-muted">
-          昵称等资料修改暂未开放，需要变更请联系客服提交工单。
+          登录邮箱与账号角色不可自助修改；需要变更请提交工单。
         </p>
       </section>
 

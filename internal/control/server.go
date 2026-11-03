@@ -252,6 +252,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 	// account owns (K30 → K20). No capability: every signed-in account may
 	// change its own credential.
 	mux.Handle("POST /api/v1/auth/password", s.authed("", s.auth.ChangePassword))
+	// 昵称自助修改。用 account.write 而不是空权限：它是「改自己的资料」，与
+	// 运营侧 user.write（可改任意账号状态）严格分开。
+	mux.Handle("PATCH /api/v1/auth/profile", s.authed(mw.PermAccountWrite, s.auth.UpdateProfile))
 	// Self-service cancellation: open tickets block it, then status=DISABLED
 	// and every session key are cleared. No capability beyond being signed in.
 	mux.Handle("POST /api/v1/auth/cancel", s.authed("", s.auth.Cancel))
