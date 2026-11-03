@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"yunshu.dev/core/internal/jsonx"
@@ -52,13 +54,33 @@ func verifierService(t *testing.T) (*Service, *captureMailer) {
 	return svc, mailer
 }
 
+// ipSeq keeps every callSendCode on its own source address: the per-IP hourly
+// ceiling is keyed by address, and reusing one address across unrelated tests
+// would make them fail for a reason that has nothing to do with what they test.
+var ipSeq atomic.Int64
+
+func uniqueTestIP() string {
+	n := ipSeq.Add(1)
+	return fmt.Sprintf("10.%d.%d.%d", byte(n>>16), byte(n>>8), byte(n))
+}
+
 func callSendCode(t *testing.T, svc *Service, identifier, purpose string) *httptest.ResponseRecorder {
+	t.Helper()
+	return callSendCodeFrom(t, svc, identifier, purpose, uniqueTestIP())
+}
+
+// callSendCodeFrom pins the caller address. RemoteAddr is loopback on purpose:
+// audit.IPBytes only trusts X-Real-IP when the peer is a private/loopback
+// address (that is the nginx case), so the header is ignored otherwise.
+func callSendCodeFrom(t *testing.T, svc *Service, identifier, purpose, ip string) *httptest.ResponseRecorder {
 	t.Helper()
 	payload, err := jsonx.Marshal(map[string]string{"identifier": identifier, "purpose": purpose})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/verification-code", strings.NewReader(string(payload)))
+	req.RemoteAddr = "127.0.0.1:40000"
+	req.Header.Set("X-Real-IP", ip)
 	rec := httptest.NewRecorder()
 	svc.SendVerificationCode(rec, req)
 	return rec
@@ -353,5 +375,40 @@ func TestWrongCodeMessageDoesNotMentionPassword(t *testing.T) {
 	// The machine-readable code must not change: clients branch on it.
 	if body.Error.Code != "invalid_credentials" {
 		t.Fatalf("code=%q, want invalid_credentials", body.Error.Code)
+	}
+}
+
+// TestVerificationCodeHasPerIPCeiling 验证「换收件人」不能绕过限流。
+//
+// 按邮箱的两条限制（60 秒冷却、每日 20 条）对每一个新地址都是全新的，所以一个
+// 遍历地址列表的脚本可以无限发信——消耗的是我们的发信额度与发件域名信誉。
+// 这条按来源地址的每小时上限是唯一会先触发的一道。
+func TestVerificationCodeHasPerIPCeiling(t *testing.T) {
+	svc, mailer := verifierService(t)
+	const ip = "203.0.113.9"
+
+	for i := 0; i < verificationIPHourlyLimit; i++ {
+		rec := callSendCodeFrom(t, svc, uniqueVerifyEmail(t, fmt.Sprintf("vc-ip-%d", i)), PurposeRegister, ip)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("attempt %d status=%d body=%s, want 200", i+1, rec.Code, rec.Body.String())
+		}
+	}
+	if mailer.sends != verificationIPHourlyLimit {
+		t.Fatalf("sends=%d, want %d", mailer.sends, verificationIPHourlyLimit)
+	}
+
+	over := callSendCodeFrom(t, svc, uniqueVerifyEmail(t, "vc-ip-over"), PurposeRegister, ip)
+	if over.Code != http.StatusTooManyRequests {
+		t.Fatalf("over-limit status=%d body=%s, want 429", over.Code, over.Body.String())
+	}
+	if mailer.sends != verificationIPHourlyLimit {
+		t.Fatalf("an over-limit request still sent mail: sends=%d", mailer.sends)
+	}
+
+	// 同一时刻换个来源地址必须仍然可用，否则 Office/NAT 后面的正常用户会被
+	// 邻居的失败次数连坐。
+	other := callSendCodeFrom(t, svc, uniqueVerifyEmail(t, "vc-ip-other"), PurposeRegister, "203.0.113.10")
+	if other.Code != http.StatusOK {
+		t.Fatalf("other ip status=%d body=%s, want 200", other.Code, other.Body.String())
 	}
 }

@@ -26,6 +26,9 @@ const (
 	verificationDailyLimit  = 20
 	verificationMaxAttempts = 5
 	verificationCodeDigits  = 6
+	// Per source address, per hour. A normal user does not ask for ten codes in
+	// an hour; a script that rotates recipient addresses does.
+	verificationIPHourlyLimit = 10
 )
 
 // Verification modes for AUTH_VERIFICATION_MODE.
@@ -139,7 +142,7 @@ func (s *Service) SendVerificationCode(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	code, apiErr := s.issueVerificationCode(r.Context(), ident, purpose)
+	code, apiErr := s.issueVerificationCode(r.Context(), ident, purpose, clientIP(r))
 	if apiErr != nil {
 		mw.WriteError(w, r, apiErr)
 		return
@@ -175,14 +178,42 @@ func (s *Service) SendVerificationCode(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// issueVerificationCode enforces the cooldown and the daily quota, then stores
-// the code. The code itself is stored as a SHA-256 digest: a Redis dump must
-// not be a list of working login credentials.
-func (s *Service) issueVerificationCode(ctx context.Context, ident Identifier, purpose string) (string, *apierr.APIError) {
+// issueVerificationCode enforces the per-IP hourly ceiling, the per-mailbox
+// cooldown and the daily quota, then stores the code. The code itself is stored
+// as a SHA-256 digest: a Redis dump must not be a list of working credentials.
+//
+// Order matters: the IP ceiling runs first. The two per-mailbox limits are
+// keyed by address, so a script that walks a list of recipients gets a fresh
+// cooldown and a fresh daily quota for every one of them — it would drain our
+// sending quota and damage the sending domain's reputation long before any
+// per-address limit fired.
+func (s *Service) issueVerificationCode(ctx context.Context, ident Identifier, purpose, ip string) (string, *apierr.APIError) {
 	rdb, err := s.verifyRedis()
 	if err != nil {
 		s.errorLog(ctx, "verification_redis_unavailable: "+err.Error())
 		return "", apierr.New(apierr.CodeAuthUnavailable)
+	}
+	now := s.now().Now().UTC()
+	if ip != "" {
+		ipKey := redisx.VerifyCodeIPQuotaKey(identifierHash(ip), now.Format("2006010215"))
+		n, incrErr := rdb.Raw().Incr(ctx, ipKey).Result()
+		if incrErr != nil {
+			s.errorLog(ctx, "verification_ip_quota_failed: "+incrErr.Error())
+			return "", apierr.New(apierr.CodeAuthUnavailable)
+		}
+		if n == 1 {
+			// Two hours so the key outlives its window even if the first hit
+			// lands at :59; the key is per hour anyway, so extra TTL is free.
+			_ = rdb.Raw().Expire(ctx, ipKey, 2*time.Hour).Err()
+		}
+		if n > verificationIPHourlyLimit {
+			retry := int(time.Hour/time.Second) - now.Minute()*60 - now.Second()
+			if retry <= 0 {
+				retry = 60
+			}
+			return "", apierr.Newf(apierr.CodeRPMLimitExceeded, verificationIPHourlyLimit, retry).
+				WithHint("同一网络地址每小时最多获取 10 次验证码，请稍后再试")
+		}
 	}
 	hash := identifierHash(ident.Value)
 	coolKey := redisx.VerifyCodeCooldownKey(purpose, hash)
@@ -321,3 +352,4 @@ func verificationMailBody(code string) string {
 		"如果不是你本人操作，请忽略这封邮件，不要把这个验证码告诉任何人。\n\n" +
 		"—— 云枢"
 }
+

@@ -207,3 +207,10 @@ func VerifyCodeCooldownKey(purpose, identHash string) string {
 func VerifyCodeQuotaKey(purpose, identHash string) string {
 	return "vc:quota:" + purpose + ":" + identHash
 }
+
+// VerifyCodeIPQuotaKey 是按来源 IP 的小时配额。按邮箱的两条限流（冷却 + 每日）
+// 挡不住「换一批收件人继续发」的脚本：每个新地址都是全新的冷却与配额，而消耗的
+// 是我们的发信额度与发件域名信誉。window 是「年-月-日-时」，每小时一个键。
+func VerifyCodeIPQuotaKey(ipHash, window string) string {
+	return "vc:ipq:" + ipHash + ":" + window
+}

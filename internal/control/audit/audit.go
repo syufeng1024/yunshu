@@ -98,6 +98,16 @@ func (w *Writer) Insert(ctx context.Context, q Execer, e Entry) error {
 // IPBytes converts the request's peer address to the varbinary(16) form.
 // Proxies are not trusted here in the first segment: no trusted-proxy list has
 // been defined yet, so X-Forwarded-For would be attacker-controlled.
+// IPBytes 取请求来源地址。
+//
+// 只信任**来自私有/回环网段**的 X-Real-IP：本项目的标准部署是 nginx 转发到
+// controld，nginx 用 `$remote_addr` 覆盖写这个头，所以在容器网络里它是真实
+// 客户端地址，且客户端无法伪造。反过来，如果 controld 的端口被直接暴露到
+// 公网，直连请求的 RemoteAddr 是公网地址，此时**不以**该头为准——否则任何人
+// 只要自带一个 X-Real-IP 就能绕过登录失败锁定与验证码的按 IP 配额。
+//
+// 不使用 X-Forwarded-For：nginx 用 $proxy_add_x_forwarded_for 追加，其第一个
+// 值是客户端自己填的，用它等于把限流键交给攻击者。
 func IPBytes(r *http.Request) []byte {
 	if r == nil {
 		return nil
@@ -109,6 +119,13 @@ func IPBytes(r *http.Request) []byte {
 	addr, err := netip.ParseAddr(strings.TrimSpace(host))
 	if err != nil || !addr.IsValid() {
 		return nil
+	}
+	if addr.IsPrivate() || addr.IsLoopback() {
+		if v := strings.TrimSpace(r.Header.Get("X-Real-IP")); v != "" {
+			if forwarded, perr := netip.ParseAddr(v); perr == nil && forwarded.IsValid() {
+				return forwarded.Unmap().AsSlice()
+			}
+		}
 	}
 	return addr.AsSlice()
 }
