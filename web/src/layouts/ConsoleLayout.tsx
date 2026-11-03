@@ -1,6 +1,7 @@
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { Icon } from '@/components/Icon'
 import { Logo } from '@/components/Logo'
+import { UserMenu } from '@/components/UserMenu'
 import { ScrollRestorer } from '@/components/ScrollRestorer'
 import { CONSOLE_NAV_GROUPS, ROUTES, SITE_NAV } from '@/lib/constants'
 import { cn } from '@/lib/cn'
@@ -27,7 +28,6 @@ function navClass({ isActive }: { isActive: boolean }): string {
  * 都有，不需要常驻。
  */
 export function ConsoleLayout() {
-  const user = useAuthStore((state) => state.user)
   const logout = useAuthStore((state) => state.logout)
   const navigate = useNavigate()
 
@@ -89,18 +89,6 @@ export function ConsoleLayout() {
           <Icon name="logout" className="h-5 w-5" />
         </button>
 
-        {/* 桌面端底部只留账号与退出：回官网的入口已经挪到顶栏。 */}
-        <div className="mt-auto hidden border-t border-sidebar-border pt-4 md:block">
-          <p className="truncate text-xs text-sidebar-muted">{user?.email ?? ''}</p>
-          <button
-            type="button"
-            onClick={handleLogout}
-            className="mt-2 inline-flex items-center gap-2 rounded-md px-1 py-1 text-xs text-sidebar-muted transition-colors duration-fast hover:text-sidebar-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-          >
-            <Icon name="logout" className="h-4 w-4" />
-            退出登录
-          </button>
-        </div>
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -116,7 +104,9 @@ export function ConsoleLayout() {
               </Link>
             ))}
           </nav>
-          <span className="ml-auto text-xs text-ink-muted">控制台</span>
+          <div className="ml-auto">
+            <UserMenu scope="console" />
+          </div>
         </header>
 
         <main className="flex-1 overflow-y-auto">
