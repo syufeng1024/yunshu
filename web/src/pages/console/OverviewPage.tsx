@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
 import { errorHint, errorMessage } from '@/api/client'
 import { useConsoleOverview } from '@/api/console'
-import { Button, ErrorState, LineChart, PageHeader, StatCard } from '@/components'
+import { Link } from 'react-router-dom'
+import { Button, ErrorState, Icon, LineChart, PageHeader, StatCard } from '@/components'
 import {
   AnnouncementSlot,
   EtaHint,
@@ -16,9 +17,18 @@ import {
   formatCreditAmount,
   formatInteger,
 } from '@/lib/format'
+import type { IconName } from '@/lib/constants'
+import { ROUTES } from '@/lib/constants'
 import { usePageTitle } from '@/lib/usePageTitle'
 
 type Range = '4h' | '24h'
+
+const QUICK_ACTIONS: readonly { to: string; icon: IconName; title: string; description: string }[] = [
+  { to: ROUTES.consoleKeys, icon: 'key', title: '创建密钥', description: '生成密钥并设置额度与模型范围' },
+  { to: ROUTES.consoleLogs, icon: 'terminal', title: '查看日志', description: '按请求 ID 定位失败原因' },
+  { to: ROUTES.consoleRecharge, icon: 'wallet', title: '充值', description: '余额不足时调用会返回 402' },
+  { to: ROUTES.consoleTickets, icon: 'ticket', title: '提交工单', description: '提额、发票与故障反馈' },
+]
 
 const HOUR_FORMAT = new Intl.DateTimeFormat('zh-CN', {
   hour: '2-digit',
@@ -216,6 +226,29 @@ export default function ConsoleOverviewPage() {
           </div>
         </>
       )}
+
+
+      {/* 常用入口：控制台里最能减少「翻菜单」的四个动作。放在数据之后，
+          不抢首屏——进来先看余额与用量，需要做事时再往下扫一眼。 */}
+      <section className="rounded-xl border border-border bg-surface p-5 shadow-card">
+        <h2 className="text-sm font-semibold text-ink">常用操作</h2>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {QUICK_ACTIONS.map((item) => (
+            <Link
+              key={item.to}
+              to={item.to}
+              className="group rounded-lg border border-border bg-canvas p-4 transition-colors duration-fast hover:border-border-strong hover:bg-surface-muted"
+            >
+              <Icon
+                name={item.icon}
+                className="h-4 w-4 text-ink-muted transition-colors group-hover:text-primary"
+              />
+              <p className="mt-2 text-sm font-medium text-ink">{item.title}</p>
+              <p className="mt-1 text-xs leading-relaxed text-ink-secondary">{item.description}</p>
+            </Link>
+          ))}
+        </div>
+      </section>
 
       <RaiseQuotaDialog
         open={raiseOpen}
