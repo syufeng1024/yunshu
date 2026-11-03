@@ -127,9 +127,53 @@ describe('LoginPage', () => {
     await user.type(inputs[0], 'someone@example.com')
     await user.type(inputs[1], '12345')
     await user.type(inputs[2], 'Str0ng-Passw0rd!')
-    await user.click(screen.getByRole('button', { name: '注册' }))
+    await user.click(screen.getByRole('button', { name: '注册并进入控制台' }))
 
     expect(screen.getByText('验证码是 6 位数字，请检查是否输完整。')).toBeInTheDocument()
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  // The reference site asks for consent on the login page as well; a missing
+  // checkbox there was the original complaint.
+  it('blocks sign-in until the agreement is accepted', async () => {
+    const user = userEvent.setup()
+    const post = vi.mocked(api.post)
+    const { container } = render(
+      <MemoryRouter initialEntries={['/login']}>
+        <LoginPage />
+      </MemoryRouter>,
+    )
+
+    const inputs = container.querySelectorAll('input')
+    await user.type(inputs[0], 'someone@example.com')
+    await user.type(inputs[1], 'Str0ng-Passw0rd!')
+    await user.click(screen.getByRole('button', { name: '登录' }))
+
+    expect(screen.getByText('请先勾选并同意用户协议与隐私政策。')).toBeInTheDocument()
+    expect(post).not.toHaveBeenCalled()
+
+    // Both agreements must be real links on the login page too.
+    expect(screen.getByRole('link', { name: '《用户协议》' })).toHaveAttribute('href', '/terms')
+    expect(screen.getByRole('link', { name: '《隐私政策》' })).toHaveAttribute('href', '/privacy')
+  })
+
+  it('catches a password mismatch before registering', async () => {
+    const user = userEvent.setup()
+    const post = vi.mocked(api.post)
+    const { container } = render(
+      <MemoryRouter initialEntries={['/login?tab=register']}>
+        <LoginPage />
+      </MemoryRouter>,
+    )
+
+    const inputs = container.querySelectorAll('input')
+    await user.type(inputs[0], 'someone@example.com')
+    await user.type(inputs[1], '123456')
+    await user.type(inputs[2], 'Str0ng-Passw0rd!')
+    await user.type(inputs[3], 'Str0ng-Passw0rd?')
+    await user.click(screen.getByRole('button', { name: '注册并进入控制台' }))
+
+    expect(screen.getByText('两次输入的密码不一致。')).toBeInTheDocument()
     expect(post).not.toHaveBeenCalled()
   })
 })

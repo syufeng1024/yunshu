@@ -23,6 +23,55 @@ interface AuthResponse {
   user: CurrentUser
 }
 
+interface AgreementCheckboxProps {
+  checked: boolean
+  onChange: (checked: boolean) => void
+}
+
+/**
+ * 登录与注册共用同一个协议勾选块。
+ *
+ * 抽成组件不是为了省几行 JSX，而是为了只有一份文案：两处各写一份时，改协议名
+ * 或加一项《服务条款》很容易只改一边。而「用户同意了什么」是合规事实，两份文案
+ * 漂移的代价不是视觉问题。
+ */
+function AgreementCheckbox({ checked, onChange }: AgreementCheckboxProps) {
+  return (
+    <label className="flex items-start gap-2 text-xs text-ink-secondary">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+        className="mt-0.5 h-4 w-4 rounded border-border-strong text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+      />
+      <span>
+        我已阅读并同意
+        {/* 书名号放进链接里：点击区域覆盖整个《用户协议》，而不是只有四个字。
+            协议名必须是能点的链接，否则等于「同意一份看不到的文件」；
+            target=_blank 是为了不丢掉已经填好的表单。 */}
+        <Link
+          to={ROUTES.terms}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="font-medium text-primary hover:text-primary-hover"
+        >
+          《用户协议》
+        </Link>
+        和
+        <Link
+          to={ROUTES.privacy}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="font-medium text-primary hover:text-primary-hover"
+        >
+          《隐私政策》
+        </Link>
+        。
+      </span>
+    </label>
+  )
+}
+
 export default function LoginPage() {
   usePageTitle('登录 / 注册')
 
@@ -44,6 +93,7 @@ export default function LoginPage() {
   const [loginMode, setLoginMode] = useState<LoginMode>('password')
   const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [code, setCode] = useState('')
   const [agreed, setAgreed] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -104,6 +154,10 @@ export default function LoginPage() {
       setError(CODE_FORMAT_HINT)
       return
     }
+    if (!agreed) {
+      setError('请先勾选并同意用户协议与隐私政策。')
+      return
+    }
 
     setSubmitting(true)
     try {
@@ -135,6 +189,10 @@ export default function LoginPage() {
     }
     if (!password) {
       setError('请设置密码。')
+      return
+    }
+    if (password !== confirmPassword) {
+      setError('两次输入的密码不一致。')
       return
     }
     if (!agreed) {
@@ -251,7 +309,7 @@ export default function LoginPage() {
       </div>
 
       <Input
-        label="邮箱或手机号"
+        label="邮箱"
         value={identifier}
         onChange={(event) => setIdentifier(event.target.value)}
         autoComplete="username"
@@ -294,24 +352,29 @@ export default function LoginPage() {
         </div>
       )}
 
+      {/* 「忘记密码」贴着密码输入：用户是在输入密码的那一刻才想起忘记密码的，
+          放在提交按钮下面要往下找一行。 */}
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={() => {
+            setResetOpen((open) => !open)
+          }}
+          className="text-xs text-ink-secondary hover:text-ink"
+        >
+          忘记密码
+        </button>
+      </div>
+
+      <AgreementCheckbox checked={agreed} onChange={setAgreed} />
+
       {feedback}
 
       <Button type="submit" className="w-full" loading={submitting}>
         登录
       </Button>
 
-      <div className="flex items-center justify-between gap-3 text-xs">
-        <button
-          type="button"
-          onClick={() => {
-            setResetOpen((open) => !open)
-          }}
-          className="text-ink-secondary hover:text-ink"
-        >
-          忘记密码
-        </button>
-        <span className="text-ink-muted">支持邮箱与手机号登录</span>
-      </div>
+      <p className="text-xs text-ink-muted">暂只支持邮箱登录；短信验证码未开放。</p>
 
       {resetOpen ? (
         <div className="space-y-3 rounded-lg border border-border bg-surface-muted p-3">
@@ -358,13 +421,17 @@ export default function LoginPage() {
       ) : null}
 
       <Input
-        label="邮箱或手机号"
+        label="邮箱"
         value={identifier}
         onChange={(event) => setIdentifier(event.target.value)}
         autoComplete="username"
         placeholder="you@example.com"
         required
       />
+
+      <p className="-mt-2 text-xs text-ink-muted">
+        注册只支持邮箱；短信验证码暂未开放。
+      </p>
 
       <div className="flex items-end gap-2">
         <Input
@@ -396,45 +463,26 @@ export default function LoginPage() {
         value={password}
         onChange={(event) => setPassword(event.target.value)}
         autoComplete="new-password"
+        placeholder="至少 8 位"
         required
       />
 
-      <label className="flex items-start gap-2 text-xs text-ink-secondary">
-        <input
-          type="checkbox"
-          checked={agreed}
-          onChange={(event) => setAgreed(event.target.checked)}
-          className="mt-0.5 h-4 w-4 rounded border-border-strong text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-        />
-        <span>
-          我已阅读并同意
-          {/* 注册必须勾选，协议名必须是能点的链接，否则等于「同意一份看不到的
-              文件」。target=_blank 是为了不丢掉已填的注册表单。 */}
-          <Link
-            to={ROUTES.terms}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="font-medium text-primary hover:text-primary-hover"
-          >
-            用户协议
-          </Link>
-          与
-          <Link
-            to={ROUTES.privacy}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="font-medium text-primary hover:text-primary-hover"
-          >
-            隐私政策
-          </Link>
-          。
-        </span>
-      </label>
+      <Input
+        label="确认密码"
+        type="password"
+        value={confirmPassword}
+        onChange={(event) => setConfirmPassword(event.target.value)}
+        autoComplete="new-password"
+        placeholder="再次输入密码"
+        required
+      />
+
+      <AgreementCheckbox checked={agreed} onChange={setAgreed} />
 
       {feedback}
 
       <Button type="submit" className="w-full" loading={submitting}>
-        注册
+        注册并进入控制台
       </Button>
 
       <p className="text-xs text-ink-muted">
@@ -447,11 +495,15 @@ export default function LoginPage() {
     <div className="mx-auto w-full max-w-5xl px-4 py-12 sm:px-6">
       <header className="text-center">
         <Badge variant="primary" dot>
-          {planCode ? `已选择套餐：${selectedPlan?.name ?? planCode}` : '登录 / 注册'}
+          {planCode ? `已选择套餐：${selectedPlan?.name ?? planCode}` : '云枢 API'}
         </Badge>
-        <h1 className="mt-4 text-3xl font-semibold tracking-tight text-ink">进入云枢 API 控制台</h1>
+        <h1 className="mt-4 text-3xl font-semibold tracking-tight text-ink">
+          {tab === 'login' ? '登录账号' : '创建账号'}
+        </h1>
         <p className="mx-auto mt-3 max-w-xl text-sm leading-relaxed text-ink-secondary">
-          管理密钥、用量与账单，一个账号通用。
+          {tab === 'login'
+            ? '进入控制台，管理密钥、用量和账单。'
+            : '注册后即可创建密钥并发起调用。'}
         </p>
       </header>
 
