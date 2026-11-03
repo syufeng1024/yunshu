@@ -71,11 +71,13 @@
 | `LOG_BODY_KEK` | gatewayd、controld | 空 | `log.body_mode=opt_in` 时加密 `t_request_body.ciphertext` 的 KEK，base64 编码的 32 字节。独立于 `CHANNEL_KEY_KEK`：渠道密钥轮换不得使历史正文失效。为空或非法时进程照常启动，正文不落库（gatewayd 记 `gw_log_body_dropped_total{reason="no_kek"}`），读取端把已存正文一律按 404 处理并记 `gw_log_body_open_failed_total`；请求与账务不受影响。两进程必须配置同一值，否则写入端与读取端互相解不开 |
 | `LOG_BODY_KEY_ID` | gatewayd、controld | `body-v1` | 当前正文 KEK 的版本标识，写入 `t_request_body.body_key_id`（varchar(32)，不得含 `:` 或 `,`）。不配置即沿用存量行已有的 `body-v1`，行为与改造前逐字节一致。轮换时把新 KEK 放进 `LOG_BODY_KEK` 并把本值改成新 id（如 `body-v2`） |
 | `LOG_BODY_KEK_PREVIOUS` | gatewayd、controld | 空 | 已退休正文 KEK，格式 `id:base64`，多段用逗号分隔（如 `body-v1:<base64>`）。读取端按行内 `body_key_id` 选 key，因此轮换后旧行在 180 天保留期内仍可解密。**旧 key 至少保留到该 key 加密的最后一行过期**，否则那些请求的正文接口会返回 404 并记 `gw_log_body_open_failed_total`（数据仍在，只是解不开）。id 与当前 id 重复、base64 非法或长度非 32 字节时进程照常启动但正文不落库，并在启动日志打印原因 |
-| `AUTH_VERIFICATION_MODE` | controld | `log` | 注册/登录验证码的投递方式：`log`（验证码打到进程日志，仅开发与 CI）、`smtp`（发邮件）、`off`（不要求验证码，端点返回 400）。配成其他值、或配 `smtp` 却没有 `SMTP_HOST`/`SMTP_FROM` 时**进程拒绝启动**——否则第一次注册才会暴露，看起来像产品故障 |
-| `SMTP_HOST` / `SMTP_PORT` | controld | 空 / `587` | 邮件中继。`SMTP_PORT=465` 时配 `SMTP_TLS=implicit`（连上即 TLS），587 用默认 `starttls` |
-| `SMTP_USERNAME` / `SMTP_PASSWORD` | controld | 空 | SMTP 认证凭据。用户名非空而服务器不提供 STARTTLS 时**拒绝发送**（不把凭据裸奔在明文连接上）。凭据只走 env，不进 `t_config_item` |
-| `SMTP_FROM` | controld | 空 | 信封发件人。含 CR/LF 直接启动失败（防头注入） |
+| `AUTH_VERIFICATION_MODE` | controld | `log` | 注册/登录验证码的投递方式：`log`（验证码打到进程日志，仅开发与 CI）、`smtp`（发邮件）、`off`（不要求验证码，端点返回 400）。配成其他值、或配 `smtp` 却没有可用 SMTP 通道时**进程拒绝启动**——否则第一次注册才会暴露，看起来像产品故障 |
+| `AUTH_SMTP_CHANNEL` | controld | 见右 | 当前发信使用的 SMTP 通道名，大小写不敏感。缺省时：只有一个通道则用它；一个都没有则视为未配置 SMTP；**有多个通道却未指定则启动失败并列出候选名**——静默挑一个会让「为什么邮件从另一个账号发出」变成一下午的排查。配了它却没有任何通道时同样启动失败 |
+| `SMTP_HOST` / `SMTP_PORT` | controld | 空 / `587` | 邮件中继，DEFAULT 通道写法（无前缀，等价于 `SMTP_DEFAULT_*`）。`SMTP_PORT=465` 时配 `SMTP_TLS=implicit`（连上即 TLS），587 用默认 `starttls` |
+| `SMTP_USERNAME` / `SMTP_PASSWORD` | controld | 空 | SMTP 认证凭据。用户名非空而服务器不提供 STARTTLS 时**拒绝发送**（不把凭据裸奔在明文连接上）。凭据只走 env，不进 `t_config_item`，也不出现在启动日志与错误信息里 |
+| `SMTP_FROM` | controld | 空 | 信封发件人。含 CR/LF 直接启动失败（防头注入）。163/QQ 要求它与认证账号同址（否则 163 回 `553 Mail from must equal authorized user`） |
 | `SMTP_TLS` | controld | `starttls` | `starttls` 或 `implicit`；其他值启动失败 |
+| `SMTP_<NAME>_HOST` / `_PORT` / `_TLS` / `_USERNAME` / `_PASSWORD` / `_FROM` | controld | 同上一组 | **命名通道**：把通道名插在后缀前面即可，如 `SMTP_QQ_HOST`、`SMTP_163_PASSWORD`，通道名为 `QQ` / `163`。通道名只允许 `A-Z 0-9 _`（大小写不敏感、统一规范化为大写），`SMTP_1A-B_HOST` 这类名字直接报错。可同时声明任意多个通道，用 `AUTH_SMTP_CHANNEL` 选择，切换通道只改这一行。每个通道的 `_PORT` / `_TLS` 缺省同样是 `587` / `starttls`；某个通道的六个变量全为空视为未声明（照抄模板不会报错），只填了一半则启动失败。启动日志打印 `smtp channels: configured=[163 QQ] selected=QQ` |
 
 ## 命名空间分布
 

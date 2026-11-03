@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/smtp"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -22,14 +23,42 @@ import (
 
 // Environment variables. Credentials are env-only, never t_config_item: every
 // process that loads the config snapshot could read them otherwise.
+//
+// Channels: the unprefixed names below are the DEFAULT channel. A deployment
+// may additionally declare any number of named channels by inserting a name
+// before the suffix — SMTP_QQ_HOST, SMTP_163_PASSWORD, ... — and pick the one
+// this process sends with through AUTH_SMTP_CHANNEL. That way a second relay
+// stays configured instead of being overwritten every time the operator
+// switches, and switching is one line rather than six.
 const (
-	EnvHost     = "SMTP_HOST"
-	EnvPort     = "SMTP_PORT"
-	EnvUsername = "SMTP_USERNAME"
-	EnvPassword = "SMTP_PASSWORD"
-	EnvFrom     = "SMTP_FROM"
-	EnvTLS      = "SMTP_TLS" // "starttls" (587, default) or "implicit" (465)
+	// PrefixDefault is the variable prefix of the DEFAULT channel. Named
+	// channels extend it: QQ -> SMTP_QQ_*.
+	PrefixDefault = "SMTP"
+	// ChannelDefault is the channel built from the unprefixed SMTP_* names, so
+	// a deployment that configured one relay before channels existed keeps
+	// working without touching its environment.
+	ChannelDefault = "DEFAULT"
+
+	EnvHost     = PrefixDefault + "_HOST"
+	EnvPort     = PrefixDefault + "_PORT"
+	EnvUsername = PrefixDefault + "_USERNAME"
+	EnvPassword = PrefixDefault + "_PASSWORD"
+	EnvFrom     = PrefixDefault + "_FROM"
+	EnvTLS      = PrefixDefault + "_TLS" // "starttls" (587, default) or "implicit" (465)
+
+	// EnvChannel names the channel this process sends with. The value is a
+	// channel name and is matched case-insensitively.
+	EnvChannel = "AUTH_SMTP_CHANNEL"
+
+	defaultPort    = 587
+	defaultTimeout = 10 * time.Second
 )
+
+// channelFields lists the per-channel variable suffixes. The order doubles as
+// the match order when a variable name is split, so the longer words come
+// after the ones they could be confused with (never a real ambiguity: the
+// suffix always follows an underscore).
+var channelFields = []string{"HOST", "PORT", "USERNAME", "PASSWORD", "FROM", "TLS"}
 
 // SMTP is a Mailer. It is safe for concurrent use: every Send dials its own
 // connection, so a slow message cannot block the next one.
@@ -50,42 +79,353 @@ type SMTP struct {
 // pretend a message was sent.
 var ErrNotConfigured = errors.New("mail: SMTP is not configured")
 
-// FromEnv builds an SMTP sender from the environment. An empty SMTP_HOST
-// returns ErrNotConfigured; a partial configuration is an error, because a
-// half-configured mailer would silently fail at send time instead of at boot.
+// Channels is the set of SMTP channels declared in the environment together
+// with the one this process will send with.
+type Channels struct {
+	// Configured lists the canonical names of the fully specified channels,
+	// sorted, so the startup line is stable across runs.
+	Configured []string
+	// Selected is the canonical name of the channel in use, or "" when the
+	// environment declares no channel at all.
+	Selected string
+	// Sender is the selected channel, or nil when nothing is configured.
+	Sender *SMTP
+
+	// byName holds every parsed channel so Get can hand out the ones this
+	// process is not sending with (a health check may want to probe all of
+	// them).
+	byName map[string]*SMTP
+}
+
+// Get returns the channel with the given canonical name, matched
+// case-insensitively. ok is false when that channel is not configured.
+func (c *Channels) Get(name string) (*SMTP, bool) {
+	if c == nil {
+		return nil, false
+	}
+	sender, ok := c.byName[strings.ToUpper(strings.TrimSpace(name))]
+	return sender, ok
+}
+
+// Summary renders the startup log line: which relays exist and which one is
+// live. Names and hosts are not secrets; no credential ever reaches this
+// string.
+func (c *Channels) Summary() string {
+	selected := c.Selected
+	if selected == "" {
+		selected = "(none)"
+	}
+	return fmt.Sprintf("smtp channels: configured=[%s] selected=%s",
+		strings.Join(c.Configured, " "), selected)
+}
+
+// String renders the channel without its password. It exists so that a %v of a
+// channel inside a log line or a wrapped error cannot leak the credential.
+func (s *SMTP) String() string {
+	if s == nil {
+		return "smtp(nil)"
+	}
+	mode := "starttls"
+	if s.Implicit {
+		mode = "implicit"
+	}
+	auth := "none"
+	if s.Username != "" {
+		auth = "plain"
+	}
+	return fmt.Sprintf("smtp{host=%s port=%d from=%s tls=%s auth=%s}", s.Host, s.Port, s.From, mode, auth)
+}
+
+// FromEnv builds the DEFAULT channel from the unprefixed SMTP_* variables.
+//
+// It predates named channels and is kept so existing callers keep working; new
+// code should use ChannelsFromEnv so AUTH_SMTP_CHANNEL is honoured.
+//
+// An empty SMTP_HOST reports ErrNotConfigured even when the other variables are
+// set: that has always been this function's contract, and a copied .env
+// template (SMTP_HOST= with a FROM filled in) must read as "no mail here".
 func FromEnv() (*SMTP, error) {
-	host := strings.TrimSpace(os.Getenv(EnvHost))
-	if host == "" {
+	if strings.TrimSpace(os.Getenv(EnvHost)) == "" {
 		return nil, ErrNotConfigured
 	}
-	port := 587
-	if raw := strings.TrimSpace(os.Getenv(EnvPort)); raw != "" {
-		n, err := strconv.Atoi(raw)
+	return parseChannel(PrefixDefault, os.Getenv)
+}
+
+// ChannelsFromEnv reads every SMTP channel from the process environment and
+// resolves AUTH_SMTP_CHANNEL against them.
+//
+// Everything here is a boot-time fact rather than a send-time surprise: an
+// invalid name, a half-filled channel, or several channels with no selection
+// all mean the operator has not said which relay to use. Guessing would hide
+// that until the first registration e-mail went out through the wrong account.
+func ChannelsFromEnv() (*Channels, error) {
+	return channelsFrom(os.Environ, os.Getenv)
+}
+
+// channelsFrom is ChannelsFromEnv with the environment injected. environ is
+// scanned for variable names (so an unknown number of channels can be found)
+// while getenv resolves the selection; tests supply both from a map, because
+// t.Setenv cannot express "absent" together with two spellings of one name.
+func channelsFrom(environ func() []string, getenv func(string) string) (*Channels, error) {
+	decls, err := declarations(environ)
+	if err != nil {
+		return nil, err
+	}
+
+	names := make([]string, 0, len(decls))
+	for name := range decls {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	byName := make(map[string]*SMTP, len(decls))
+	configured := make([]string, 0, len(decls))
+	for _, name := range names {
+		decl := decls[name]
+		prefix := PrefixDefault
+		if name != ChannelDefault {
+			prefix = PrefixDefault + "_" + name
+		}
+		// The values were already canonicalised, so the parser reads them
+		// through a prefix-stripping lookup instead of the raw environment.
+		fieldGetenv := func(key string) string {
+			field, ok := strings.CutPrefix(key, prefix+"_")
+			if !ok {
+				return ""
+			}
+			return decl.values[field]
+		}
+		sender, err := parseChannel(prefix, fieldGetenv)
+		if err != nil {
+			if errors.Is(err, ErrNotConfigured) {
+				// Every variable of this channel is empty: a copied template
+				// declares the name without meaning it. Not an error.
+				continue
+			}
+			return nil, err
+		}
+		byName[name] = sender
+		configured = append(configured, name)
+	}
+
+	out := &Channels{Configured: configured, byName: byName}
+	selection := strings.TrimSpace(getenv(EnvChannel))
+	if len(configured) == 0 {
+		if selection != "" {
+			return nil, fmt.Errorf("mail: %s=%q is set but no SMTP channel is configured; declare it with %s_%s_HOST and friends",
+				EnvChannel, selection, PrefixDefault, strings.ToUpper(selection))
+		}
+		return out, nil
+	}
+
+	selectedName, selectedSender, err := selectChannel(byName, selection)
+	if err != nil {
+		return nil, err
+	}
+	out.Selected = selectedName
+	out.Sender = selectedSender
+	return out, nil
+}
+
+// selectChannel applies AUTH_SMTP_CHANNEL to the configured set.
+//
+// An empty selection is only accepted when there is exactly one channel: with
+// two relays configured, silently picking one turns a copy-paste slip into a
+// mystery that costs an afternoon of log reading, so the error names the
+// candidates instead.
+func selectChannel(byName map[string]*SMTP, selection string) (string, *SMTP, error) {
+	available := make([]string, 0, len(byName))
+	for name := range byName {
+		available = append(available, name)
+	}
+	sort.Strings(available)
+
+	wanted := strings.ToUpper(strings.TrimSpace(selection))
+	if wanted == "" {
+		if len(available) == 1 {
+			return available[0], byName[available[0]], nil
+		}
+		return "", nil, fmt.Errorf("mail: %d SMTP channels are configured (%s) but %s is not set; set it to one of them",
+			len(available), strings.Join(available, ", "), EnvChannel)
+	}
+	if sender, ok := byName[wanted]; ok {
+		return wanted, sender, nil
+	}
+	return "", nil, fmt.Errorf("mail: %s=%q does not match a configured SMTP channel; available: %s",
+		EnvChannel, selection, strings.Join(available, ", "))
+}
+
+// channelDecl accumulates the variables that describe one channel: the
+// spellings its prefix appeared in (so two case variants can be rejected) and
+// its canonical fields.
+type channelDecl struct {
+	name   string
+	raws   map[string]struct{}
+	values map[string]string
+}
+
+// declarations groups every SMTP_<NAME>_<FIELD> variable by channel. It is the
+// only place that knows the naming scheme; parseChannel just takes a prefix.
+func declarations(environ func() []string) (map[string]*channelDecl, error) {
+	out := make(map[string]*channelDecl, 2)
+	for _, kv := range environ() {
+		varName, value, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		channel, field, ok := splitChannelVar(strings.ToUpper(varName))
+		if !ok {
+			// Not one of ours: SMTP_<something> that is not a channel field.
+			continue
+		}
+		if !validChannelName(channel) {
+			return nil, fmt.Errorf("mail: %s carries an invalid channel name %q; allowed characters are A-Z, 0-9 and _",
+				varName, channel)
+		}
+		decl := out[channel]
+		if decl == nil {
+			decl = &channelDecl{
+				name:   channel,
+				raws:   make(map[string]struct{}, 1),
+				values: make(map[string]string, len(channelFields)),
+			}
+			out[channel] = decl
+		}
+		// SMTP_qq_HOST and SMTP_QQ_HOST describe the same field; letting both
+		// stand would make the winner depend on environ() ordering.
+		if _, dup := decl.values[field]; dup {
+			return nil, fmt.Errorf("mail: %s is declared twice for channel %s; channel and field names are case-insensitive",
+				field, channel)
+		}
+		decl.values[field] = value
+		decl.raws[rawPrefix(varName, field)] = struct{}{}
+	}
+	for _, decl := range out {
+		if len(decl.raws) > 1 {
+			return nil, fmt.Errorf("mail: SMTP channel %s is spelled %d ways (%s); channel names are case-insensitive, so this is one channel written twice",
+				decl.name, len(decl.raws), strings.Join(sortedKeys(decl.raws), ", "))
+		}
+	}
+	return out, nil
+}
+
+// splitChannelVar maps a canonical variable name to its channel and field.
+//
+//	SMTP_HOST      -> ("DEFAULT", "HOST")
+//	SMTP_QQ_HOST   -> ("QQ", "HOST")
+//
+// upper must already be upper-cased. ok is false for names that do not end in
+// a known field, which is how unrelated SMTP_* variables are ignored.
+func splitChannelVar(upper string) (channel, field string, ok bool) {
+	rest, found := strings.CutPrefix(upper, PrefixDefault+"_")
+	if !found {
+		return "", "", false
+	}
+	for _, f := range channelFields {
+		if rest == f {
+			return ChannelDefault, f, true
+		}
+		if name, hit := strings.CutSuffix(rest, "_"+f); hit {
+			return name, f, true
+		}
+	}
+	return "", "", false
+}
+
+// validChannelName reports whether name is usable as a channel name. The
+// alphabet is deliberately narrow: a name is re-embedded into variable names,
+// so "-" or a space would make the prefix ambiguous.
+func validChannelName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// rawPrefix returns the variable prefix as it was actually written, e.g.
+// "SMTP_qq" for "SMTP_qq_HOST". The spelling has to survive upper-casing,
+// otherwise two case variants of one channel would look identical.
+func rawPrefix(varName, field string) string {
+	if len(varName) <= len(field)+1 {
+		return varName
+	}
+	return varName[:len(varName)-len(field)-1]
+}
+
+// sortedKeys returns the keys of set in sorted order, for stable messages.
+func sortedKeys(set map[string]struct{}) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// parseChannel builds one channel from the variables behind prefix ("SMTP" for
+// DEFAULT, "SMTP_QQ" for channel QQ). getenv is injected so the parser can be
+// exercised without touching the process environment.
+//
+// ErrNotConfigured means every variable of the channel is empty, i.e. the
+// channel was not declared here. Anything else means the operator started
+// declaring it and stopped, which must fail at boot instead of at the first
+// send.
+func parseChannel(prefix string, getenv func(string) string) (*SMTP, error) {
+	env := func(field string) string { return getenv(prefix + "_" + field) }
+	portVar, tlsVar, fromVar, hostVar := prefix+"_PORT", prefix+"_TLS", prefix+"_FROM", prefix+"_HOST"
+
+	host := strings.TrimSpace(env("HOST"))
+	rawPort := strings.TrimSpace(env("PORT"))
+	rawTLS := strings.TrimSpace(env("TLS"))
+	username := strings.TrimSpace(env("USERNAME"))
+	// The password is not trimmed: leading or trailing spaces can be part of a
+	// relay password, and silently altering it would look like a wrong
+	// credential at send time.
+	password := env("PASSWORD")
+	from := strings.TrimSpace(env("FROM"))
+
+	if host == "" && rawPort == "" && rawTLS == "" && username == "" && password == "" && from == "" {
+		return nil, ErrNotConfigured
+	}
+	if host == "" {
+		return nil, fmt.Errorf("mail: %s is required (the relay host)", hostVar)
+	}
+	port := defaultPort
+	if rawPort != "" {
+		n, err := strconv.Atoi(rawPort)
 		if err != nil || n <= 0 || n > 65535 {
-			return nil, fmt.Errorf("mail: %s must be a TCP port, got %q", EnvPort, raw)
+			return nil, fmt.Errorf("mail: %s must be a TCP port, got %q", portVar, rawPort)
 		}
 		port = n
 	}
-	from := strings.TrimSpace(os.Getenv(EnvFrom))
 	if from == "" {
-		return nil, fmt.Errorf("mail: %s is required (the envelope sender)", EnvFrom)
+		return nil, fmt.Errorf("mail: %s is required (the envelope sender)", fromVar)
 	}
 	if strings.ContainsAny(from, "\r\n") {
-		return nil, fmt.Errorf("mail: %s must not contain CR/LF", EnvFrom)
+		return nil, fmt.Errorf("mail: %s must not contain CR/LF", fromVar)
 	}
-	mode := strings.ToLower(strings.TrimSpace(os.Getenv(EnvTLS)))
+	mode := strings.ToLower(rawTLS)
 	implicit := mode == "implicit"
 	if mode != "" && mode != "implicit" && mode != "starttls" {
-		return nil, fmt.Errorf("mail: %s must be starttls or implicit, got %q", EnvTLS, mode)
+		return nil, fmt.Errorf("mail: %s must be starttls or implicit, got %q", tlsVar, mode)
 	}
 	return &SMTP{
 		Host:     host,
 		Port:     port,
-		Username: strings.TrimSpace(os.Getenv(EnvUsername)),
-		Password: os.Getenv(EnvPassword),
+		Username: username,
+		Password: password,
 		From:     from,
 		Implicit: implicit,
-		Timeout:  10 * time.Second,
+		Timeout:  defaultTimeout,
 	}, nil
 }
 
@@ -105,7 +445,7 @@ func (s *SMTP) Send(ctx context.Context, to, subject, body string) error {
 	addr := net.JoinHostPort(s.Host, strconv.Itoa(s.Port))
 	timeout := s.Timeout
 	if timeout <= 0 {
-		timeout = 10 * time.Second
+		timeout = defaultTimeout
 	}
 
 	raw := buildMessage(s.From, to, subject, body)

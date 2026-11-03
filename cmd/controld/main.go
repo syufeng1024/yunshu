@@ -8,7 +8,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -146,9 +145,13 @@ func main() {
 
 	// Verification codes need a delivery channel. "log" prints the code to this
 	// process log and is the development/CI default; "smtp" e-mails it and is
-	// the production setting. Asking for smtp without SMTP settings fails at
-	// boot rather than at the first registration, which would look like a
-	// product outage with no visible cause.
+	// the production setting. Asking for smtp without a usable SMTP channel
+	// fails at boot rather than at the first registration, which would look
+	// like a product outage with no visible cause.
+	//
+	// Several relays may coexist (SMTP_QQ_*, SMTP_163_*, plus the unprefixed
+	// DEFAULT channel); AUTH_SMTP_CHANNEL says which one sends. Nothing here
+	// logs a credential, only channel names and the selected host.
 	verificationMode := strings.TrimSpace(os.Getenv("AUTH_VERIFICATION_MODE"))
 	if verificationMode == "" {
 		verificationMode = "log"
@@ -158,21 +161,23 @@ func main() {
 			obslog.Fields{Stage: "startup", Status: 1})
 		os.Exit(1)
 	}
-	mailer, mailErr := mail.FromEnv()
-	switch {
-	case mailErr == nil:
-		logger.Info(rootCtx, "smtp mailer configured: host="+mailer.Host+" from="+mailer.From,
-			obslog.Fields{Stage: "startup"})
-	case errors.Is(mailErr, mail.ErrNotConfigured):
-		logger.Warn(rootCtx, "SMTP is not configured; verification codes can only be issued in log mode",
-			obslog.Fields{Stage: "startup"})
-	default:
+	channels, mailErr := mail.ChannelsFromEnv()
+	if mailErr != nil {
 		logger.Error(rootCtx, "SMTP configuration is invalid: "+mailErr.Error(),
 			obslog.Fields{Stage: "startup", Status: 1})
 		os.Exit(1)
 	}
+	mailer := channels.Sender
+	if mailer == nil {
+		logger.Warn(rootCtx, channels.Summary()+": verification codes can only be issued in log mode",
+			obslog.Fields{Stage: "startup"})
+	} else {
+		logger.Info(rootCtx, channels.Summary()+" host="+mailer.Host+" from="+mailer.From,
+			obslog.Fields{Stage: "startup"})
+	}
 	if verificationMode == "smtp" && mailer == nil {
-		logger.Error(rootCtx, "AUTH_VERIFICATION_MODE=smtp requires SMTP_HOST/SMTP_FROM; refusing to start",
+		logger.Error(rootCtx, "AUTH_VERIFICATION_MODE=smtp requires a configured SMTP channel "+
+			"(SMTP_HOST/SMTP_FROM, or SMTP_<NAME>_HOST/_FROM with "+mail.EnvChannel+"); refusing to start",
 			obslog.Fields{Stage: "startup", Status: 1})
 		os.Exit(1)
 	}
