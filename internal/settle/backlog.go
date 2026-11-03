@@ -14,6 +14,42 @@ import (
 // never rejected (T09 hard constraint 5).
 const BacklogThreshold = 5000
 
+// BacklogWarnThreshold is the early-warning line exported as
+// gw_settle_backlog_tasks: 90% of BacklogThreshold. Backpressure is a lagging
+// signal — by the time it fires the queue is already refusing traffic — so the
+// alert has to sit strictly below the hard line to be actionable (G24).
+//
+// The number is derived, not chosen: 5000 * 9 / 10 = 4500. The Prometheus rule
+// in internal/obs/alert/rules.yaml repeats the literal (PromQL cannot import
+// Go); TestBacklogWarnThresholdMatchesAlertRule keeps the two equal, so this
+// constant is the single place to change.
+const BacklogWarnThreshold = BacklogThreshold * 9 / 10
+
+// PendingCountSQL counts the settlement backlog. It is the ONE definition of
+// "how much settlement work is queued": the gateway's capacity gate
+// (Backlog.SettleBacklog) and the jobsd gauge producer (jobs.ObsSample) both
+// execute it, so the number the alert shows and the number that rejects
+// traffic can never drift apart (G24).
+//
+// It is a const so a test can assert both call sites use it instead of
+// growing a second query.
+const PendingCountSQL = `SELECT COUNT(*) FROM t_settle_task WHERE state = ?`
+
+// CountPending runs PendingCountSQL against db. db may be nil (a process
+// without a database), in which case the count is zero and no error is
+// returned: a gauge producer must not fail because a dependency is absent from
+// the wiring.
+func CountPending(ctx context.Context, db *sql.DB) (int64, error) {
+	if db == nil {
+		return 0, nil
+	}
+	var n int64
+	if err := db.QueryRowContext(ctx, PendingCountSQL, TaskStatePending).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 // Backlog counts PENDING settlement tasks.
 //
 // Counting on every request would put a SELECT COUNT(*) on the gateway's hot
@@ -55,10 +91,8 @@ func (b *Backlog) SettleBacklog(ctx context.Context) (int64, error) {
 	if b.DB == nil {
 		return b.value, nil
 	}
-	var n int64
-	if err := b.DB.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM t_settle_task WHERE state = ?`, TaskStatePending,
-	).Scan(&n); err != nil {
+	n, err := CountPending(ctx, b.DB)
+	if err != nil {
 		// Keep the stale value rather than reporting zero: a zero would
 		// silently disable backpressure.
 		return b.value, err

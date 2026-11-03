@@ -11,8 +11,13 @@
 #   2. 对账差异 > 0 是 P0（R-01），没有 for 延迟：金额不一致等一分钟都可能扩大。
 #
 # 指标名一律来自 internal/obs/metrics/recorder.go，不在这里发明新名字。
-# 其中三处本仓没有独立埋点，已在对应规则处写明「无埋点」与替代巡检方式，
+# 任何本仓没有独立埋点的规则，都在该处写明「无埋点」与替代巡检方式，
 # 不要为了让 YAML 好看而编一个指标名。
+#
+# 埋点与规则的对应关系由测试钉住（改一边就红），不要只改 YAML：
+#   gw_settle_backlog_tasks  ← settle.BacklogWarnThreshold  ↔ TestBacklogWarnThresholdMatchesAlertRule
+#   gw_ticket_sla_overdue    ← ticket.FirstResponseOverdueSQL ↔ TestTicketSLAOverdueMatchesOverview
+#   平台白名单 8 码          ← apierr.PlatformAvailabilityCodes ↔ TestPlatformErrorRateRuleMatchesWhitelist
 
 groups:
   - name: yunshu-gateway
@@ -115,23 +120,32 @@ groups:
           runbook: 'docs/ops-runbook.md §8 容量与限流告警'
 
       # ------------------------------------------------------- 容量与错误率
-      # 结算积压。本仓没有积压数量（条）的 gauge —— settle.Backlog 只在网关
-      # 内存里按秒缓存一个整数，超过 settle.BacklogThreshold = 5000 条才拒绝
-      # 新请求。因此这里告警的是「背压已经触发」这个可观测事实，而不是积压条数。
-      # 无埋点：结转积压条数；替代巡检：SELECT COUNT(*) FROM t_settle_task
-      # WHERE state='PENDING'（settle.Backlog 的同一个查询），> 5000 即积压。
+      # 结算积压。数值来自 gw_settle_backlog_tasks：jobsd 每 30s 执行
+      # settle.PendingCountSQL（`SELECT COUNT(*) FROM t_settle_task WHERE state=?`），
+      # 与网关背压判定用的是同一条语句，不存在第二份口径（G24）。
+      #
+      # 阈值 4500 = settle.BacklogThreshold(5000) 的 90%，定义在
+      # internal/settle/backlog.go 的 BacklogWarnThreshold；PromQL 引不了 Go 常量，
+      # 所以这里的字面量由 TestBacklogWarnThresholdMatchesAlertRule 钉住，改一边
+      # 测试就红。为什么不在 5000 才报：越过 5000 后网关已经开始拒绝新请求
+      # （gw_backpressure_rejected_total{tier="backlog"}），那条是滞后信号；
+      # 容量预警要更早，留出排查与扩容的时间。
+      #
+      # max() 而不是 sum()：gauge 是每个 jobsd 副本各自采样的同一张表的同一个数，
+      # 几个副本相加会把积压量乘上副本数。
       - alert: SettleBacklogOverThreshold
-        expr: increase(gw_backpressure_rejected_total{tier="backlog"}[5m]) > 0
-        for: 0m
+        expr: max(gw_settle_backlog_tasks) > 4500
+        for: 5m
         labels:
           severity: P1
           team: platform
         annotations:
-          summary: '结算积压已越过 5000 条阈值，网关开始拒绝新请求'
+          summary: '结算积压 {{ $value }} 条，逼近 5000 条背压线'
           description: >-
-            settle.BacklogThreshold = 5000 条 PENDING（不是秒）。
+            settle.BacklogThreshold = 5000 条 PENDING（不是秒）；4500 是提前预警线。
             先确认 jobsd 的 P26 结算消费者是否存活（/readyz 的 settle 与
             t_settle_task 的 PENDING 计数），再确认上游结算是否整体变慢。
+            若已开始出现 gw_backpressure_rejected_total{tier="backlog"}，按已触发背压处置。
           runbook: 'docs/ops-runbook.md §8 容量与限流告警'
 
       # 平台侧错误率。分子按 PRD §9.3 的 8 条平台白名单码，不把上游 5xx 算进来：

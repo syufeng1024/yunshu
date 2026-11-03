@@ -185,6 +185,12 @@ func main() {
 		&audit.Writer{DB: mainDB, Now: clock.Real{}}, logger, clock.Real{})
 	closeExpired.Metrics = rec
 
+	// Point-in-time gauges (G24/G25). jobsd is the only process that both holds
+	// the main DB handle and runs on a timer; the gateway must not pay for a
+	// COUNT(*) on the request path, so the numbers are produced here and read
+	// by the alert rules.
+	obsSample := jobs.NewObsSample(mainDB, rec, logger)
+
 	runner := &jobs.Runner{
 		Registry: registry,
 		Election: election,
@@ -248,6 +254,12 @@ func main() {
 				logger.Info(ctx, fmt.Sprintf("close_expired_order closed=%d scanned=%d skipped=%d",
 					res.Closed, res.Scanned, res.Skipped), obslog.Fields{Stage: "close_expired_order"})
 				return nil
+			},
+			// Read-only gauge samplers. They run on every replica (no lease):
+			// the exported value is per-process, and the alert aggregates with
+			// max() so a second replica cannot double the reported backlog.
+			jobs.SettleBacklogTaskName: func(ctx context.Context, _ time.Time) error {
+				return obsSample.RunSettleBacklog(ctx)
 			},
 		},
 	}

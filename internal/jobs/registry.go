@@ -144,6 +144,12 @@ func (r *Registry) Len() int {
 // TaskTable is the T09 second-segment job table. Every task has a side effect,
 // so every task requires the t_job_lock lease (T09 hard constraint 15).
 //
+// The one exception is the gauge sampler below: it only reads two tables and
+// exports the result, so it must run on every replica rather than on whichever
+// one currently holds the lease. A leader-only sampler would disappear from
+// /metrics whenever the lease moved, i.e. exactly during the failover an
+// operator is watching (G24/G25).
+//
 // Cron fields are second minute hour day-of-month month day-of-week, evaluated
 // in UTC+8. purge_log is offset from daily_reconcile so the two heavy scans do
 // not overlap. daily_quota runs after rollup and before daily_reconcile: R-05
@@ -160,5 +166,10 @@ func TaskTable() []Task {
 		// nightly tasks: the finance queue is read all day, and an order that
 		// expired at 09:31 must not still look payable at 09:40.
 		{Name: "close_expired_order", Period: 5 * time.Minute, RequiresLeader: true, Timeout: 5 * time.Minute},
+		// Gauge samplers. 30s matches the alert group's evaluation interval,
+		// so a sample is never staler than one rule evaluation; both queries
+		// are covered by an index and cost less than the scrape itself.
+		{Name: SettleBacklogTaskName, Period: 30 * time.Second, RequiresLeader: false, Timeout: time.Minute},
 	}
 }
+

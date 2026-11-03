@@ -42,6 +42,9 @@ type Recorder struct {
 	upstreamMalformed   *CounterVec
 	dedicatedFallback   *CounterVec
 
+	settleBacklogTasks *GaugeVec
+	ticketSLAOverdue   *GaugeVec
+
 	logWrittenVec *CounterVec
 	logWritten    *Counter
 	logDropped    *CounterVec
@@ -133,6 +136,11 @@ func NewRecorder(reg *Registry) *Recorder {
 			"channel_id"),
 		dedicatedFallback: reg.Counter("gw_dedicated_fallback_total",
 			"Requests served from the shared pool after every dedicated channel was unavailable and fallback was allowed."),
+
+		settleBacklogTasks: reg.Gauge("gw_settle_backlog_tasks",
+			"PENDING rows in t_settle_task, sampled by jobsd (settle.PendingCountSQL)."),
+		ticketSLAOverdue: reg.Gauge("gw_ticket_sla_overdue",
+			"OPEN tickets whose first-response deadline has passed, sampled by jobsd."),
 
 		logWrittenVec: reg.Counter("gw_log_written_total",
 			"Request-log entries written to the Redis stream."),
@@ -385,6 +393,39 @@ func (r *Recorder) DedicatedFallback() {
 		return
 	}
 	r.dedicatedFallback.With().Inc()
+}
+
+// SettleBacklogTasks sets the PENDING settlement-task count sampled by jobsd.
+// It is the data source for the "approaching the GR-03 line" alert: the
+// backpressure counter only moves after the gateway has already started
+// refusing traffic, so capacity warning needs the queue depth itself.
+//
+// The series is lazy (created on the first successful sample) like
+// LedgerReconcileDiff: a jobsd that cannot reach MySQL must not export a
+// fabricated zero that hides an unmeasured backlog.
+func (r *Recorder) SettleBacklogTasks(n int64) {
+	if r == nil || r.settleBacklogTasks == nil {
+		return
+	}
+	if n < 0 {
+		n = 0
+	}
+	r.settleBacklogTasks.With().Set(n)
+}
+
+// TicketSLAOverdue sets the number of OPEN tickets past their first-response
+// deadline, sampled by jobsd from ticket.FirstResponseOverdueSQL. Lazy for the
+// same reason as SettleBacklogTasks. It is a gauge, not a counter: a ticket
+// stops being overdue when it is answered or closed, and a counter would only
+// ever climb.
+func (r *Recorder) TicketSLAOverdue(n int64) {
+	if r == nil || r.ticketSLAOverdue == nil {
+		return
+	}
+	if n < 0 {
+		n = 0
+	}
+	r.ticketSLAOverdue.With().Set(n)
 }
 
 // LogWritten records one request-log entry appended to the Redis stream.

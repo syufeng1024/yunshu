@@ -19,8 +19,17 @@ var wantTasks = []string{
 	"rollup",
 }
 
+// wantReadOnlyTasks are the gauge samplers: pure reads, so they must NOT be
+// gated on the t_job_lock lease (G24/G25). A leader-only sampler would stop
+// exporting its gauge on whichever replica does not hold the lease.
+var wantReadOnlyTasks = []string{
+	SettleBacklogTaskName,
+}
+
 // Every T09 task has a side effect, so every row in TaskTable must require the
-// t_job_lock lease and the runner must refuse to start without a body.
+// t_job_lock lease and the runner must refuse to start without a body. The
+// gauge samplers are the documented exception and are asserted the other way
+// round: they must not require the lease.
 func TestTaskTableWiring(t *testing.T) {
 	reg := NewRegistry()
 	for _, task := range TaskTable() {
@@ -28,8 +37,21 @@ func TestTaskTableWiring(t *testing.T) {
 			t.Fatalf("register %s: %v", task.Name, err)
 		}
 	}
-	if got := reg.Len(); got != len(wantTasks) {
-		t.Fatalf("task count = %d; want %d", got, len(wantTasks))
+	if got, want := reg.Len(), len(wantTasks)+len(wantReadOnlyTasks); got != want {
+		t.Fatalf("task count = %d; want %d", got, want)
+	}
+	for _, name := range wantReadOnlyTasks {
+		task, ok := reg.Lookup(name)
+		if !ok {
+			t.Fatalf("read-only task %s is not registered", name)
+		}
+		if task.RequiresLeader {
+			t.Fatalf("task %s must NOT require the leader lease: it only reads and "+
+				"exports a gauge, so gating it would silence the metric on followers", name)
+		}
+		if task.Period <= 0 || task.Cron != "" {
+			t.Fatalf("task %s must be interval-scheduled, got period=%s cron=%q", name, task.Period, task.Cron)
+		}
 	}
 	for _, name := range wantTasks {
 		task, ok := reg.Lookup(name)
@@ -70,7 +92,7 @@ func TestTaskTableWiring(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "has no executor") {
 		t.Fatalf("Validate without executors = %v; want missing-executor error", err)
 	}
-	for _, name := range wantTasks {
+	for _, name := range append(append([]string{}, wantTasks...), wantReadOnlyTasks...) {
 		runner.Executors[name] = func(context.Context, time.Time) error { return nil }
 	}
 	if err := runner.Validate(); err != nil {
