@@ -84,7 +84,19 @@ const (
 	TypeInternal           = "internal_error"
 )
 
-// Owner decides whether a failure counts in the §9.3 availability numerator.
+// Owner names who the response blames, in the vocabulary the caller-facing
+// `hint` uses: "this is your problem" (BUSINESS) vs "this is ours"
+// (PLATFORM/CONFIG) vs "the upstream is broken" (UPSTREAM).
+//
+// Owner is NOT the §9.3 availability predicate. That numerator is a fixed
+// eight-code whitelist (PlatformAvailabilityCodes in availability.go); twelve
+// specs are OwnerPlatform and four of them are deliberately outside it. Use
+// IsPlatformAvailabilityCode anywhere availability is counted — filtering on
+// Owner would inflate the platform's own unavailability with upstream
+// credential faults (G26).
+//
+// The only producer of Owner is gw.usage.ownerForCode, which fills
+// t_usage_record.fail_owner on inbound failures; no money path reads it.
 type Owner string
 
 const (
@@ -770,6 +782,35 @@ func MarkdownTable() string {
 	for _, s := range specs {
 		fmt.Fprintf(&b, "| `%s` | `%s` | %d | %d | %s | %s | %s |\n",
 			s.Code, s.Type, s.HTTPStatus, s.RetryAfterSeconds, s.Retry, s.Owner, s.Stage)
+	}
+	return b.String()
+}
+
+// MarkdownAvailabilitySection renders PRD §9.3's availability numerator as a
+// doc section. Kept out of MarkdownTable() so the latter stays exactly the
+// 76-row code table (TestCodeCountIs76 and TestCodeCountMatchesDocsTable count
+// its rows). docs/error-codes.md is MarkdownTable() followed by this.
+//
+// It is generated rather than hand-written so the published table cannot
+// disagree with the codes the alert rule is checked against (G26).
+func MarkdownAvailabilitySection() string {
+	var b strings.Builder
+	b.WriteString("## 平台可用性白名单（PRD §9.3，8 条）\n\n")
+	b.WriteString("网关月可用性的分子 = 下表 8 条码的请求数；分母 = 到达网关的全部请求\n")
+	b.WriteString("（429 / 402 / 400 / 404 / 上游 4xx 全在）。真相源是 `internal/apierr/availability.go`\n")
+	b.WriteString("的 `PlatformAvailabilityCodes()`，本表与 `internal/obs/alert/rules.yaml` 的\n")
+	b.WriteString("`PlatformErrorRateHigh` 正则由 `TestPlatformErrorRateRuleMatchesWhitelist` 钉住。\n\n")
+	b.WriteString("**不要用「归属 = PLATFORM」当白名单**：`OwnerPlatform` 有 12 条码，其中\n")
+	b.WriteString("`price_not_configured` 与三个上游凭据码（`upstream_auth_failed` /\n")
+	b.WriteString("`upstream_model_not_found` / `upstream_key_unavailable`）不在分子里——\n")
+	b.WriteString("按 Owner 过滤会把上游故障算成平台故障（G26）。\n\n")
+	b.WriteString("| `code` | 说明 |\n| --- | --- |\n")
+	for _, code := range PlatformAvailabilityCodes() {
+		stage := ""
+		if spec, ok := Lookup(code); ok {
+			stage = spec.Stage
+		}
+		fmt.Fprintf(&b, "| `%s` | 触发阶段 %s |\n", code, stage)
 	}
 	return b.String()
 }

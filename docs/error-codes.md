@@ -1,7 +1,8 @@
 # 错误码台账（76 条）
 
-> 本文件由 `apierr.MarkdownTable()` 生成，**不得手工编辑**。真相源是 PRD 附录 E.1 与 `internal/apierr/codes.go`。
-> 重新生成：写一段 10 行的临时程序打印 `apierr.MarkdownTable()` 到本文件（临时程序不入库），或等 T15 的后台「错误码导出」接口。
+> 本文件由 `apierr.MarkdownTable()`（76 行码表）+ `apierr.MarkdownAvailabilitySection()`
+> （末尾的平台可用性白名单）生成，**不得手工编辑**。真相源是 PRD 附录 E.1 与 `internal/apierr/codes.go`。
+> 重新生成：写一段 10 行的临时程序把这两个函数的输出依次打印到本文件（临时程序不入库），或等 T15 的后台「错误码导出」接口。
 
 ## 与 PRD E.1 的关系
 
@@ -93,3 +94,26 @@
 | `price_conflict` | `conflict_error` | 409 | 0 | no | BUSINESS | 运营后台 |
 | `account_rpm_exceeded` | `rate_limit_exceeded` | 429 | 60 | duration | BUSINESS | P11（V1.0 不实现） |
 | `content_policy_violation` | `invalid_request_error` | 403 | 0 | no | BUSINESS | P04 / §8.4 |
+
+## 平台可用性白名单（PRD §9.3，8 条）
+
+网关月可用性的分子 = 下表 8 条码的请求数；分母 = 到达网关的全部请求
+（429 / 402 / 400 / 404 / 上游 4xx 全在）。真相源是 `internal/apierr/availability.go`
+的 `PlatformAvailabilityCodes()`，本表与 `internal/obs/alert/rules.yaml` 的
+`PlatformErrorRateHigh` 正则由 `TestPlatformErrorRateRuleMatchesWhitelist` 钉住。
+
+**不要用「归属 = PLATFORM」当白名单**：`OwnerPlatform` 有 12 条码，其中
+`price_not_configured` 与三个上游凭据码（`upstream_auth_failed` /
+`upstream_model_not_found` / `upstream_key_unavailable`）不在分子里——
+按 Owner 过滤会把上游故障算成平台故障（G26）。
+
+| `code` | 说明 |
+| --- | --- |
+| `rate_limiter_unavailable` | 触发阶段 P11 |
+| `config_unavailable` | 触发阶段 E-60 |
+| `auth_unavailable` | 触发阶段 P05 |
+| `settlement_unavailable` | 触发阶段 P10 |
+| `backpressure_rejected` | 触发阶段 背压 90% 档 |
+| `backpressure_stream_rejected` | 触发阶段 背压 60% 档 |
+| `internal_error` | 触发阶段 全局兜底 |
+| `convert_failed` | 触发阶段 P14/P20 |

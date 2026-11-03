@@ -150,6 +150,12 @@ groups:
 
       # 平台侧错误率。分子按 PRD §9.3 的 8 条平台白名单码，不把上游 5xx 算进来：
       # 否则上游抖动会冒充平台故障，或反过来被平台故障掩盖。
+      #
+      # 白名单的唯一定义是 internal/apierr/availability.go 的
+      # PlatformAvailabilityCodes()；这里只能重复一份正则（PromQL 引不了 Go），
+      # 两边由 TestPlatformErrorRateRuleMatchesWhitelist 钉住。**不要按 Owner 过滤**：
+      # OwnerPlatform 有 12 条码，多出的 4 条（price_not_configured 与三个上游凭据码）
+      # 不在分子里，按 Owner 算会把上游故障算成平台故障（G26）。
       - alert: PlatformErrorRateHigh
         expr: >-
           (

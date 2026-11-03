@@ -201,7 +201,14 @@ func TestCodeCountMatchesDocsTable(t *testing.T) {
 		t.Fatalf("read docs/error-codes.md: %v", err)
 	}
 	docsRows := 0
-	for _, line := range strings.Split(string(raw), "\n") {
+	// The code table is only the first table in the file; everything from the
+	// 平台可用性白名单 heading down is a different table (the §9.3 numerator,
+	// checked by TestErrorCodesDocListsWhitelist) and must not be counted here.
+	table := string(raw)
+	if idx := strings.Index(table, "## 平台可用性白名单"); idx >= 0 {
+		table = table[:idx]
+	}
+	for _, line := range strings.Split(table, "\n") {
 		if strings.HasPrefix(line, "| `") && !strings.Contains(line, "retry_after_seconds") {
 			docsRows++
 		}
