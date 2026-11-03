@@ -22,7 +22,7 @@ func flushRedis(t *testing.T) {
 
 func newBreaker(t *testing.T, clock *redisx.Clock) *Breaker {
 	t.Helper()
-	client := redisx.New(redisx.Options{Addr: redistest.Addr(), DB: redistest.DB()})
+	client := redistest.NewClient(0)
 	t.Cleanup(func() { _ = client.Close() })
 	return New(client, clock, nil)
 }

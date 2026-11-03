@@ -22,6 +22,9 @@ import (
 func benchAcquire(b *testing.B, mode Mode, keyID int64) {
 	b.Helper()
 	raw := redistest.Client()
+	// Deliberately NOT redistest.NewClient: this benchmark measures per-op
+	// latency, so it keeps the production 50ms budget and the degradation path
+	// it is benchmarking. It is not a correctness fixture — do not raise it.
 	client := redisx.New(redisx.Options{Addr: redistest.Addr(), DB: redistest.DB()})
 	clock := redisx.NewStaticClock(baseTime)
 	degrader := NewDegrader(client, clock, "bench", mode, 0)

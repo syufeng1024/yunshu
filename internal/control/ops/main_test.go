@@ -21,7 +21,6 @@ import (
 	"yunshu.dev/core/internal/cryptobox"
 	"yunshu.dev/core/internal/jsonx"
 	"yunshu.dev/core/internal/platform/clock"
-	"yunshu.dev/core/internal/redisx"
 	"yunshu.dev/core/internal/redisx/redistest"
 )
 
@@ -50,7 +49,7 @@ func newLoginService(t *testing.T) *auth.Service {
 		t.Fatalf("redis for login guard: %v", err)
 	}
 	t.Cleanup(func() { _ = env.Close() })
-	rdb := redisx.New(redisx.Options{Addr: env.Addr, DB: env.DB, PoolSize: 2})
+	rdb := redistest.NewClientAt(env.Addr, env.DB, 2)
 	t.Cleanup(func() { _ = rdb.Close() })
 	sessMgr, err := mw.NewSessionManager(testDB, rdb, "0123456789abcdef")
 	if err != nil {

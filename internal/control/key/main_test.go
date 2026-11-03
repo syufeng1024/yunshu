@@ -38,7 +38,7 @@ func TestMain(m *testing.M) {
 
 func newTestService(t *testing.T) (*Service, *redisx.Client) {
 	t.Helper()
-	rdb := redisx.New(redisx.Options{Addr: redistest.Addr(), DB: redistest.DB(), PoolSize: 10})
+	rdb := redistest.NewClient(10)
 	t.Cleanup(func() { _ = rdb.Close() })
 	return New(testDB, rdb, clock.Real{}, nil), rdb
 }

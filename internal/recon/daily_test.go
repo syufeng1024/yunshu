@@ -266,7 +266,7 @@ func TestDailyRerunConvergesAndKeepsClosedRowsClosed(t *testing.T) {
 	ctx := context.Background()
 	day := time.Date(2026, 9, 15, 0, 0, 0, 0, CST)
 	bizDate := day.Format("2006-01-02")
-	rdb := redisx.New(redisx.Options{Addr: redistest.Addr(), DB: redistest.DB()})
+	rdb := redistest.NewClient(0)
 	t.Cleanup(func() {
 		_ = rdb.Raw().Del(context.Background(), redisx.ReconLockKey(bizDate)).Err()
 		_ = rdb.Close()

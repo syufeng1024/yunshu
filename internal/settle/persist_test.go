@@ -156,7 +156,7 @@ func TestWorkerMarksDeadAtMaxAttempts(t *testing.T) {
 // incremented once, not once per scope delta.
 func TestMetricsFlushWritesK14AndK15(t *testing.T) {
 	ctx := context.Background()
-	rdb := redisx.New(redisx.Options{Addr: redistest.Addr(), DB: redistest.DB()})
+	rdb := redistest.NewClient(0)
 	t.Cleanup(func() { _ = rdb.Close() })
 	epoch := redisx.MinEpochFromMS(time.Now().UnixMilli())
 

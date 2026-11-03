@@ -72,6 +72,10 @@ func TestSoak(t *testing.T) {
 		t.Fatalf("soak: redis: %v", err)
 	}
 	t.Cleanup(func() { _ = redisEnv.Close() })
+	// Deliberately NOT redistest.NewClient: its 2s fixture budget would hide the
+	// latency this soak exists to measure. The prehold budget below is 200ms and
+	// the pool sizes are tuned so the measurement is the transaction, not the
+	// connection queue — keep the production 50ms command budget here.
 	rdb := redisx.New(redisx.Options{Addr: redisEnv.Addr, DB: redisEnv.DB, PoolSize: 64})
 	t.Cleanup(func() { _ = rdb.Close() })
 

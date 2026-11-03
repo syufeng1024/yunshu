@@ -12,7 +12,7 @@ import (
 
 func newTestElection(t *testing.T, instance string) *Election {
 	t.Helper()
-	rdb := redisx.New(redisx.Options{Addr: redistest.Addr(), DB: redistest.DB()})
+	rdb := redistest.NewClient(0)
 	t.Cleanup(func() { _ = rdb.Close() })
 	return NewElection(testDB, rdb, instance, nil, clock.Real{})
 }

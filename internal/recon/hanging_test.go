@@ -18,7 +18,7 @@ import (
 // never releases and must leave a SETTLE task plus a RECONCILE_MANUAL notice.
 func TestHangingRecoveryThreeStates(t *testing.T) {
 	ctx := context.Background()
-	rdb := redisx.New(redisx.Options{Addr: redistest.Addr(), DB: redistest.DB()})
+	rdb := redistest.NewClient(0)
 	t.Cleanup(func() { _ = rdb.Close() })
 
 	store := ledger.NewStore(testDB, clock.Real{})

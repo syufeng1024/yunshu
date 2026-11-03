@@ -41,7 +41,7 @@ func newStore(t *testing.T, client *redisx.Client, clock *redisx.Clock, db DB) *
 
 func newClient(t *testing.T) *redisx.Client {
 	t.Helper()
-	client := redisx.New(redisx.Options{Addr: redistest.Addr(), DB: redistest.DB()})
+	client := redistest.NewClient(0)
 	t.Cleanup(func() { _ = client.Close() })
 	return client
 }
