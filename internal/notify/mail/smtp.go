@@ -136,6 +136,13 @@ func (s *SMTP) String() string {
 	return fmt.Sprintf("smtp{host=%s port=%d from=%s tls=%s auth=%s}", s.Host, s.Port, s.From, mode, auth)
 }
 
+// GoString is what %#v calls. Without it, %#v would print the struct verbatim
+// and include the password, because GoStringer wins over Stringer for the sharp
+// verb.
+func (s *SMTP) GoString() string {
+	return s.String()
+}
+
 // FromEnv builds the DEFAULT channel from the unprefixed SMTP_* variables.
 //
 // It predates named channels and is kept so existing callers keep working; new
@@ -371,14 +378,47 @@ func sortedKeys(set map[string]struct{}) []string {
 	return out
 }
 
+// parsePort reads a channel's _PORT variable. Empty means defaultPort; a value
+// is validated even when the channel turns out to be undeclared, so a typo
+// does not sit in the environment until the day someone fills in a host.
+func parsePort(varName, raw string) (int, error) {
+	if raw == "" {
+		return defaultPort, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 || n > 65535 {
+		return 0, fmt.Errorf("mail: %s must be a TCP port, got %q", varName, raw)
+	}
+	return n, nil
+}
+
+// parseTLS reads a channel's _TLS variable: "starttls" (default) or "implicit"
+// (TLS on connect, which is what port 465 expects). A typo is an error even for
+// a channel that turns out to be undeclared, for the same reason as parsePort.
+func parseTLS(varName, raw string) (bool, error) {
+	switch mode := strings.ToLower(raw); mode {
+	case "", "starttls":
+		return false, nil
+	case "implicit":
+		return true, nil
+	default:
+		return false, fmt.Errorf("mail: %s must be starttls or implicit, got %q", varName, mode)
+	}
+}
+
 // parseChannel builds one channel from the variables behind prefix ("SMTP" for
 // DEFAULT, "SMTP_QQ" for channel QQ). getenv is injected so the parser can be
 // exercised without touching the process environment.
 //
-// ErrNotConfigured means every variable of the channel is empty, i.e. the
-// channel was not declared here. Anything else means the operator started
-// declaring it and stopped, which must fail at boot instead of at the first
-// send.
+// ErrNotConfigured means the channel was never declared: no host, no envelope
+// sender and no credential. _PORT and _TLS deliberately do not count — the
+// shipped .env.stack.example carries SMTP_PORT=587 and SMTP_TLS=starttls as
+// examples and leaves the rest empty, and copying that template must read as
+// "no mail here" rather than as a broken channel. They are still validated, so
+// a typo there is never carried silently.
+//
+// Once anything meaningful is filled in, the channel must be complete: a
+// half-declared channel has to fail at boot instead of at the first send.
 func parseChannel(prefix string, getenv func(string) string) (*SMTP, error) {
 	env := func(field string) string { return getenv(prefix + "_" + field) }
 	portVar, tlsVar, fromVar, hostVar := prefix+"_PORT", prefix+"_TLS", prefix+"_FROM", prefix+"_HOST"
@@ -393,30 +433,26 @@ func parseChannel(prefix string, getenv func(string) string) (*SMTP, error) {
 	password := env("PASSWORD")
 	from := strings.TrimSpace(env("FROM"))
 
-	if host == "" && rawPort == "" && rawTLS == "" && username == "" && password == "" && from == "" {
+	port, err := parsePort(portVar, rawPort)
+	if err != nil {
+		return nil, err
+	}
+	implicit, err := parseTLS(tlsVar, rawTLS)
+	if err != nil {
+		return nil, err
+	}
+
+	if host == "" && from == "" && username == "" && password == "" {
 		return nil, ErrNotConfigured
 	}
 	if host == "" {
 		return nil, fmt.Errorf("mail: %s is required (the relay host)", hostVar)
-	}
-	port := defaultPort
-	if rawPort != "" {
-		n, err := strconv.Atoi(rawPort)
-		if err != nil || n <= 0 || n > 65535 {
-			return nil, fmt.Errorf("mail: %s must be a TCP port, got %q", portVar, rawPort)
-		}
-		port = n
 	}
 	if from == "" {
 		return nil, fmt.Errorf("mail: %s is required (the envelope sender)", fromVar)
 	}
 	if strings.ContainsAny(from, "\r\n") {
 		return nil, fmt.Errorf("mail: %s must not contain CR/LF", fromVar)
-	}
-	mode := strings.ToLower(rawTLS)
-	implicit := mode == "implicit"
-	if mode != "" && mode != "implicit" && mode != "starttls" {
-		return nil, fmt.Errorf("mail: %s must be starttls or implicit, got %q", tlsVar, mode)
 	}
 	return &SMTP{
 		Host:     host,

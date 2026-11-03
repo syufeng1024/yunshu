@@ -77,7 +77,7 @@
 | `SMTP_USERNAME` / `SMTP_PASSWORD` | controld | 空 | SMTP 认证凭据。用户名非空而服务器不提供 STARTTLS 时**拒绝发送**（不把凭据裸奔在明文连接上）。凭据只走 env，不进 `t_config_item`，也不出现在启动日志与错误信息里 |
 | `SMTP_FROM` | controld | 空 | 信封发件人。含 CR/LF 直接启动失败（防头注入）。163/QQ 要求它与认证账号同址（否则 163 回 `553 Mail from must equal authorized user`） |
 | `SMTP_TLS` | controld | `starttls` | `starttls` 或 `implicit`；其他值启动失败 |
-| `SMTP_<NAME>_HOST` / `_PORT` / `_TLS` / `_USERNAME` / `_PASSWORD` / `_FROM` | controld | 同上一组 | **命名通道**：把通道名插在后缀前面即可，如 `SMTP_QQ_HOST`、`SMTP_163_PASSWORD`，通道名为 `QQ` / `163`。通道名只允许 `A-Z 0-9 _`（大小写不敏感、统一规范化为大写），`SMTP_1A-B_HOST` 这类名字直接报错。可同时声明任意多个通道，用 `AUTH_SMTP_CHANNEL` 选择，切换通道只改这一行。每个通道的 `_PORT` / `_TLS` 缺省同样是 `587` / `starttls`；某个通道的六个变量全为空视为未声明（照抄模板不会报错），只填了一半则启动失败。启动日志打印 `smtp channels: configured=[163 QQ] selected=QQ` |
+| `SMTP_<NAME>_HOST` / `_PORT` / `_TLS` / `_USERNAME` / `_PASSWORD` / `_FROM` | controld | 同上一组 | **命名通道**：把通道名插在后缀前面即可，如 `SMTP_QQ_HOST`、`SMTP_163_PASSWORD`，通道名为 `QQ` / `163`。通道名只允许 `A-Z 0-9 _`（大小写不敏感、统一规范化为大写），`SMTP_1A-B_HOST` 这类名字直接报错。可同时声明任意多个通道，用 `AUTH_SMTP_CHANNEL` 选择，切换通道只改这一行。**「已声明」的判定**：`_HOST`/`_FROM`/`_USERNAME`/`_PASSWORD` 任一项非空；四项全空视为未声明（照抄模板里 `SMTP_PORT=587`/`SMTP_TLS=starttls` 的示例值只算样式，不算声明，不会导致启动失败），但 `_PORT`/`_TLS` 的取值仍会校验。已声明则必须填齐 HOST 与 FROM，只填一半启动失败。缺省同样是 `587` / `starttls`。启动日志打印 `smtp channels: configured=[163 QQ] selected=QQ` |
 
 ## 命名空间分布
 

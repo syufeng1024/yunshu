@@ -155,10 +155,18 @@ services:
       GATEWAY_INTERNAL_URL: ${GATEWAY_INTERNAL_URL:-http://gatewayd:8080}
       # 注册/登录验证码。`docker compose --env-file` 只用于插值，**不会**把变量
       # 注入容器，所以这里必须逐个透传，否则容器里的 controld 拿不到、启动日志
-      # 会报 "AUTH_VERIFICATION_MODE=smtp requires SMTP_HOST/SMTP_FROM" 并退出。
-      # SMTP 通道名是动态的（SMTP_<NAME>_*），新增通道时在下面追加 6 行。
+      # 会报 "AUTH_VERIFICATION_MODE=smtp requires a configured SMTP channel ..." 并退出。
+      # 通道名是动态的（SMTP_<NAME>_*），新增通道时在下面追加 6 行；无前缀的
+      # 6 个变量是通道 DEFAULT，同样不能省——否则「无前缀 SMTP_* 老配置不动也能
+      # 跑」在容器里不成立。
       AUTH_VERIFICATION_MODE: ${AUTH_VERIFICATION_MODE:-log}
       AUTH_SMTP_CHANNEL: ${AUTH_SMTP_CHANNEL:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_TLS: ${SMTP_TLS:-}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
       SMTP_163_HOST: ${SMTP_163_HOST:-}
       SMTP_163_PORT: ${SMTP_163_PORT:-}
       SMTP_163_TLS: ${SMTP_163_TLS:-}

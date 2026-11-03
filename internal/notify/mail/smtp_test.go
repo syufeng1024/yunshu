@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -200,28 +202,63 @@ func TestChannelsSelectionWithoutChannels(t *testing.T) {
 	}
 }
 
-// TestChannelsEmptyTemplateIsNotConfigured: the shipped .env template sets every
-// SMTP_* variable to empty. That must read as "no mail here", not as a broken
-// channel — otherwise copying the template bricks the process.
+// TestChannelsEmptyTemplateIsNotConfigured: the shipped .env template sets
+// every SMTP_* variable to a value or to empty. That must read as "no mail
+// here", not as a broken channel — otherwise copying the template bricks the
+// process. _PORT and _TLS carry example values in the template, so they must
+// not count as declaring a channel.
 func TestChannelsEmptyTemplateIsNotConfigured(t *testing.T) {
-	channels, err := channelsFromVars(t,
-		"SMTP_HOST=",
-		"SMTP_PORT=",
-		"SMTP_TLS=",
-		"SMTP_USERNAME=",
-		"SMTP_PASSWORD=",
-		"SMTP_FROM=",
-		"SMTP_QQ_HOST=",
-		"SMTP_QQ_FROM=",
-	)
+	cases := [][]string{
+		{
+			"SMTP_HOST=", "SMTP_PORT=", "SMTP_TLS=", "SMTP_USERNAME=", "SMTP_PASSWORD=", "SMTP_FROM=",
+			"SMTP_QQ_HOST=", "SMTP_QQ_PORT=", "SMTP_QQ_FROM=",
+		},
+		{
+			// The shape the template actually ships: style values filled in.
+			"SMTP_HOST=", "SMTP_PORT=587", "SMTP_TLS=starttls", "SMTP_USERNAME=", "SMTP_PASSWORD=", "SMTP_FROM=",
+			"SMTP_163_HOST=", "SMTP_163_PORT=", "SMTP_163_TLS=", "SMTP_163_FROM=",
+		},
+	}
+	for _, vars := range cases {
+		channels, err := channelsFromVars(t, vars...)
+		if err != nil {
+			t.Fatalf("empty template reported an error: %v", err)
+		}
+		if len(channels.Configured) != 0 || channels.Sender != nil || channels.Selected != "" {
+			t.Fatalf("empty template produced channels: %+v", channels)
+		}
+		if want := "smtp channels: configured=[] selected=(none)"; channels.Summary() != want {
+			t.Fatalf("Summary() = %q, want %q", channels.Summary(), want)
+		}
+	}
+}
+
+// TestShippedTemplateStartsCleanly reads the template that the deploy docs tell
+// operators to copy, so the two cannot drift apart again. A style-only
+// declaration (SMTP_PORT=587 with an empty host) was once enough to abort
+// startup, and no hand-written fixture would have caught it.
+func TestShippedTemplateStartsCleanly(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "deploy", ".env.stack.example"))
 	if err != nil {
-		t.Fatalf("empty template reported an error: %v", err)
+		t.Fatalf("read deploy/.env.stack.example: %v", err)
 	}
-	if len(channels.Configured) != 0 || channels.Sender != nil || channels.Selected != "" {
-		t.Fatalf("empty template produced channels: %+v", channels)
+	vars := make([]string, 0, 32)
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "SMTP_") || strings.HasPrefix(line, "AUTH_SMTP_CHANNEL=") {
+			vars = append(vars, line)
+		}
 	}
-	if want := "smtp channels: configured=[] selected=(none)"; channels.Summary() != want {
-		t.Fatalf("Summary() = %q, want %q", channels.Summary(), want)
+	if len(vars) == 0 {
+		t.Fatalf("no SMTP variables found in the template; the test is looking at the wrong file")
+	}
+
+	channels, err := channelsFromVars(t, vars...)
+	if err != nil {
+		t.Fatalf("copying deploy/.env.stack.example must start cleanly, got: %v", err)
+	}
+	if len(channels.Configured) != 0 || channels.Sender != nil {
+		t.Fatalf("the template must not declare a channel, got %v", channels.Configured)
 	}
 }
 
@@ -235,7 +272,10 @@ func TestChannelsIncompleteFails(t *testing.T) {
 	}{
 		{"no host", []string{"SMTP_QQ_FROM=10001@qq.com"}, "SMTP_QQ_HOST"},
 		{"no from", []string{"SMTP_QQ_HOST=smtp.qq.com"}, "SMTP_QQ_FROM"},
+		{"password only", []string{"SMTP_QQ_PASSWORD=secret"}, "SMTP_QQ_HOST"},
+		{"username only", []string{"SMTP_QQ_USERNAME=10001@qq.com"}, "SMTP_QQ_HOST"},
 		{"bad port", []string{"SMTP_QQ_HOST=smtp.qq.com", "SMTP_QQ_FROM=a@b.c", "SMTP_QQ_PORT=465a"}, "SMTP_QQ_PORT"},
+		{"bad port alone", []string{"SMTP_QQ_PORT=465a"}, "SMTP_QQ_PORT"},
 		{"bad tls", []string{"SMTP_QQ_HOST=smtp.qq.com", "SMTP_QQ_FROM=a@b.c", "SMTP_QQ_TLS=sometimes"}, "SMTP_QQ_TLS"},
 		{"from crlf", []string{"SMTP_QQ_HOST=smtp.qq.com", "SMTP_QQ_FROM=a@b.c\nBcc: x"}, "SMTP_QQ_FROM"},
 	}
@@ -323,6 +363,7 @@ func TestChannelsNeverExposePassword(t *testing.T) {
 		fmt.Sprintf("%v", channels.Sender),
 		fmt.Sprintf("%+v", channels.Sender),
 		fmt.Sprintf("%s", channels.Sender),
+		fmt.Sprintf("%#v", channels.Sender), // GoStringer, not the struct dump
 	} {
 		if strings.Contains(rendered, secret) {
 			t.Fatalf("rendering leaked the password: %q", rendered)
