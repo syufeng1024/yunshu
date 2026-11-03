@@ -40,6 +40,7 @@ import {
 import { usePageTitle } from '@/lib/usePageTitle'
 
 const PAGE_SIZE = 20
+const PAGE_SIZE_OPTIONS = [20, 50, 100] as const
 
 const STATE_OPTIONS: readonly { value: LogStateFilter; label: string }[] = [
   { value: 'all', label: '全部状态' },
@@ -177,6 +178,7 @@ export default function LogsPage() {
   const [stateFilter, setStateFilter] = useState<LogStateFilter>('all')
   const [model, setModel] = useState('')
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(PAGE_SIZE)
   const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -190,9 +192,9 @@ export default function LogsPage() {
       state: stateFilter,
       model: model || undefined,
       page,
-      pageSize: PAGE_SIZE,
+      pageSize,
     }),
-    [from, to, stateFilter, model, page],
+    [from, to, stateFilter, model, page, pageSize],
   )
 
   const logs = useLogs(params)
@@ -285,7 +287,12 @@ export default function LogsPage() {
                   page: logs.data.page,
                   pageSize: logs.data.page_size,
                   total: logs.data.total,
+                  pageSizeOptions: PAGE_SIZE_OPTIONS,
                   onPageChange: setPage,
+                  onPageSizeChange: (size) => {
+                    setPageSize(size)
+                    setPage(1)
+                  },
                 }
               : undefined
           }

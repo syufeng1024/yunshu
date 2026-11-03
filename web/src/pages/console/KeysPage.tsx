@@ -11,7 +11,7 @@ import {
 } from '@/api/console'
 import type { CreatedKey, KeyListItem } from '@/api/console'
 import { Badge, Button, Input, PageHeader, Select, Table, useToast } from '@/components'
-import type { TableColumn } from '@/components'
+import type { TableColumn, TableSort } from '@/components'
 import { ConfirmDialog, CreateKeyDialog, KeySecretOnce } from '@/components/console'
 import { groupLabel } from '@/lib/consoleLabels'
 import { ROUTES, consoleKeyDetailPath } from '@/lib/constants'
@@ -22,6 +22,16 @@ import { usePageTitle } from '@/lib/usePageTitle'
 type StatusFilter = 'ALL' | 'ENABLED' | 'DISABLED'
 
 const PAGE_SIZE = 20
+const PAGE_SIZE_OPTIONS = [20, 50, 100] as const
+
+// Column key -> the column name the list endpoint accepts. Keeping the mapping
+// here (rather than sending the UI key) means a column rename can never turn
+// into a silently ignored sort parameter.
+const SORT_PARAM: Record<string, 'key_name' | 'last_used_at' | 'created_at'> = {
+  name: 'key_name',
+  created: 'created_at',
+  lastUsed: 'last_used_at',
+}
 
 export default function KeysPage() {
   usePageTitle('密钥管理')
@@ -30,6 +40,11 @@ export default function KeysPage() {
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState<StatusFilter>('ALL')
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(PAGE_SIZE)
+  // Default ordering matches the backend default (created_at DESC); the
+  // created/last-used columns make the current order visible instead of
+  // implicit.
+  const [sort, setSort] = useState<TableSort>({ key: 'created', direction: 'desc' })
   // Web search must be debounced (PRD §3.2); 300ms keeps typing responsive
   // without firing one request per keystroke.
   const debouncedSearch = useDebouncedValue(search, 300)
@@ -44,7 +59,9 @@ export default function KeysPage() {
     q: debouncedSearch,
     status: status === 'ALL' ? undefined : status,
     page,
-    pageSize: PAGE_SIZE,
+    pageSize,
+    sort: SORT_PARAM[sort.key] ?? 'created_at',
+    order: sort.direction,
   })
 
   const overview = useConsoleOverview({ poll: false })
@@ -104,6 +121,7 @@ export default function KeysPage() {
     {
       key: 'name',
       header: '名称',
+      sortable: true,
       render: (row) => (
         <Link
           to={consoleKeyDetailPath(String(row.id))}
@@ -150,6 +168,29 @@ export default function KeysPage() {
           <span className="text-xs text-ink-secondary">{formatDateTime(row.expire_at)}</span>
         ) : (
           <span className="text-xs text-ink-muted">永不过期</span>
+        ),
+    },
+    {
+      key: 'created',
+      header: '创建时间',
+      sortable: true,
+      render: (row) => (
+        <span className="whitespace-nowrap text-xs text-ink-secondary">
+          {formatDateTime(row.created_at)}
+        </span>
+      ),
+    },
+    {
+      key: 'lastUsed',
+      header: '最近使用',
+      sortable: true,
+      render: (row) =>
+        row.last_used_at ? (
+          <span className="whitespace-nowrap text-xs text-ink-secondary">
+            {formatDateTime(row.last_used_at)}
+          </span>
+        ) : (
+          <span className="text-xs text-ink-muted">从未使用</span>
         ),
     },
     {
@@ -270,13 +311,23 @@ export default function KeysPage() {
             </Button>
           )
         }
+        sort={sort}
+        onSortChange={(next) => {
+          setSort(next)
+          setPage(1)
+        }}
         pagination={
           query.data
             ? {
                 page: query.data.page,
                 pageSize: query.data.page_size,
                 total: query.data.total,
+                pageSizeOptions: PAGE_SIZE_OPTIONS,
                 onPageChange: setPage,
+                onPageSizeChange: (size) => {
+                  setPageSize(size)
+                  setPage(1)
+                },
               }
             : undefined
         }

@@ -161,6 +161,9 @@ export interface KeyListParams {
   pageSize?: number
   q?: string
   status?: KeyStatus
+  /** Server-side order; the backend whitelists these three columns. */
+  sort?: 'key_name' | 'last_used_at' | 'created_at'
+  order?: 'asc' | 'desc'
 }
 
 export interface KeyAuditItem {
@@ -633,6 +636,8 @@ function keysQuery(params: KeyListParams): string {
   const q = params.q?.trim()
   if (q) search.set('q', q)
   if (params.status) search.set('status', params.status)
+  if (params.sort) search.set('sort', params.sort)
+  if (params.order) search.set('order', params.order)
   return search.toString()
 }
 

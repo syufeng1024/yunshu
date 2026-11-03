@@ -30,6 +30,12 @@ export interface TablePagination {
   pageSize: number
   total: number
   onPageChange: (page: number) => void
+  /**
+   * Supply this to show a page-size switcher next to the page counter. Omitted
+   * everywhere it does not exist, so no existing table changes shape.
+   */
+  onPageSizeChange?: (pageSize: number) => void
+  pageSizeOptions?: readonly number[]
 }
 
 export interface TableProps<T> {
@@ -217,9 +223,29 @@ export function Table<T>({
 
       {showPagination && pagination ? (
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-4 py-3">
-          <p className="text-xs text-ink-secondary">
-            第 {pagination.page} / {pageCount} 页 · 共 {pagination.total} 条
-          </p>
+          <div className="flex flex-wrap items-center gap-3 text-xs text-ink-secondary">
+            <p>
+              第 {pagination.page} / {pageCount} 页 · 共 {pagination.total} 条
+            </p>
+            {pagination.onPageSizeChange ? (
+              <label className="inline-flex items-center gap-1">
+                每页
+                <select
+                  aria-label="每页条数"
+                  value={pagination.pageSize}
+                  onChange={(event) => pagination.onPageSizeChange?.(Number(event.target.value))}
+                  className="h-7 rounded-md border border-border bg-surface px-1.5 text-xs text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                >
+                  {(pagination.pageSizeOptions ?? [20, 50, 100]).map((size) => (
+                    <option key={size} value={size}>
+                      {size}
+                    </option>
+                  ))}
+                </select>
+                条
+              </label>
+            ) : null}
+          </div>
           <div className="flex items-center gap-2">
             <Button
               variant="secondary"

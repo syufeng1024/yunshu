@@ -120,6 +120,82 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('KeysPage', () => {
+  it('sorts by the clicked column and asks the server for that order', async () => {
+    installMock()
+    const user = userEvent.setup()
+    renderWithProviders(<KeysPage />)
+    await screen.findByText('prod-key')
+
+    // Default order is created_at DESC (matches the backend default); clicking
+    // the header flips the direction and must reach the API, not sort one page
+    // locally — local sorting would only reorder the 20 visible rows.
+    await user.click(screen.getByRole('button', { name: '按 创建时间 排序' }))
+
+    await waitFor(() => {
+      const last = mockedGet.mock.calls
+        .map((call) => String(call[0]))
+        .filter((path) => path.startsWith('/api/console/keys?'))
+        .at(-1)
+      expect(last).toContain('sort=created_at')
+      expect(last).toContain('order=asc')
+    })
+  })
+
+  it('changes the page size through the pagination switcher', async () => {
+    installMock()
+    const user = userEvent.setup()
+    renderWithProviders(<KeysPage />)
+    await screen.findByText('prod-key')
+
+    await user.selectOptions(screen.getByLabelText('每页条数'), '50')
+
+    await waitFor(() => {
+      const last = mockedGet.mock.calls
+        .map((call) => String(call[0]))
+        .filter((path) => path.startsWith('/api/console/keys?'))
+        .at(-1)
+      expect(last).toContain('page_size=50')
+    })
+  })
+
+  it('sorts by the clicked column and asks the server for that order', async () => {
+    installMock()
+    const user = userEvent.setup()
+    renderWithProviders(<KeysPage />)
+    await screen.findByText('prod-key')
+
+    // Default order is created_at DESC (matches the backend default); clicking
+    // the header flips the direction and must reach the API, not sort one page
+    // locally — local sorting would only reorder the 20 visible rows.
+    await user.click(screen.getByRole('button', { name: '按 创建时间 排序' }))
+
+    await waitFor(() => {
+      const last = mockedGet.mock.calls
+        .map((call) => String(call[0]))
+        .filter((path) => path.startsWith('/api/console/keys?'))
+        .at(-1)
+      expect(last).toContain('sort=created_at')
+      expect(last).toContain('order=asc')
+    })
+  })
+
+  it('changes the page size through the pagination switcher', async () => {
+    installMock()
+    const user = userEvent.setup()
+    renderWithProviders(<KeysPage />)
+    await screen.findByText('prod-key')
+
+    await user.selectOptions(screen.getByLabelText('每页条数'), '50')
+
+    await waitFor(() => {
+      const last = mockedGet.mock.calls
+        .map((call) => String(call[0]))
+        .filter((path) => path.startsWith('/api/console/keys?'))
+        .at(-1)
+      expect(last).toContain('page_size=50')
+    })
+  })
+
   it('A3 / F6-1: sends name search and status filter together so the API returns the intersection', async () => {
     installMock()
     const user = userEvent.setup()
