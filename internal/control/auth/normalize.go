@@ -4,6 +4,8 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+
+	"yunshu.dev/core/internal/platform/phonehmac"
 )
 
 // Identifier kinds. The column that stores the value is chosen from this, not
@@ -51,13 +53,13 @@ type Identifier struct {
 // accounts, and Admin and admin could be two operator rows.
 //
 // The username candidate is the trimmed/half-width string, NOT the
-// phone-stripped one: stripPhoneSeparators removes '.' and '-', which are legal
+// phone-stripped one: the phone rule removes '.' and '-', which are legal
 // username characters. The stripped form is only ever used to test the phone
 // predicate. Using it as the value would silently rewrite "my.name" into
 // "myname" and store an account nobody asked for.
 //
-// For the same reason the whitespace stripPhoneSeparators would perform is
-// never applied to the candidate: "my name" must be rejected, not folded into a
+// For the same reason the whitespace the phone rule would strip is never
+// applied to the candidate: "my name" must be rejected, not folded into a
 // valid-looking account called "myname" that could collide with — or log in
 // as — somebody else's row. Only the surrounding whitespace removed by TrimSpace
 // above is invisible to the rule.
@@ -106,17 +108,33 @@ func NormalizeIdentifier(raw string) (Identifier, error) {
 // The predicate (all digits, 6..20 after removing formatting characters) is the
 // pre-username one, unchanged: an existing all-digit identifier must keep
 // resolving to the phone column or those accounts lose their login.
+//
+// The implementation lives in internal/platform/phonehmac.Canonical because the
+// same predicate decides whether a stored t_user.phone value may be hashed by
+// the backfill command; one implementation means "loginable" and "hashable" can
+// never disagree.
 func asPhone(s string) (string, bool) {
-	phone := stripPhoneSeparators(s)
-	if len(phone) < 6 || len(phone) > 20 {
-		return "", false
-	}
-	for i := 0; i < len(phone); i++ {
-		if phone[i] < '0' || phone[i] > '9' {
-			return "", false
-		}
-	}
-	return phone, true
+	return phonehmac.Canonical(s)
+}
+
+// CanonicalPhone is the exported form of the phone rule: it applies the same
+// input cleaning NormalizeIdentifier applies (trim, full-width to half-width)
+// and then the phone predicate, returning the value t_user.phone stores.
+//
+// It exists for the two callers that see a phone number outside a login or
+// registration body:
+//
+//   - cmd/backfill-phone-hmac must decide whether a stored phone value is
+//     already canonical before hashing it. Hashing a non-canonical value would
+//     produce a hash nobody's login can reproduce — uniqueness silently gone —
+//     so the backfill reports it instead of guessing.
+//   - cmd/seedctl validates the -phone seed with the same rule the control
+//     plane will apply when that account logs in.
+//
+// It is a wrapper, never a second rule: the predicate itself is
+// phonehmac.Canonical, shared with asPhone.
+func CanonicalPhone(raw string) (string, bool) {
+	return asPhone(strings.TrimSpace(toHalfWidth(raw)))
 }
 
 // ParseUsername validates one free-standing username (the account settings
@@ -172,24 +190,13 @@ func toHalfWidth(s string) string {
 	return b.String()
 }
 
-// stripPhoneSeparators removes the characters humans insert in phone numbers.
-// A leading + is dropped because t_user.phone stores E.164 without it.
-func stripPhoneSeparators(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		switch r {
-		case ' ', '\t', '\r', '\n', '-', '(', ')', '+', '.':
-			continue
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
-
 // maskIdentifier keeps enough of the identifier for an operator to recognise
 // the account while keeping the audit trail from becoming a PII dump.
+//
+// The e-mail branch is local (it has a shape worth preserving: the domain tells
+// an operator where the reset mail went). The phone/username branch is the
+// shared phonehmac.Mask rule, because the backfill CLI prints the same
+// reductions into tickets and two masking implementations would drift.
 func maskIdentifier(kind, value string) string {
 	if value == "" {
 		return ""
@@ -205,8 +212,5 @@ func maskIdentifier(kind, value string) string {
 		}
 		return local[:1] + "***" + value[at:]
 	}
-	if len(value) <= 4 {
-		return "***"
-	}
-	return value[:3] + "****" + value[len(value)-2:]
+	return phonehmac.Mask(value)
 }

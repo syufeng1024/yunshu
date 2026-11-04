@@ -117,11 +117,12 @@ write_env() {
   gw="$(pick_port "$GATEWAY_PORT_DEFAULT")"
   ctl="$(pick_port "$CONTROL_PORT_DEFAULT")"
 
-  local session kek metrics fp
+  local session kek metrics fp phone
   session="$(b64_32)"
   kek="$(b64_32)"
   metrics="$(hex_16)"
   fp="$(b64_32)"
+  phone="$(b64_32)"
 
   # sed 的替换串里 base64 可能带 / 与 &，用 | 作分隔符并对 & 转义。
   esc() { printf '%s' "$1" | sed -e 's/[&|]/\\&/g'; }
@@ -132,6 +133,7 @@ write_env() {
       -e "s|^SESSION_SECRET=.*|SESSION_SECRET=$(esc "$session")|" \
       -e "s|^CHANNEL_KEY_KEK=.*|CHANNEL_KEY_KEK=$(esc "$kek")|" \
       -e "s|^FP_HMAC_KEY=.*|FP_HMAC_KEY=$(esc "$fp")|" \
+      -e "s|^PHONE_HMAC_KEY=.*|PHONE_HMAC_KEY=$(esc "$phone")|" \
       -e "s|^GATEWAY_METRICS_TOKEN=.*|GATEWAY_METRICS_TOKEN=${metrics}|" \
       "$ENV_EXAMPLE" > "$STACK_ENV"
 
@@ -139,7 +141,8 @@ write_env() {
   echo "  站点      http://localhost:${web}"
   echo "  网关 API  http://localhost:${gw}"
   echo "  控制面    http://localhost:${ctl}"
-  echo "  会话密钥、KEK 与 FP_HMAC_KEY 已随机生成；MYSQL_ROOT_PASSWORD 仍是模板里的 dev 值，上线前必须换"
+  echo "  会话密钥、KEK、FP_HMAC_KEY 与 PHONE_HMAC_KEY 已随机生成；MYSQL_ROOT_PASSWORD 仍是模板里的 dev 值，上线前必须换"
+  echo "  有存量手机号账号时，上线后先跑 backfill-phone-hmac detect（见 docs/ops-runbook.md）"
 }
 
 smoke() {

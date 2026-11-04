@@ -18,10 +18,14 @@ import (
 var (
 	// ErrAmbiguousAccount means the identifier matches more than one live row.
 	//
-	// This is reachable only for a phone number: t_user.phone has no unique key
-	// (phone_hmac does, but nothing writes it — see the 06 design §C1). Logging
-	// in takes the first row silently; resetting a password must not, because
-	// that would reset an account the caller may not own.
+	// This is reachable only for a phone number, and only while the historical
+	// rows are still being backfilled: t_user.phone has no unique key (0011 moved
+	// uniqueness to uk_user_phone_hmac), and every write path now stores
+	// phone_hmac, so once `backfill-phone-hmac verify` reports zero differences a
+	// second live row with the same number is impossible.
+	//
+	// Logging in takes the first row silently; resetting a password must not,
+	// because that would reset an account the caller may not own.
 	ErrAmbiguousAccount = errors.New("auth: identifier matches more than one account")
 	// ErrAccountUnavailable means the account exists but must not be recovered:
 	// status is DISABLED or FROZEN_OVERDRAFT. Freezing is an access recall, and

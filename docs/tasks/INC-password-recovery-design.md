@@ -48,6 +48,8 @@
 
 ### C1 手机号唯一性在 `phone_hmac`，但 `phone_hmac` **没有写入方** —— 不可按 hmac 查账号
 
+> **本节结论已被后续增量关闭（2026-11-04）**：`INC-phone-hmac-design.md` 已补上 `phone_hmac` 的写入方（`insertUserRow` / 运营建号 / bootstrap / `seedctl` / 夹具）、存量回填命令 `cmd/backfill-phone-hmac`，并把 `fund/trial.go` 的等值判重切到 hmac。登录与找回**仍然按明文 `phone` 查**（这是 A6/A7 的刻意选择，不是欠账）。本节保留作历史记录。
+
 任务说明要求「按手机号查账号必须用 hmac，不能查 `phone`」。实测：
 
 - `internal/platform/migrate/sql/mysql/0011_user_phone_hmac.sql` 建了 `phone_hmac char(64)` + `uk_user_phone_hmac`，并 `DROP` 了 `uk_user_phone`。
@@ -804,7 +806,7 @@ graph LR
 | R2 | **绑定邮箱成为账号接管主通道**：邮箱一旦被接管（邮箱服务商侧），攻击者可自助重置密码并在审计里留下「合法」痕迹 | 账号彻底失守 | 本轮缓解：绑定必须验码；**已绑定不可自助更换**（P1-2 才做，且需要旧邮箱通知 + 冷静期）；重置成功给该邮箱发通知（P1-3，本轮不做 → 记入本节）；审计留 `via` 与 `email_changed`。残余风险：邮箱被接管本身无解，属行业基线，靠邮件服务商的二次验证 |
 | R3 | **验证码跨用途重放**（具体攻击链）：若 `bind` 与 `reset` 共用一个键，攻击者可给自己的账号绑目标邮箱 → 拿到该地址的 `bind` 码 → 绑定成功后账号已有该邮箱 → 用未消费的同一个码去 `reset` | 直通式账号接管 | `purpose` 进 key（`vc:code:<purpose>:<hash>`）+ T2 的 4×4 矩阵测试逐格断言失败。这条链是本轮**最该写测试**的地方 |
 | R4 | **`/password/reset` 成为新的账号枚举面** | 存量用户名/邮箱清单可被批量确认 | 发码静默 200（字节级相同）+ 验码统一 401；「收不到信」的残余泄露**接受**（要消除它就得向未注册地址发信，代价远大于收益 — PRD §5.1）；评审红线见 §11-2 |
-| R5 | **手机号明文列无唯一键**（`phone_hmac` 无写入方，C1） | 理论上存在两行同号：登录取第一行，重置可能「重置错账号」或让第二个账号无法重置 | 本轮：新路径用 `findUserUnique`（`LIMIT 2`，歧义→按「不可用账号」静默处理）。后续：单独增量补 `phone_hmac` 写入（`register`/`cancel`）+ 存量回填 + 全链路切 hmac，然后删掉 `findUserUnique` 的特例 |
+| R5 | **手机号明文列无唯一键**（`phone_hmac` 无写入方，C1） | 理论上存在两行同号：登录取第一行，重置可能「重置错账号」或让第二个账号无法重置 | 本轮：新路径用 `findUserUnique`（`LIMIT 2`，歧义→按「不可用账号」静默处理）。**已由 `INC-phone-hmac-design.md` 关闭（2026-11-04）**：写入方补齐 + 存量回填 + `fund/trial.go` 切 hmac。`findUserUnique` 的 `LIMIT 2` 作为回填期兜底保留，回填清零且 `verify` 0 差异后才可删（P1） |
 | R6 | **已登录用户重置后的会话语义**：重置会吊销当前会话，若前端不跳登录，用户会看到「已重置成功」但界面仍是登录态，下一个请求才 401 | 观感像「重置把账号弄坏了」 | 重置页 `done` 态必须 `navigate('/login?identifier=…')` 并清本地登录态（`useAuthStore` 复位为 anonymous）；T04 测试断言跳转发生 |
 | R7 | **`AUTH_VERIFICATION_MODE=off` 的部署里放行重置 = 任何人可重置任何账号** | 灾难性越权 | fail closed：重置与绑定在 `off` 模式下一律 400（A9），T02 有断言。`docs/deploy` 里同时提示：`off` 模式下没有任何找回路径，只能靠 A 方案 |
 | R8 | **PII 与密码进日志**：短信驱动把 `TemplateParam`（含码）或 `PhoneNumbers` 打进错误串 | 日志即凭据 | 错误信息只带供应商 `Code`/`Message` 与 HTTP 状态；号码一律 `maskIdentifier`；`internal/notify/sms` 的 `String()`/`GoString()` 与 `mail.SMTP` 同样处理（`%v`/`%#v` 都不出密钥） |

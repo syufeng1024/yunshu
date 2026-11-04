@@ -21,6 +21,7 @@ import (
 	"yunshu.dev/core/internal/config"
 	"yunshu.dev/core/internal/control"
 	"yunshu.dev/core/internal/control/audit"
+	"yunshu.dev/core/internal/control/auth"
 	"yunshu.dev/core/internal/control/bootstrap"
 	"yunshu.dev/core/internal/control/mw"
 	"yunshu.dev/core/internal/cryptobox"
@@ -303,6 +304,18 @@ func main() {
 			"set AUTH_VERIFICATION_MODE=smtp before production", obslog.Fields{Stage: "startup"})
 	}
 
+	// Phone-number HMAC key (t_user.phone_hmac). Independent of FP_HMAC_KEY by
+	// design, and validated with the same "reuse = misconfigured" rule as
+	// INTERNAL_CALL_SECRET: one leaked value must not weaken two boundaries.
+	//
+	// A missing key is announced, never fatal. Exiting here would take e-mail
+	// registration, every login and every password recovery down together with
+	// a feature none of them use; the phone *write* paths fail closed instead
+	// (503 config_unavailable) and the read paths do not need the key at all.
+	// ENV=prod is ERROR because a production deploy without it cannot accept a
+	// phone sign-up at all; everywhere else a WARN is enough to notice.
+	phoneHMAC := phoneHMACKey(logger, cfg, rootCtx)
+
 	deps := control.Deps{
 		DB:       mainDB,
 		LogDB:    logDB,
@@ -321,6 +334,7 @@ func main() {
 		},
 		PaySecrets:     paySecrets,
 		FingerprintKey: fpHMACKey(logger, rootCtx),
+		PhoneHMACKey:   phoneHMAC,
 		Metrics:        rec,
 
 		GatewayInternalURL: internalURL,
@@ -449,6 +463,54 @@ func reusesProcessSecret(secret string, others ...string) bool {
 		}
 	}
 	return false
+}
+
+// phoneHMACKey reads PHONE_HMAC_KEY (accepting the YUNSHU_ prefix as a
+// fallback, like fpHMACKey) and returns "" for every unusable value.
+//
+// "Unusable" is three cases, all of them announced and none of them fatal:
+//
+//	absent            nothing to hash with
+//	shorter than 32B  a typed word, not generated key material
+//	reused            equal to SESSION_SECRET, either KEK, FP_HMAC_KEY or
+//	                  EXPORT_HMAC_KEY — one leak would then weaken two
+//	                  boundaries, and the phone key is the one that reverses
+//	                  to PII, so it must be the strictest of the set
+//
+// Empty is a shape the service understands (503 on the phone write paths), so
+// there is no "hash with an empty secret" fallback anywhere downstream.
+func phoneHMACKey(logger *obslog.Logger, cfg *env.Config, ctx context.Context) string {
+	key := strings.TrimSpace(os.Getenv(config.EnvPhoneHMACKey))
+	if key == "" {
+		key = strings.TrimSpace(os.Getenv("YUNSHU_" + config.EnvPhoneHMACKey))
+	}
+	announce := func(msg string) {
+		// One call site for the severity rule: a production deployment that
+		// cannot accept a phone sign-up is an incident waiting to be reported,
+		// while a laptop without the variable is just a laptop.
+		if strings.EqualFold(cfg.Env, "prod") {
+			logger.Error(ctx, msg, obslog.Fields{Stage: "startup", Status: 1})
+			return
+		}
+		logger.Warn(ctx, msg, obslog.Fields{Stage: "startup"})
+	}
+	switch {
+	case key == "":
+		announce(config.EnvPhoneHMACKey + " is not set: phone registration and operator " +
+			"user creation will answer 503 config_unavailable; login and recovery are unaffected")
+		return ""
+	case len(key) < auth.PhoneHMACMinKeyLen:
+		announce(config.EnvPhoneHMACKey + " is shorter than 32 bytes: treated as unset; " +
+			"phone registration and operator user creation will answer 503 config_unavailable")
+		return ""
+	case reusesProcessSecret(key, cfg.SessionSecret,
+		os.Getenv(cryptobox.EnvKEK), os.Getenv(config.EnvLogBodyKEK),
+		os.Getenv("FP_HMAC_KEY"), os.Getenv("EXPORT_HMAC_KEY")):
+		announce(config.EnvPhoneHMACKey + " must not reuse SESSION_SECRET / CHANNEL_KEY_KEK / " +
+			"LOG_BODY_KEK / FP_HMAC_KEY / EXPORT_HMAC_KEY; treated as unset, phone writes will answer 503")
+		return ""
+	}
+	return key
 }
 
 // payCallbackSecrets reads the per-channel callback signing secrets. An unset

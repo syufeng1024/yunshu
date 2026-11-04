@@ -15,6 +15,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"yunshu.dev/core/internal/apierr"
+	"yunshu.dev/core/internal/config"
 	"yunshu.dev/core/internal/control/audit"
 	"yunshu.dev/core/internal/control/mw"
 	"yunshu.dev/core/internal/jsonx"
@@ -73,6 +74,35 @@ func (s *Service) Register(w http.ResponseWriter, r *http.Request) {
 			WithHint("用户名仅用于运营账号，请使用邮箱或手机号"))
 		return
 	}
+	// The phone HMAC is computed here, and the ordering is a hard constraint:
+	// after the identifier is final and BEFORE consumeVerificationCode. A
+	// missing PHONE_HMAC_KEY is a server configuration fault, so it must be
+	// refused before the one-shot code is burned — otherwise the user waits out
+	// the 60s resend window for nothing and the log says only "invalid code".
+	//
+	// Only the phone branch needs the key: answering 503 for an e-mail
+	// registration because a phone-only secret is missing would take the whole
+	// sign-up form down for a feature it never touches.
+	//
+	// WARN, not ERROR: this line runs per request, and the key is read once at
+	// startup — where its absence is already reported at ERROR in production. A
+	// per-request ERROR here would also carry status=500 (see handler.go
+	// errorLog) and turn a known configuration state into 5xx noise on every
+	// dashboard, which is exactly the failure mode this project treats as a
+	// defect.
+	phoneMAC := ""
+	if ident.Kind == KindPhone {
+		mac, macErr := PhoneHMAC(s.PhoneHMACKey, ident.Value)
+		if macErr != nil {
+			s.warn(r.Context(),
+				"register_phone_hmac_unavailable env="+config.EnvPhoneHMACKey+
+					" status=503 config_unavailable")
+			mw.WriteError(w, r, apierr.New(apierr.CodeConfigUnavailable).
+				WithHint("手机号注册暂不可用，请使用邮箱注册"))
+			return
+		}
+		phoneMAC = mac
+	}
 	code := strings.TrimSpace(req.Code)
 	if s.verificationRequired() {
 		if code == "" {
@@ -115,7 +145,7 @@ func (s *Service) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	uid, apiErr := s.insertUser(r.Context(), r, ident, nickname, req.AgreementVersion, string(hash))
+	uid, apiErr := s.insertUser(r.Context(), r, ident, phoneMAC, nickname, req.AgreementVersion, string(hash))
 	if apiErr != nil {
 		mw.WriteError(w, r, apiErr)
 		return
@@ -146,7 +176,10 @@ func (i Identifier) valueFor(kind string) string {
 // insertUser writes t_user, the empty t_credit_account and the audit row in one
 // transaction. The account starts at zero: the trial grant is an explicit user
 // action in the second segment, never an automatic registration side effect.
-func (s *Service) insertUser(ctx context.Context, r *http.Request, ident Identifier, nickname, agreement string, passwordHash string) (int64, *apierr.APIError) {
+//
+// phoneMAC is non-empty exactly when ident is a phone identifier; insertUserRow
+// enforces that pairing.
+func (s *Service) insertUser(ctx context.Context, r *http.Request, ident Identifier, phoneMAC, nickname, agreement string, passwordHash string) (int64, *apierr.APIError) {
 	now := s.now().Now().UTC()
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -155,11 +188,22 @@ func (s *Service) insertUser(ctx context.Context, r *http.Request, ident Identif
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after commit
 
-	uid, err := insertUserRow(ctx, tx, ident, nickname, agreement, passwordHash, RolePersonal, now)
+	uid, err := insertUserRow(ctx, tx, ident, phoneMAC, nickname, agreement, passwordHash, RolePersonal, now)
 	if err != nil {
 		if isDuplicate(err) {
 			// Erratum E-21 added account_exists (409): a duplicate registration
 			// is a state conflict, not a malformed body.
+			//
+			// WARN, and named by unique key. Two reasons:
+			//   - 409 is a normal client state (someone double-taps register, or
+			//     the number is already theirs), so it must not be an ERROR: the
+			//     in-house errorLog stamps status=500 on every call, which turns
+			//     each of these into a phantom 5xx on the dashboard.
+			//   - the index name is the only safe discriminator. The driver's
+			//     message also carries the duplicate *value*, and for
+			//     uk_user_phone_hmac that value is the hmac — a pseudonymous
+			//     identifier that has no business in a log line.
+			s.warn(ctx, duplicateLogName(err))
 			return 0, apierr.New(apierr.CodeAccountExists)
 		}
 		s.errorLog(ctx, "register_insert_user_failed: "+err.Error())
@@ -216,29 +260,50 @@ const RolePersonal = "PERSONAL"
 const RoleSuperAdmin = "SUPER_ADMIN"
 
 // InsertUserRowTx inserts one t_user row for the caller's transaction: the same
-// fourteen columns, the same user_no allocator and the same duplicate handling
+// fifteen columns, the same user_no allocator and the same duplicate handling
 // as public registration. Exported for internal/control/ops, whose
 // POST /api/admin/users provisions operator accounts; a second INSERT written
 // there would silently stop matching this one (a new NOT NULL column, a new
 // unique key) the first time registration changes.
 //
 // The identifier's Kind picks which of the three login columns gets the value
-// (email / phone / username); the other two stay NULL. The signature does not
-// change when a kind is added, so the two existing callers need no edit.
+// (email / phone / username); the other two stay NULL.
+//
+// phoneMAC is the phone HMAC (auth.PhoneHMAC over the identifier's canonical
+// value) and is required exactly when ident.Kind is KindPhone; pass "" for an
+// e-mail or username row. The parameter — rather than a hash computed inside —
+// is deliberate: it broke every call site at compile time when phone_hmac was
+// added, forcing each of them to state "this is a real hmac" or "this account
+// genuinely has no phone". A helper that computed it internally would have let
+// the bootstrap and the operator console keep writing NULL in silence.
 //
 // The caller owns the transaction, the credit-account row and the audit row; a
 // duplicate identifier comes back as the driver's 1062 error and must be
 // mapped to apierr.CodeAccountExists (IsDuplicate reports it).
-func InsertUserRowTx(ctx context.Context, tx *sql.Tx, ident Identifier,
+func InsertUserRowTx(ctx context.Context, tx *sql.Tx, ident Identifier, phoneMAC string,
 	nickname, agreement, passwordHash, role string, now time.Time) (int64, error) {
-	return insertUserRow(ctx, tx, ident, nickname, agreement, passwordHash, role, now)
+	return insertUserRow(ctx, tx, ident, phoneMAC, nickname, agreement, passwordHash, role, now)
 }
 
-func insertUserRow(ctx context.Context, tx *sql.Tx, ident Identifier, nickname, agreement, hash, role string, now time.Time) (int64, error) {
+func insertUserRow(ctx context.Context, tx *sql.Tx, ident Identifier, phoneMAC, nickname, agreement, hash, role string, now time.Time) (int64, error) {
+	// The self-check lives in the single INSERT funnel, not at each caller:
+	// a future sixth write path that forgets the hmac must fail here, loudly,
+	// instead of writing a NULL row that uk_user_phone_hmac cannot see. A NULL
+	// hmac means "this phone number is not claimed", so a phone row without one
+	// is a silent duplicate-phone hole.
+	if ident.Kind == KindPhone && phoneMAC == "" {
+		return 0, ErrPhoneHMACRequired
+	}
+	if ident.Kind != KindPhone {
+		// Only a phone row may occupy uk_user_phone_hmac. Keeping the argument
+		// honest here means a caller that passes a stray value for an e-mail
+		// account cannot make two unrelated accounts collide.
+		phoneMAC = ""
+	}
 	const q = `INSERT INTO t_user
-		(user_no, username, email, phone, password_hash, password_algo, password_updated_at,
+		(user_no, username, email, phone, phone_hmac, password_hash, password_algo, password_updated_at,
 		 nickname, role, status, agreement_version, agreed_at, created_at, updated_at)
-		VALUES (?,?,?,?,?,'bcrypt',?,?,?,'NORMAL',?,?,?,?)`
+		VALUES (?,?,?,?,?,?,'bcrypt',?,?,?,'NORMAL',?,?,?,?)`
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
 		userNo, err := newUserNo(now)
@@ -249,12 +314,13 @@ func insertUserRow(ctx context.Context, tx *sql.Tx, ident Identifier, nickname, 
 		// A username row therefore has email IS NULL AND phone IS NULL, which is
 		// what keeps it out of the "no recovery path" problem and out of
 		// uk_user_email / uk_user_phone_hmac.
-		var email, phone, username any
+		var email, phone, phoneHMAC, username any
 		switch ident.Kind {
 		case KindEmail:
 			email = ident.Value
 		case KindPhone:
 			phone = ident.Value
+			phoneHMAC = phoneMAC
 		case KindUsername:
 			username = ident.Value
 		}
@@ -263,7 +329,7 @@ func insertUserRow(ctx context.Context, tx *sql.Tx, ident Identifier, nickname, 
 			agreedAt = now
 		}
 		res, err := tx.ExecContext(ctx, q,
-			userNo, username, email, phone, hash, now, nickname, role, agreement, agreedAt, now, now)
+			userNo, username, email, phone, phoneHMAC, hash, now, nickname, role, agreement, agreedAt, now, now)
 		if err == nil {
 			return res.LastInsertId()
 		}
@@ -280,6 +346,26 @@ func insertUserRow(ctx context.Context, tx *sql.Tx, ident Identifier, nickname, 
 		}
 	}
 	return 0, lastErr
+}
+
+// duplicateLogName maps one 1062 to a stable, value-free log token.
+//
+// It reads the driver message only to pick which unique key fired; the message
+// itself (which contains the duplicated value) is never logged. register_dup_email
+// and register_dup_phone_hmac are the two the product cares about: they are the
+// same 409 to the client and two different stories to whoever reads the log.
+func duplicateLogName(err error) string {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "uk_user_phone_hmac"):
+		return "register_dup_phone_hmac"
+	case strings.Contains(msg, "uk_user_email"):
+		return "register_dup_email"
+	case strings.Contains(msg, "uk_user_username"):
+		return "register_dup_username"
+	default:
+		return "register_dup_identifier"
+	}
 }
 
 // newUserNo builds a 12-character user number: "U" + yyyymmdd + three random

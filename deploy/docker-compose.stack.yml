@@ -35,6 +35,12 @@ x-app-env: &app-env
   LOG_BODY_KEK: ${LOG_BODY_KEK:-}
   # 体验版设备指纹 HMAC 密钥；留空时 /api/console/trial/claim 返回 503。
   FP_HMAC_KEY: ${FP_HMAC_KEY:-}
+  # 手机号 HMAC 密钥（t_user.phone_hmac）。留空**不拒启**：手机号写入路径
+  # （手机号注册 / 运营建号）返回 503 config_unavailable，邮箱注册、登录、
+  # 找回不受影响；ENV=prod 启动日志打 ERROR，其它环境打 WARN。
+  # 必须显式列出：本锚点是后端 env 白名单，漏了不报错，只会让
+  # .env.stack 里的值静默失效、手机号注册全部 503。
+  PHONE_HMAC_KEY: ${PHONE_HMAC_KEY:-}
   # 用量 CSV 导出：目录在容器 /tmp 下，令牌 1 小时失效，不需持久卷。
   # EXPORT_HMAC_KEY 留空时导出接口 503 config_unavailable。
   EXPORT_DIR: ${EXPORT_DIR:-/tmp/yunshu-exports}

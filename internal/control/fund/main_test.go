@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"yunshu.dev/core/internal/control/audit"
+	"yunshu.dev/core/internal/control/auth"
 	"yunshu.dev/core/internal/control/ctltest"
 	"yunshu.dev/core/internal/control/mw"
 	"yunshu.dev/core/internal/jsonx"
@@ -455,12 +456,48 @@ func orderRefundableMicro(t *testing.T, orderID int64) int64 {
 	return v
 }
 
+// setUserPhone gives uid a phone number and the matching phone_hmac.
+//
+// The hmac is not optional: t_user.phone_hmac carries uk_user_phone_hmac, and
+// trial de-duplication compares hashes. A fixture that wrote only the plaintext
+// column would leave the row in the "phone but no hmac" state the production
+// code answers 500 for — so every trial test would exercise the fail-closed
+// branch instead of the one it names, and a green run would mean nothing.
 func setUserPhone(t *testing.T, uid int64, phone string) {
 	t.Helper()
+	mac, err := phoneHMACForTest(phone)
+	if err != nil {
+		t.Fatalf("phone hmac for %s: %v", phone, err)
+	}
 	if _, err := testDB.ExecContext(context.Background(),
-		`UPDATE t_user SET phone = ? WHERE id = ?`, phone, uid); err != nil {
+		`UPDATE t_user SET phone = ?, phone_hmac = ? WHERE id = ?`, phone, mac, uid); err != nil {
 		t.Fatalf("set phone: %v", err)
 	}
+}
+
+// setUserPhoneWithoutHMAC reproduces the transitional state the trial path must
+// fail closed on: a phone on the row, no hash. Only a manual UPDATE (or a
+// backfill that has not run yet) can produce it, which is exactly why the code
+// refuses rather than guessing.
+//
+// It is also the only way a fixture can give two accounts the same number once
+// uk_user_phone_hmac is in force — the unique key lives on the hash, not on the
+// plaintext column.
+func setUserPhoneWithoutHMAC(t *testing.T, uid int64, phone string) {
+	t.Helper()
+	if _, err := testDB.ExecContext(context.Background(),
+		`UPDATE t_user SET phone = ?, phone_hmac = NULL WHERE id = ?`, phone, uid); err != nil {
+		t.Fatalf("set phone without hmac: %v", err)
+	}
+}
+
+// testPhoneHMACKey is the fixture key. It is 32+ bytes so the production
+// length rule is satisfied by construction.
+const testPhoneHMACKey = "t13-phone-hmac-key-for-fixtures-32b"
+
+// phoneHMACForTest hashes with the same implementation production uses.
+func phoneHMACForTest(phone string) (string, error) {
+	return auth.PhoneHMAC(testPhoneHMACKey, phone)
 }
 
 func markVerified(t *testing.T, uid int64) {

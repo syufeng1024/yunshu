@@ -179,11 +179,31 @@ func createUser(ctx context.Context, conn *sql.DB, ident auth.Identifier, nickna
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after commit
 
-	var email, phone any
+	var email, phone, phoneHMAC any
 	if ident.Kind == auth.KindEmail {
 		email = ident.Value
 	} else {
 		phone = ident.Value
+		// The seeded account is a real row in a schema that carries
+		// uk_user_phone_hmac: a phone seed without the hash would occupy no
+		// uniqueness at all, so the next control-plane registration of the same
+		// number would create a second account. Refusing here (exit 1) beats a
+		// seed that behaves differently from production.
+		//
+		// The hmac input must be the canonical value, never the raw -phone
+		// string: NormalizeIdentifier already produced it, and the assertion
+		// below keeps that true if this function is ever handed a value from
+		// somewhere else.
+		canonical, ok := auth.CanonicalPhone(ident.Value)
+		if !ok || canonical != ident.Value {
+			return 0, fmt.Errorf("-phone %q 不是规范形态（期望 %q）", ident.Value, canonical)
+		}
+		key := strings.TrimSpace(os.Getenv(config.EnvPhoneHMACKey))
+		mac, macErr := auth.PhoneHMAC(key, canonical)
+		if macErr != nil {
+			return 0, fmt.Errorf("手机号种子需要 %s（≥32 字节）：%w", config.EnvPhoneHMACKey, macErr)
+		}
+		phoneHMAC = mac
 	}
 	var uid int64
 	for attempt := 0; attempt < 5; attempt++ {
@@ -193,10 +213,10 @@ func createUser(ctx context.Context, conn *sql.DB, ident auth.Identifier, nickna
 		}
 		res, err := tx.ExecContext(ctx, `
 			INSERT INTO t_user
-				(user_no, email, phone, password_hash, password_algo, password_updated_at,
+				(user_no, email, phone, phone_hmac, password_hash, password_algo, password_updated_at,
 				 nickname, role, status, created_at, updated_at)
-			VALUES (?,?,?,?,'bcrypt',?,?,'PERSONAL','NORMAL',?,?)`,
-			userNo, email, phone, string(hash), now, nickname, now, now)
+			VALUES (?,?,?,?,?,'bcrypt',?,?,'PERSONAL','NORMAL',?,?)`,
+			userNo, email, phone, phoneHMAC, string(hash), now, nickname, now, now)
 		if err == nil {
 			uid, err = res.LastInsertId()
 			if err != nil {

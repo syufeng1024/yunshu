@@ -158,3 +158,133 @@ func TestAuthCancelRevokesSession(t *testing.T) {
 	t.Logf("A13 revoke: status=%s source=%s; K20/K30 deleted; old sid -> %s; audit=%d",
 		status, source, apierr.CodeSessionExpired, audits)
 }
+
+// T11 (red line): cancellation changes the account's status and nothing about
+// its phone columns.
+//
+// phone_hmac staying is the whole design of migration 0011: it is the stable
+// de-duplication key the trial check compares, and it is what keeps the number
+// claimed by uk_user_phone_hmac (product decision D1: a cancelled account keeps
+// its number until an operator releases it on purpose). A future F-12 PII job
+// may null `phone`; touching `phone_hmac` would be a defect, and the assertion
+// below is what would catch it.
+func TestCancelKeepsPhoneAndHMAC(t *testing.T) {
+	svc, mgr, _ := newCancelService(t)
+	phone := uniqueRegisterPhone(t)
+	mac, err := PhoneHMAC(phoneFixtureKey, phone)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	uid := insertPhoneUser(t, phone, mac)
+	cleanupPhone(t, phone)
+
+	sess, _, err := mgr.Issue(context.Background(), uid)
+	if err != nil {
+		t.Fatalf("issue session: %v", err)
+	}
+	if rec := runCancel(svc, sess, ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("cancel status=%d body=%s, want 204", rec.Code, rec.Body.String())
+	}
+
+	var gotPhone, gotHMAC, status string
+	if err := testDB.QueryRowContext(context.Background(),
+		`SELECT COALESCE(phone, ''), COALESCE(phone_hmac, ''), status FROM t_user WHERE id = ?`,
+		uid).Scan(&gotPhone, &gotHMAC, &status); err != nil {
+		t.Fatalf("read user: %v", err)
+	}
+	if status != "DISABLED" {
+		t.Fatalf("status = %q, want DISABLED", status)
+	}
+	if gotPhone != phone {
+		t.Fatalf("phone after cancel = %q, want %q (cancellation must not clear it)", gotPhone, phone)
+	}
+	if gotHMAC != mac {
+		t.Fatalf("phone_hmac after cancel = %q, want %q (the de-duplication key must survive)", gotHMAC, mac)
+	}
+
+	// The number is still occupied: a second account cannot take it.
+	svc2, _, _ := newAuthService(t)
+	svc2.PhoneHMACKey = phoneFixtureKey
+	svc2.VerificationMode = VerificationOff
+	dup := callRegister(t, svc2, map[string]string{
+		"identifier": phone, "password": "Str0ng-Passw0rd!",
+	})
+	if dup.Code != http.StatusConflict {
+		t.Fatalf("re-registering a cancelled number status=%d body=%s, want 409 (D1: 注销即占号)",
+			dup.Code, dup.Body.String())
+	}
+}
+
+// T12: after a PII clearing pass sets phone = NULL, the hash is still there and
+// still blocks the number. This is the state the trial check must survive, and
+// the reason `phone` and `phone_hmac` have different lifetimes.
+func TestPhoneHMACSurvivesPhoneClearing(t *testing.T) {
+	phone := uniqueRegisterPhone(t)
+	mac, err := PhoneHMAC(phoneFixtureKey, phone)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	uid := insertPhoneUser(t, phone, mac)
+	cleanupPhone(t, phone)
+
+	// The F-12 shape: only phone is cleared.
+	if _, err := testDB.ExecContext(context.Background(),
+		`UPDATE t_user SET phone = NULL WHERE id = ?`, uid); err != nil {
+		t.Fatalf("clear phone: %v", err)
+	}
+	var gotHMAC string
+	if err := testDB.QueryRowContext(context.Background(),
+		`SELECT COALESCE(phone_hmac, '') FROM t_user WHERE id = ?`, uid).Scan(&gotHMAC); err != nil {
+		t.Fatalf("read hmac: %v", err)
+	}
+	if gotHMAC != mac {
+		t.Fatalf("phone_hmac = %q after clearing phone, want %q", gotHMAC, mac)
+	}
+	// The unique key is still occupied, so a new registration of that number is
+	// still refused — that is the intended, documented consequence of D1.
+	svc, _, _ := newAuthService(t)
+	svc.PhoneHMACKey = phoneFixtureKey
+	svc.VerificationMode = VerificationOff
+	dup := callRegister(t, svc, map[string]string{
+		"identifier": phone, "password": "Str0ng-Passw0rd!",
+	})
+	if dup.Code != http.StatusConflict {
+		t.Fatalf("registering a PII-cleared number status=%d body=%s, want 409",
+			dup.Code, dup.Body.String())
+	}
+}
+
+// The convergence point exists and does nothing yet: it must not clear either
+// phone column, and its whole purpose is to be the one place a future change
+// edits. Asserting the no-op keeps a well-meaning F-12 change from silently
+// clearing the de-duplication key.
+func TestCancelPhonePIIIsANoOpToday(t *testing.T) {
+	phone := uniqueRegisterPhone(t)
+	mac, err := PhoneHMAC(phoneFixtureKey, phone)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	uid := insertPhoneUser(t, phone, mac)
+	cleanupPhone(t, phone)
+
+	tx, err := testDB.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // read-only assertion
+	if err := cancelPhonePII(context.Background(), tx, uid, nowForTest()); err != nil {
+		t.Fatalf("cancelPhonePII: %v", err)
+	}
+	var gotPhone, gotHMAC string
+	if err := tx.QueryRowContext(context.Background(),
+		`SELECT COALESCE(phone, ''), COALESCE(phone_hmac, '') FROM t_user WHERE id = ?`,
+		uid).Scan(&gotPhone, &gotHMAC); err != nil {
+		t.Fatalf("read user: %v", err)
+	}
+	if gotPhone != phone || gotHMAC != mac {
+		t.Fatalf("cancelPhonePII changed the row: phone=%q hmac=%q, want %q/%q",
+			gotPhone, gotHMAC, phone, mac)
+	}
+}
+
+func nowForTest() time.Time { return time.Now().UTC() }

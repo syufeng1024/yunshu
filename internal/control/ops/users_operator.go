@@ -10,6 +10,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"yunshu.dev/core/internal/apierr"
+	"yunshu.dev/core/internal/config"
 	"yunshu.dev/core/internal/control/auth"
 	"yunshu.dev/core/internal/control/mw"
 )
@@ -124,6 +125,30 @@ func (s *Service) CreateOperatorUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A phone account must carry t_user.phone_hmac, which is where the unique
+	// key lives (t_user.phone has none since 0011). Resolve it before the bcrypt
+	// hash so a missing key costs the operator nothing, and answer 503 rather
+	// than writing a phone row the unique key cannot see — a NULL hmac means
+	// "this number is not claimed", so the next registration of the same number
+	// would silently create a second account.
+	phoneMAC := ""
+	if ident.Kind == auth.KindPhone {
+		mac, macErr := auth.PhoneHMAC(s.PhoneHMACKey, ident.Value)
+		if macErr != nil {
+			// WARN, not ERROR: logError stamps status=500 on the record, and a
+			// deliberate 503 config_unavailable would then read as a server
+			// fault on every dashboard. The key is validated once at startup
+			// (prod logs it at ERROR there), so this line is a repeat, not a
+			// new incident.
+			s.logWarn(r.Context(), "ops_create_operator_phone_hmac_unavailable env="+
+				config.EnvPhoneHMACKey+" status=503 config_unavailable")
+			mw.WriteError(w, r, apierr.New(apierr.CodeConfigUnavailable).
+				WithHint("手机号建号暂不可用，请使用邮箱"))
+			return
+		}
+		phoneMAC = mac
+	}
+
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), auth.BcryptCost)
 	if err != nil {
 		s.logError(r.Context(), "ops_create_operator_hash_failed: "+err.Error())
@@ -146,11 +171,18 @@ func (s *Service) CreateOperatorUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	uid, err := auth.InsertUserRowTx(ctx, tx, ident, nickname, "", string(hash), role, now)
+	uid, err := auth.InsertUserRowTx(ctx, tx, ident, phoneMAC, nickname, "", string(hash), role, now)
 	if err != nil {
 		if auth.IsDuplicate(err) {
 			// Same code registration answers: the identifier is taken, the
 			// body was well-formed. Erratum E-21 added account_exists for it.
+			//
+			// WARN (logError would stamp status=500 on a deliberate 409) and the
+			// index name only: "phone already used" and "e-mail already used"
+			// are the same response and two different operator actions, while
+			// the driver's "Duplicate entry '…'" value is the hmac and must not
+			// reach a log.
+			s.logWarn(ctx, "ops_create_operator_dup_identifier: "+duplicateKeyName(err))
 			mw.WriteError(w, r, apierr.New(apierr.CodeAccountExists))
 			return
 		}
@@ -448,5 +480,26 @@ func userRoleAuditView(v userView) map[string]any {
 	return map[string]any{
 		"role":   v.Role,
 		"status": v.Status,
+	}
+}
+
+// duplicateKeyName names the unique key that produced a 1062, for the log.
+//
+// The driver message is read only to pick the key; the message itself carries
+// the duplicated value (the hmac for uk_user_phone_hmac) and is never logged.
+// "phone already used" and "e-mail already used" are the same 409 to the
+// caller and two different operator actions, which is why the key is worth a
+// field of its own.
+func duplicateKeyName(err error) string {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "uk_user_phone_hmac"):
+		return "uk_user_phone_hmac"
+	case strings.Contains(msg, "uk_user_email"):
+		return "uk_user_email"
+	case strings.Contains(msg, "uk_user_username"):
+		return "uk_user_username"
+	default:
+		return "unknown_key"
 	}
 }

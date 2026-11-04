@@ -5,7 +5,8 @@ GO ?= go
 LOAD_ENV = set -e; set -a; if [ -f .env ]; then . ./.env; fi; set +a;
 
 .PHONY: build test vet lint up down migrate run-gw run-ctl run-jobs check \
-        stack-env stack-up stack-build stack-down stack-ps stack-logs stack-smoke
+        stack-env stack-up stack-build stack-down stack-ps stack-logs stack-smoke \
+        backfill-phone-hmac
 
 build:
 	$(GO) build ./...
@@ -29,6 +30,16 @@ down:
 
 migrate:
 	@$(LOAD_ENV) $(GO) run ./cmd/migrate up
+
+# 手机号 hmac 回填。默认只跑只读的 detect；写库必须显式给 ARGS：
+#   make backfill-phone-hmac                      # detect（只读，退出码 2/3 表示要人工裁决）
+#   make backfill-phone-hmac ARGS="apply"         # dry-run，不写库
+#   make backfill-phone-hmac ARGS="apply --commit"
+#   make backfill-phone-hmac ARGS="verify"
+# 需要 .env 里的 DB_DSN 与 PHONE_HMAC_KEY；四步次序见 docs/ops-runbook.md。
+ARGS ?= detect
+backfill-phone-hmac:
+	@$(LOAD_ENV) $(GO) run ./cmd/backfill-phone-hmac $(ARGS)
 
 run-gw:
 	@$(LOAD_ENV) $(GO) run ./cmd/gatewayd

@@ -287,7 +287,12 @@ func EnsureSuperAdmin(ctx context.Context, deps Deps, opts Options) (Result, err
 		}
 	}()
 
-	uid, err := auth.InsertUserRowTx(ctx, tx, ident, superAdminNickname, "", string(hash),
+	// "" is the phone hmac argument: the built-in administrator is identified by
+	// username only, so it has no phone and must not occupy uk_user_phone_hmac.
+	// Passing the empty string here is the explicit statement insertUserRow
+	// demands (it refuses a *phone* row without a hmac, and refuses to write one
+	// for any other kind).
+	uid, err := auth.InsertUserRowTx(ctx, tx, ident, "", superAdminNickname, "", string(hash),
 		auth.RoleSuperAdmin, now)
 	if err != nil {
 		if isUnknownColumn(err) {

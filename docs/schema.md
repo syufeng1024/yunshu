@@ -71,7 +71,7 @@
 
 | 表 | 迁移 | 分层 | 关键唯一键 |
 | :--- | :--- | :--- | :--- |
-| `t_user` | 0001 | 账号 | `uk_user_no`、`uk_user_email`、`uk_user_idno`；`0011` 起手机号唯一性迁到 `uk_user_phone_hmac`；`0027` 起登录用户名唯一性由 `uk_user_username` 承担（列可空，NULL 可重复；用户名可由本人在账户设置里设置或清空）；`0028` 起 `password_is_initial` 标记初始口令（只用于提醒） |
+| `t_user` | 0001 | 账号 | `uk_user_no`、`uk_user_email`、`uk_user_idno`；`0011` 起手机号唯一性迁到 `uk_user_phone_hmac`（**`phone_hmac` 由写路径维护**，见下节）；`0027` 起登录用户名唯一性由 `uk_user_username` 承担（列可空，NULL 可重复；用户名可由本人在账户设置里设置或清空）；`0028` 起 `password_is_initial` 标记初始口令（只用于提醒） |
 | `t_verify_record` | 0001 | 账号 | — |
 | `t_device_fingerprint` | 0001 | 账号 | `uk_fp_hash_user` |
 | `t_verification_code` | 0001 | 账号 | — |
@@ -164,5 +164,26 @@
 | 金额 | `bigint` + `_micro`；单价 `int unsigned` + `_micro_per_k`；唯一小数例外 `t_metric_daily.success_rate decimal(7,4)` |
 | 人民币分 | TDS 明确定义为 `*_fen int unsigned`（`t_plan.price_fen`、`t_recharge_order.pay_amount_fen`、`t_refund_order.refund_fen` 等），按 TDS 保留 |
 | 外键 | 全库不建；一致性由应用层事务保证 |
-| 软删 | 参与唯一索引的 `email` / `phone_hmac` / `key_hash` / `model_name` 删除时改写为 `#del#{id}#{unix_ms}`；`phone` 自 0011 起不再参与唯一索引 |
+| 软删 | 参与唯一索引的 `email` / `phone_hmac` / `key_hash` / `model_name` 删除时改写为 `#del#{id}{unix_ms}`；`phone` 自 0011 起不再参与唯一索引 |
 | 账本 | `t_ledger_entry` 只追加；三个唯一键 `PRIMARY KEY(id)`、`uk_le_idem`、`uk_le_entry_no` 均不含 `created_at` |
+
+## `t_user.phone` 与 `t_user.phone_hmac` 的语义（0011 + INC-phone-hmac）
+
+`phone` 是**明文展示列**，`phone_hmac` 是**唯一性与判重列**。两者用途不同，生命周期也不同：
+
+| 项 | `phone` | `phone_hmac` |
+| :--- | :--- | :--- |
+| 内容 | E.164 去 `+`（`8613800138000`） | `lowercase_hex(HMAC-SHA256(phone, PHONE_HMAC_KEY))`，64 字符 |
+| 谁写 | 注册 / 运营建号 /（未来）改号 | 与 `phone` **同一事务**由写路径计算：`auth.insertUserRow`（注册、运营建号、内置超管）、`cmd/seedctl`、回填命令 |
+| 唯一性 | **无**唯一键（0011 已 `DROP uk_user_phone`） | `uk_user_phone_hmac`（全表唯一，NULL 可重复） |
+| 读路径 | 登录、找回密码、绑定邮箱冲突、运营列表/详情**一律按明文 `phone` 查** | 只有体验版（`fund/trial.go`）的等值判重用它 |
+| 注销 | 保留（未来 F-12 的 PII 清空任务只许置 `NULL`） | **保留，永不因注销而清空** |
+| 软删 | 保留 | **改写为 `#del#{id}{unix_ms}`**，释放号段 |
+
+**注销 = 占号，软删 = 放号**。两者不可混：
+
+- 注销（`POST /api/v1/auth/cancel`）只改 `status/disable_source/disable_at/cancel_apply_at`，**不动任何 phone 列**。因此注销行的 `phone_hmac` 仍占着 `uk_user_phone_hmac`，同一手机号**不能再注册**（产品裁定 D1：注销即占号）。要复用号段走 `docs/ops-runbook.md` §10.4 的受控释放操作（SUPER_ADMIN 审批 + 审计行），不是注销的自动化副作用。
+- 软删（`deleted_at` 非空，今天只有夹具/人工会产生）必须把 `phone_hmac` 改写成 `#del#…`，否则幽灵行永久占用号段，该号码再也注册不了。
+- 明文与 hmac 可能漂移（人工改库、用错 key、半途中断）。SQL 算不了 HMAC，所以「列有值」不等于「值是对的」：唯一发现手段是 `backfill-phone-hmac verify`（重算比对，0 差异），已写进 `docs/go-live-checklist.md` 第 33 项。
+
+`PHONE_HMAC_KEY` 是**独立于 `FP_HMAC_KEY` 的密钥**（手机号可枚举，泄漏等价于泄漏明文；设备指纹不可反查）。缺失时的行为见 `docs/ops-runbook.md` §10.5。

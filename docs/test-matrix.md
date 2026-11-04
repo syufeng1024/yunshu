@@ -40,6 +40,34 @@
 | G-11 四维限流与账户日额度 | `TestGWT_G11_DailyQuotaIsAccountScoped` | `bash scripts/test-gwt.sh` |
 | G-12 对外价格一致性 | `TestGWT_G12_PriceConsistency` | `bash scripts/test-gwt.sh` |
 
+## 手机号唯一性（INC-phone-hmac，设计 §11 的 T1–T17）
+
+`t_user.phone_hmac` 的写入、回填与判重切换。每条都是「可 `go test` 断言」的条目；带 🔴 的是回归红线（改动前先看用例注释里为什么这么断言）。
+
+| 条目 | 用例名 | 运行方式 |
+| :--- | :--- | :--- |
+| T1 重复手机号检出（退出码 2，输出含掩码不含明文） | `TestDetectFindsDuplicatesAndMasks` | `go test ./internal/platform/phonehmac/` |
+| T2 异常分类（`EMPTY_PHONE`/`NON_CANONICAL`/`GHOST_HMAC` → 退出码 3） | `TestDetectFindsAnomalies` | `go test ./internal/platform/phonehmac/` |
+| T3/T4/T5 默认 dry-run、`--commit` 才写、逐行等于 `HMAC(phone)`、连跑第二次 0 行 | `TestApplyDryRunThenCommitThenIdempotent` | `go test ./internal/platform/phonehmac/` |
+| T6 中断后可续跑（`AND phone_hmac IS NULL` 闸门） | `TestApplyResumesAfterInterruption` | `go test ./internal/platform/phonehmac/` |
+| T7 重复未清时 `apply` 拒写（gate → 退出码 2） | `TestApplyStopsOnConflict` | `go test ./internal/platform/phonehmac/` |
+| T17 漂移检出（`STALE_HMAC`）+ 回填后 0 差异 | `TestVerifyReportsDrift` | `go test ./internal/platform/phonehmac/` |
+| 缺 key 拒绝回填（退出码 1 的前置） | `TestDetectRequiresKey` | `go test ./internal/platform/phonehmac/` |
+| T15 HMAC 形态（64 位小写 hex、openssl 已知向量） | `TestPhoneHMACShape` | `go test ./internal/control/auth/` |
+| T15 `CanonicalPhone` 与 `NormalizeIdentifier` 同源 | `TestCanonicalPhoneMatchesNormalizeIdentifier` | `go test ./internal/control/auth/` |
+| 🔴 T8 手机号注册写 hmac；同号再注册 → 409 `account_exists` 且只有 1 行 | `TestRegisterPhoneWritesHMACAndRejectsDuplicate` | `go test ./internal/control/auth/` |
+| 🔴 T10 缺 key：手机号注册 503 且**验证码未被消费** | `TestRegisterPhoneWithoutKeyAnswers503AndKeepsCode` | `go test ./internal/control/auth/` |
+| 🔴 T10 缺 key：邮箱注册 201、手机号登录 200 不受影响 | `TestMissingPhoneKeyLeavesEmailAndLoginWorking` | `go test ./internal/control/auth/` |
+| T16 `insertUserRow` 自检：手机号标识 + 空 hmac → `ErrPhoneHMACRequired` | `TestInsertUserRowRequiresPhoneHMAC` | `go test ./internal/control/auth/` |
+| 🔴 T11 注销保留 `phone`/`phone_hmac`；注销号不可再注册（D1 占号） | `TestCancelKeepsPhoneAndHMAC` | `go test ./internal/control/auth/` |
+| T12 置空 `phone` 后 hmac 仍在（仍是占号状态） | `TestPhoneHMACSurvivesPhoneClearing` | `go test ./internal/control/auth/` |
+| 注销 PII 收敛点今天是 no-op（`cancelPhonePII`） | `TestCancelPhonePIIIsANoOpToday` | `go test ./internal/control/auth/` |
+| 🔴 T13 判重走 `phone_hmac`（唯一键挡住同号第二行 + 源码不再比明文） | `TestTrialPhoneFactorUsesHMAC` | `go test ./internal/control/fund/` |
+| T13 跨注销判重（`trial_claimed_at` 与 hmac 都保留） | `TestTrialSurvivesCancel` | `go test ./internal/control/fund/` |
+| T14 有手机号无 hmac → 500 `internal_error`（fail closed，不发券） | `TestA7TrialAntiAbuse` | `go test ./internal/control/fund/` |
+
+> **T13 的形态变更**：设计里写的是「A、B 两行同 `phone_hmac`（模拟历史重复未清）→ 409」。`uk_user_phone_hmac` 生效后这个状态**不可构造**（唯一键禁止两行同值），所以用例改成断言三件事：唯一键确实挡住第二行（1062）、`trial.go` 不再比对明文 `u.phone`、无 hmac 时 fail closed。同号第二行的拦截由此前移到**注册**（T8 的 409），不变量是同一个。
+
 ## Playwright e2e（浏览器层）
 
 | 验收条目 | spec 文件 | 运行方式 |

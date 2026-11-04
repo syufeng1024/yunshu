@@ -32,6 +32,7 @@ import (
 	"yunshu.dev/core/internal/boot"
 	"yunshu.dev/core/internal/config"
 	"yunshu.dev/core/internal/control"
+	"yunshu.dev/core/internal/control/auth"
 	"yunshu.dev/core/internal/control/ctltest"
 	"yunshu.dev/core/internal/control/mw"
 	"yunshu.dev/core/internal/jsonx"
@@ -61,6 +62,11 @@ var (
 const (
 	paySecret   = "t21-pay-secret"
 	fingerprint = "t21-fingerprint-key"
+	// phoneHMACKey is PHONE_HMAC_KEY for this binary. Registration and operator
+	// provisioning hash the phone number with it, so it must be ≥32 bytes or
+	// those paths answer 503 config_unavailable (which is asserted elsewhere, in
+	// internal/control/auth).
+	phoneHMACKey = "t21-phone-hmac-key-for-acceptance-32b"
 )
 
 func TestMain(m *testing.M) {
@@ -75,6 +81,10 @@ func TestMain(m *testing.M) {
 	// channel-write assertions can decode the envelope if they need to.
 	_ = os.Setenv("CHANNEL_KEY_KEK", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
 	_ = os.Setenv("FP_HMAC_KEY", fingerprint)
+	// PHONE_HMAC_KEY feeds t_user.phone_hmac, which carries uk_user_phone_hmac.
+	// The fixture below writes the hash itself, so this must be the same value
+	// the assertions hash with (phoneHMACForTest).
+	_ = os.Setenv("PHONE_HMAC_KEY", phoneHMACKey)
 
 	// Serialise this binary against internal/control/fund: both drive the
 	// plan-grant path (G-09 claims a trial, fund's trial/confirm tests do the
@@ -160,6 +170,11 @@ func server(t *testing.T) (*control.Server, *http.ServeMux) {
 			},
 			PaySecrets:     map[string]string{"WECHAT": paySecret, "ALIPAY": paySecret},
 			FingerprintKey: fingerprint,
+			// Same value as the PHONE_HMAC_KEY set in TestMain: registration
+			// hashes the phone with it and the fixture hashes with it too, so a
+			// test that registers a number the fixture also wrote collides on
+			// uk_user_phone_hmac the way production would.
+			PhoneHMACKey: phoneHMACKey,
 		})
 		if err != nil {
 			serverErr = err
@@ -325,8 +340,18 @@ func newUser(t *testing.T, o userOpts) int64 {
 			verified = now
 		}
 		var phone any
+		var phoneMAC any
 		if o.phone != "" {
 			phone = o.phone
+			// t_user.phone_hmac carries uk_user_phone_hmac and is what the trial
+			// de-duplication compares, so a fixture that wrote only the plaintext
+			// column would produce rows the production code treats as "phone but
+			// no hmac" (trial claim answers 500).
+			mac, macErr := auth.PhoneHMAC(phoneHMACKey, o.phone)
+			if macErr != nil {
+				t.Fatalf("phone hmac for fixture: %v", macErr)
+			}
+			phoneMAC = mac
 		}
 		var trial any
 		if o.trialClaim != nil {
@@ -334,13 +359,14 @@ func newUser(t *testing.T, o userOpts) int64 {
 		}
 		res, err := testDB.ExecContext(context.Background(), `
 			INSERT INTO t_user
-				(user_no, email, phone, password_hash, password_algo, password_updated_at,
+				(user_no, email, phone, phone_hmac, password_hash, password_algo, password_updated_at,
 				 nickname, role, status, plan_id, verified_at, trial_claimed_at,
 				 overdraft_limit_micro, created_at, updated_at)
-			VALUES (?,?,?,'not-a-real-hash','bcrypt',?,?,?, 'NORMAL', ?,?,?,?,?,?)`,
-			no, email, phone, now, "t21", o.role, plan, verified, trial, overdraft, now, now)
+			VALUES (?,?,?,?,'not-a-real-hash','bcrypt',?,?,?, 'NORMAL', ?,?,?,?,?,?)`,
+			no, email, phone, phoneMAC, now, "t21", o.role, plan, verified, trial, overdraft, now, now)
 		if err != nil {
-			if strings.Contains(err.Error(), "uk_user_no") || strings.Contains(err.Error(), "uk_user_email") {
+			if strings.Contains(err.Error(), "uk_user_no") || strings.Contains(err.Error(), "uk_user_email") ||
+				strings.Contains(err.Error(), "uk_user_phone_hmac") {
 				continue
 			}
 			t.Fatalf("insert user: %v", err)

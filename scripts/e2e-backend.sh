@@ -47,6 +47,7 @@ docker run -d --name yunshu-e2e-controld \
   -e CONTROL_HTTP_ADDR=":8081" \
   -e CHANNEL_KEY_KEK="${KEK}" \
   -e FP_HMAC_KEY="e2e-only-fp-hmac-key" \
+  -e PHONE_HMAC_KEY="e2e-only-phone-hmac-key-change-before-use" \
   -e EXPORT_HMAC_KEY="e2e-only-export-hmac-key" \
   "${GO_IMG}" sh -c "go run ./cmd/controld"
 

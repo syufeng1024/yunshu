@@ -85,6 +85,12 @@ type Service struct {
 	// t_config_item would be readable by every process that loads config.
 	// An empty key makes the trial-claim endpoint answer 503 rather than hash
 	// device identifiers with an empty secret.
+	//
+	// The *phone* half of the anti-abuse check needs no key and must not grow
+	// one: ClaimTrial compares the phone_hmac values already stored in t_user
+	// (written at registration with PHONE_HMAC_KEY), it never hashes a phone
+	// number itself. Adding a key dependency here would make the trial endpoint
+	// start answering 503 for a reason that has nothing to do with it.
 	FingerprintKey string
 
 	// IdemWindow is idem.duplicate_window_seconds resolved lazily; zero means

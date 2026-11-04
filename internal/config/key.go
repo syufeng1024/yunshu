@@ -85,6 +85,23 @@ const EnvLogBodyKEK = "LOG_BODY_KEK"
 // value keeps the gateway route unregistered and makes controld answer 503.
 const EnvInternalCallSecret = "INTERNAL_CALL_SECRET"
 
+// EnvPhoneHMACKey is the key HMAC-SHA256'd with a canonicalised phone number to
+// produce t_user.phone_hmac. Like the other secrets here it is an environment
+// variable and never a configuration Key: a secret in t_config_item is readable
+// by every process that loads configuration, and the 45 frozen keys carry none.
+//
+// It must NOT reuse FP_HMAC_KEY (device fingerprints). A phone number is an
+// 11-digit, ~10^9 space: an attacker holding both the database and the key can
+// enumerate every stored number back to plaintext in minutes, which makes this
+// key equivalent to the PII it protects. The fingerprint input space is
+// client-chosen and high-entropy, so a leak there cannot be reversed the same
+// way — different classification, different key, different lifecycle.
+//
+// Missing or shorter than 32 bytes: the process still starts, phone *writes*
+// answer 503 config_unavailable, and login/recovery (which read the plaintext
+// phone column) are unaffected.
+const EnvPhoneHMACKey = "PHONE_HMAC_KEY"
+
 // EnvGatewayInternalURL is gatewayd's in-network base URL as seen from
 // controld (compose: http://gatewayd:8080). Empty disables the relay with 503.
 const EnvGatewayInternalURL = "GATEWAY_INTERNAL_URL"

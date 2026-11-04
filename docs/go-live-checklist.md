@@ -1,4 +1,4 @@
-# 上线前检查单（32 项，T22 交付物 16）
+# 上线前检查单（32 项 + 手机号唯一性 3 项，T22 交付物 16）
 
 > **本文件是什么**：发版当天逐项打勾的**操作清单**。每项都给出可执行命令或可观察点，以及「不通过怎么办」。
 > **本文件不是什么**：不是 Go/No-Go 判定依据。八条门槛的判定与证据在 `docs/tasks/delivery/go-live.md`（那张表回答「能不能上」，这张表回答「这一次按步骤做了没有」）。两者互不抄写：判定引用用例与演练报告，清单只给命令与勾。
@@ -19,6 +19,7 @@
 | 4 | 内容安全外部适配器的数据处理协议（RB-3） | 若启用 `GW_POLICY_ENDPOINT`：确认供应商数据处理协议已签、隐私政策已写明「请求文本会发往该供应商」；未启用则**跳过本项**（关键词库仍生效） | 协议未签则**不许启用**该适配器：`GW_POLICY_ENDPOINT` 留空，仅用关键词库 |
 | 5 | 策略适配器与上游凭据齐全（RB-4 / RB-5） | `docker run --rm --env-file deploy/.env.stack <镜像> /bin/sh -c 'env \| grep -cE "^(CHANNEL_KEY_KEK|DB_DSN|REDIS_ADDR)="'` → 期望 `3`；`grep -c "CHANNEL_KEY_KEK" <(ps -eo args)` → 期望 `0`（凭据不进 argv） | 缺一项就让容器起不来或加密失败：补齐 env 后重启；argv 命中说明启动脚本把密钥写进了命令行，改为只读 env |
 | 6 | 配置键与种子一致 | `go run ./cmd/controld -h >/dev/null`（确认二进制可执行）后，`SELECT COUNT(*) FROM t_config_item WHERE enabled=1` 与 `docs/config-keys.md` 的键数对得上；`SELECT cfg_key FROM t_config_item WHERE cfg_namespace='unassigned'` 必须为空 | 键数不符：先 `diff` 键表与 `0018_seed_config.sql`，按 E-07 的 45 键口径补齐；命名空间为空说明有键写错前缀（E-08） |
+| 6b | **`PHONE_HMAC_KEY` 已注入且与其它密钥不同值** | ① 容器内 `env \| grep -c '^PHONE_HMAC_KEY='` → 期望 `1`，且值长度 `≥ 32`（`awk -F= '/^PHONE_HMAC_KEY=/{print length($2)}'`）；② `ENV=prod` 启动日志**没有** `PHONE_HMAC_KEY is not set` / `is shorter than 32 bytes` / `must not reuse` 三条 ERROR（**进程本身照常启动、不拒启**：缺 key 只让手机号写入路径返回 503 `config_unavailable`，邮箱注册与全部登录/找回不受影响；非 prod 环境这三条是 WARN，同样出现在启动日志里）；③ 与 `FP_HMAC_KEY` 不同值（手机号可枚举，泄漏等价泄漏明文，见 `docs/schema.md` 的 phone/phone_hmac 语义） | 缺或过短时手机号注册与运营建号会 503 `config_unavailable`（邮箱路径不受影响）：注入环境变量后**重启 controld** 即修，无需重新发布。唯一「缺 key 直接失败」的入口是 `backfill-phone-hmac`（退出码 1）。与其它密钥同值必须换一个新的：复用按「未配置」处理 |
 
 ## B 迁移与数据（7–12）
 
@@ -30,6 +31,8 @@
 | 10 | 行尾没有被工具批量改写（RB-6） | `bash scripts/check-eol.sh` → 退出 0 | 说明 `.gitattributes` 被改或某工具整文件换行：恢复文件后再提交，不要「顺手格式化」 |
 | 11 | 迁移只前滚 | `git diff --name-only "$(git describe --tags --abbrev=0)..HEAD" \| grep 'migrate/sql/mysql'` 只能出现**新增**（`00NN_*.sql` + `.down.sql`），不得出现对既有迁移的修改 | 出现修改即违反 PRD §9.10「只前滚」：改为新增迁移，旧文件恢复原字节 |
 | 12 | 备份可用（发版前最后一份） | `bash scripts/backup.sh` → 退出 0，manifest 的 `schema_version` 与第 7 项一致、`sha256` 与 dump 匹配 | 备份失败**不许发版**：先修备份链路（磁盘、权限、binlog 位点），再走第 7 项 |
+| 12b | **手机号回填 `detect` 必须 0 阻塞（退出码 0）** | `make backfill-phone-hmac`（只读）→ 退出码 **0**；出现 `DUP` 组（退出码 2）或异常行（退出码 3）即**停发**，按 `docs/ops-runbook.md` §10.3 逐组裁决/逐条处置后重跑 | 有重复时禁止直接 `apply`：唯一键已存在，带重复执行只能在半个批次成功、半个批次 1062 的地方烂尾。清完必须重新 `detect` 到 0 |
+| 12c | **回填 `verify` 全绿（0 差异）** | `make backfill-phone-hmac ARGS="verify"` → `结论：0 差异`、退出码 **0**；`SELECT COUNT(*) FROM t_user WHERE phone IS NOT NULL AND phone_hmac IS NULL` → **0** | 有 `PHONE_WITHOUT_HMAC`/`STALE_HMAC`：说明回填未覆盖或值与当前 key 不一致，按 §10.3 修复后重跑。**不允许**「先上再补」——过渡期只有新行有唯一性，必须在发布说明里写明截止日 |
 
 ## C 门禁与测试（13–18）
 

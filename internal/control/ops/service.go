@@ -65,6 +65,14 @@ type Service struct {
 	// Nil makes the endpoint answer 503 instead of claiming a write that no
 	// node will see.
 	ConfigPublisher ConfigPublisher
+
+	// PhoneHMACKey is PHONE_HMAC_KEY from the process environment. Only
+	// POST /api/admin/users uses it: an operator-provisioned account with a
+	// phone identifier must write t_user.phone_hmac, because that column — not
+	// t_user.phone — carries uk_user_phone_hmac. Empty means the key is absent
+	// or too short: creating a phone account answers 503 config_unavailable,
+	// creating an e-mail account is unaffected.
+	PhoneHMACKey string
 }
 
 // New wires the service.

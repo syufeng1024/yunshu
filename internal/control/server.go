@@ -98,6 +98,15 @@ type Deps struct {
 	// rather than hash device identifiers with no key.
 	FingerprintKey string
 
+	// PhoneHMACKey is PHONE_HMAC_KEY from the environment. It is deliberately a
+	// separate secret from FingerprintKey: a phone number is an enumerable
+	// ~10^9 space, so leaking its key is equivalent to leaking the numbers,
+	// while a fingerprint is client-chosen high-entropy input. Empty means
+	// absent or shorter than 32 bytes: phone *writes* (registration, operator
+	// provisioning) answer 503 config_unavailable, and every read path — login,
+	// recovery, listings — is untouched because it reads the plaintext column.
+	PhoneHMACKey string
+
 	// Metrics receives log-read counters (gw_log_body_open_failed_total).
 	// Nil is allowed in tests; the daemon passes the same registry it serves
 	// on /metrics.
@@ -169,6 +178,7 @@ func New(d Deps) (*Server, error) {
 	opss := ops.New(d.DB, d.Audit, d.Now, d.Logger, d.PublishRoutes, box)
 	opss.KeyAuth = redisx.NewKeyAuthCache(d.Redis)
 	opss.PriceRefresh = d.PublishPrices
+	opss.PhoneHMACKey = d.PhoneHMACKey
 	opss.ConfigPublisher = &config.Publisher{
 		DB:          d.DB,
 		Redis:       config.NewGoRedis(d.Redis.Raw()),
@@ -193,6 +203,7 @@ func New(d Deps) (*Server, error) {
 		Now:              d.Now,
 		VerificationMode: d.VerificationMode,
 		SMSMode:          d.SMSMode,
+		PhoneHMACKey:     d.PhoneHMACKey,
 	}
 	if d.Mailer != nil {
 		authSvc.Mailer = d.Mailer

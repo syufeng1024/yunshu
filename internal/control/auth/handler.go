@@ -55,6 +55,19 @@ type Service struct {
 	// the ticket console; the error's OutstandingTicketNos method is the only
 	// shape this package relies on.
 	CancellableCheck func(ctx context.Context, uid int64) error
+
+	// PhoneHMACKey is PHONE_HMAC_KEY from the process environment. It is used
+	// only by the paths that *write* a phone number (registration and operator
+	// provisioning): those compute HMAC-SHA256(canonical phone, key) and store
+	// it in t_user.phone_hmac, which carries the unique key that makes a phone
+	// number hold at most one account.
+	//
+	// Empty (absent or too short) is a supported state: the process starts,
+	// phone registration answers 503 config_unavailable *before* the
+	// verification code is consumed, and every path that reads the plaintext
+	// phone column — login, password recovery, profile display — keeps working.
+	// It is never "hash with an empty key".
+	PhoneHMACKey string
 }
 
 func (s *Service) now() clock.Clock {

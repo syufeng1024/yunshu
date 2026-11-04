@@ -371,3 +371,128 @@ VALUES
 - 启动迁移失败即**拒绝启动**（与引导的两档处置不同）：引导失败只影响“有没有超管”，而 schema 落后会让每个登录 500，带着它对外服务只会放大故障。
 - 手动兜底仍然是 `make migrate` / `go run ./cmd/migrate up`；`migrate status` 看末行是否为 `0028 APPLIED`。回滚顺序：先回滚二进制，再 `down 1`。
 - 大表提醒：`0027` 的 `ADD UNIQUE KEY uk_user_username` 会重建索引，结束瞬间需短暂元数据锁（MDL）。生产建议低峰执行，并先确认没有长事务占着 `t_user`，否则迁移会排队等 MDL、表现为写入短暂卡住。
+
+## 10 手机号 hmac（`t_user.phone_hmac`）回填与号段处置
+
+### 10.1 这是什么、为什么需要人工跑
+
+`t_user.phone_hmac` 是手机号唯一性（`uk_user_phone_hmac`）与体验版判重的取值列。`0011` 建了列与唯一键，但**存量行是 NULL**，NULL 不参与唯一键 → 唯一性对老数据无效。列有值之后仍然可能「有值但值错」（人工改库、上一次用了错 key、半途中断），而 SQL 算不了 HMAC，所以只能靠命令重算比对。
+
+回填不是迁移：MySQL 没有 `HMAC()`，而 `migrate` 是「embedded SQL + checksum 金标」的只跑 SQL 的执行器。因此是独立命令 `cmd/backfill-phone-hmac`，与本仓其余写路径共用同一份 HMAC 实现（不会漂移）。
+
+三个子命令与退出码（**退出码是流程的一部分，不要忽略**）：
+
+| 退出码 | 含义 | 下一步 |
+| :--- | :--- | :--- |
+| `0` | 干净 | 继续 |
+| `1` | 运行错误（含 `PHONE_HMAC_KEY` 未配/过短） | 修配置，不要重试 |
+| `2` | 发现**重复手机号** | 停手，按 10.3 逐组裁决 |
+| `3` | 发现**异常行**（`EMPTY_PHONE` / `NON_CANONICAL` / `STALE_HMAC` / `GHOST_HMAC` / `PHONE_WITHOUT_HMAC`） | 停手，按 10.3 分类处置 |
+| `4` | `apply` 撞 `uk_user_phone_hmac`（另一行已占该号） | 按 10.3 合并后再重跑（幂等，无需清理已写行） |
+
+### 10.2 四步流程（不可调换）
+
+```bash
+export DB_DSN='...'            # 与 migrate 同源
+export PHONE_HMAC_KEY='...'    # 与 controld 同值；≥32 字节
+make backfill-phone-hmac                       # ① detect（只读，退出码 2/3 时停手）
+#   ② 按 10.3 逐组/逐条处置，直到 detect 退出 0
+make backfill-phone-hmac ARGS="apply"          # ③a dry-run：只看数字，不写库
+make backfill-phone-hmac ARGS="apply --commit" # ③b 真正写入（低峰、单副本）
+make backfill-phone-hmac ARGS="verify"         # ④ 必须 0 差异
+```
+
+- `apply` 默认 **dry-run**，必须显式 `--commit` 才写；它会自己先跑一遍 `detect`，不干净就**一个字节都不写**（所以「有人跳过 detect 直接 apply」也不会烂尾）。
+- 幂等：每条 `UPDATE` 带 `AND phone_hmac IS NULL`，连跑第二次 `filled=0`；中断后重跑自动续上，**不需要状态文件**。
+- 限速：`--batch=500 --sleep=50ms`（可调）。逐行 `UPDATE ... WHERE id = ?` ⇒ 单行行锁、无表锁、无长事务。
+- **同一时刻只跑一个 `apply`**；`detect` 只读，随时可跑。
+- 发布与回填**不要同一分钟**：先在低峰把代码发布完（新写入开始生效），再回填存量。
+- 每一步的手机号都**已掩码**（`861****00`），输出可以贴进工单。
+
+### 10.3 重复 / 异常的人工处置（playbook）
+
+**重复组**（`DUP phone=… rows=N`）：逐组由 **SUPER_ADMIN** 裁决「保留哪一行」，然后：
+
+```sql
+-- 1) 淘汰行：置空手机号、禁号、写清原因（不做 DELETE：账本/流水仍指向该 uid）
+UPDATE t_user
+   SET phone = NULL, phone_hmac = NULL,
+       status = 'DISABLED', disable_source = 'OPS_MANUAL',
+       disable_reason = '重复手机号合并:<保留行的 user_no>',
+       disabled_at = NOW(3), updated_at = NOW(3)
+ WHERE id = <淘汰行 id>;
+-- 2) 同一事务写审计
+INSERT INTO t_admin_audit_log
+  (operator_id, operator_role, module, action, target_type, target_id, reason, result, created_at)
+VALUES (<超管 uid>, 'SUPER_ADMIN', 'USER', 'PHONE_DEDUP', 't_user', '<淘汰行 id>',
+        '重复手机号合并:<保留行 user_no>', 'OK', NOW(3));
+```
+
+保留行不需要手工写 hmac：`apply --commit` 会统一补。清完重跑 `detect`，必须退出 0。
+
+**异常类**：
+
+| 类别 | 判定 | 处置 | 为什么不能一键自动化 |
+| :--- | :--- | :--- | :--- |
+| `EMPTY_PHONE` | `phone = ''` | `UPDATE t_user SET phone = NULL WHERE id = ?` | 空串会被哈希成同一个值，制造假重复；改 PII 需要人确认 |
+| `NON_CANONICAL` | `phone` 不是规范形态（含 `+`/分隔符/全角） | **逐行**人工确认该号是否还能登录，再写入规范值（`UPDATE ... SET phone = '<规范值>'`） | 一条自动 `trim/去空格` 的 UPDATE = 无人复核地改 PII |
+| `STALE_HMAC` | `phone_hmac` 非空但与 `HMAC(phone)` 不一致 | 确认 phone 明文可信后：`UPDATE t_user SET phone_hmac = NULL WHERE id = ?`，再 `apply --commit` 重算 | 漂移原因可能是「上一次用了错 key」——先确认 key 现在是对的 |
+| `GHOST_HMAC` | `deleted_at IS NOT NULL` 且 `phone_hmac` 不是 `#del#` 开头 | 按 `#del#{id}{unix_ms}` 改写（或把 `phone_hmac` 置 NULL 释放号段） | 软删行占着号段，重注册会 409 直到释放 |
+| `PHONE_WITHOUT_HMAC`（仅 verify） | `phone` 有值、`phone_hmac` 为 NULL | 回填未覆盖：确认 `apply` 跑过、`PHONE_HMAC_KEY` 与写路径同值后重跑 | 该状态下**体验版会 500 拒绝发券**（宁可不发，不能给套利者发钱） |
+
+`apply` 会**跳过软删行**（`deleted_at` 非空）：它们的正确值是释放标记 `#del#…`，填一个「live hmac」等于让幽灵行永久占号。这类行由 `detect` 的 `GHOST_HMAC` 拦下，交人工。
+
+### 10.4 受控释放号段（注销用户的号码要复用）
+
+产品裁定 **D1：注销即占号**（同一手机号注销后不能再注册）。需要复用时，这不是产品路径，是受控运维操作：
+
+1. 客服/运营确认诉求（原机主回归 / 号码被运营商回收后新机主无法注册）；
+2. **SUPER_ADMIN 审批**，记录工单号；
+3. 执行并同事务写审计：
+
+```sql
+UPDATE t_user SET phone_hmac = NULL, updated_at = NOW(3) WHERE id = <注销行 id>;
+INSERT INTO t_admin_audit_log
+  (operator_id, operator_role, module, action, target_type, target_id, reason, result, created_at)
+VALUES (<超管 uid>, 'SUPER_ADMIN', 'USER', 'PHONE_RELEASE', 't_user', '<注销行 id>',
+        '释放号段，工单 <no>', 'OK', NOW(3));
+```
+
+4. 释放后**必须**接受两件事：① 该注销行不再参与体验判重（`phone_hmac` 已空，若它还能登录会命中 10.3 的 `PHONE_WITHOUT_HMAC` → 500）；② 新注册账号拿得到该号。
+
+> 只置 `phone_hmac = NULL`、不置 `phone`：明文留着不影响唯一性（`phone` 无唯一键），也保留了排障线索。要一并清空时按 F-12 口径只清 `phone`。
+>
+> 不做这件事的后果：号码被运营商回收后，新机主永远注册不上（409 `account_exists`，且客服无法解释）。根因方案是新增 `t_phone_claim` 表（设计 §8.3 方案 B），登记为 P1。
+
+### 10.5 缺 `PHONE_HMAC_KEY` 时的降级
+
+**进程照常启动**（把它升级成「整站不可用」是升级即事故）。行为矩阵：
+
+| 路径 | 缺 key 时 | 日志 |
+| :--- | :--- | :--- |
+| 手机号注册 `POST /api/v1/auth/register` | **503 `config_unavailable`**，hint「手机号注册暂不可用，请使用邮箱注册」。**验证码不被消费**（拒绝发生在烧码之前），补 key 后同一个码仍可用 | `register_phone_hmac_unavailable env=PHONE_HMAC_KEY status=503 config_unavailable`（**WARN**：key 只在启动读一次，缺失已在启动日志里报过；这里再打 ERROR 会让每次注册尝试都变成假 5xx 告警） |
+| 运营建号 `POST /api/admin/users`（手机号） | **503 `config_unavailable`**；邮箱建号不受影响 | `ops_create_operator_phone_hmac_unavailable …`（**WARN**，同上） |
+| 邮箱注册 / 邮箱登录 / 手机号登录 / 找回密码 / 资料展示 | **完全不受影响**（读路径用明文 `phone`，不哈希） | — |
+| 体验版 `POST /api/console/trial/claim` | 不受 key 影响（只比较库里已存的 hmac）；但「有手机号无 hmac」的行会 500（fail closed，见 10.3） | `fund_trial_phone_hmac_missing uid=…`（ERROR，不含手机号） |
+| `cmd/backfill-phone-hmac` | **立即退出码 1**，不连库、不写行（命令行入口里最严格的一个：无条件失败，不看 ENV） | `PHONE_HMAC_KEY 未配置或短于 32 字节，拒绝回填（不会写入任何行）` |
+| `cmd/seedctl`（含手机号种子） | 退出码 1 | `种子需要 PHONE_HMAC_KEY（≥32 字节）` |
+| `controld` 启动 | **照常启动，不拒启**；`ENV=prod` 打 **ERROR**，其它环境 **WARN** | `PHONE_HMAC_KEY is not set: phone registration and operator user creation will answer 503 …` |
+
+密钥要求与轮换：
+- ≥ 32 字节，`openssl rand -base64 32`；**不得**与 `SESSION_SECRET` / `CHANNEL_KEY_KEK` / `LOG_BODY_KEK` / `FP_HMAC_KEY` / `EXPORT_HMAC_KEY` 相同（复用按「未配置」处理并打 ERROR）。
+- **轮换代价极高，本轮不支持在线轮换**。停机重算流程：停写 → 换 key → `verify` 确认旧值范围 → 逐行重算（依赖明文 `phone`）→ 起服务 → 冒烟。硬限制：**已 PII 置空（`phone = NULL`）的行无法重算**，轮换后它们与新注册同号永久失配 → 判重失效。所以轮换只能在置空之前做，否则需要先一次性导出补偿。
+- 泄漏影响量化：手机号空间 ~10⁹，拿到库里的 64 位 hmac + key 可用 GPU 在**分钟级**枚举全量反查。**key 与 DB 同时泄漏 ≈ 手机号明文泄漏**。
+
+### 10.6 相关日志（都是 WARN，别当 5xx 处理）
+
+| 日志 `msg` | 触发 | 含义 |
+| :--- | :--- | :--- |
+| `register_dup_phone_hmac` | 注册 409 | 该手机号已注册（`uk_user_phone_hmac`）。**不是故障**：用户重复提交或忘了自己注册过 |
+| `register_dup_email` | 注册 409 | 该邮箱已注册（`uk_user_email`） |
+| `register_dup_username` / `register_dup_identifier` | 注册 409 | 用户名重复 / 其它唯一键 |
+| `ops_create_operator_dup_identifier: <key>` | 运营建号 409 | 同上，`msg` 尾部带索引名 |
+| `register_phone_hmac_unavailable …` | 注册 503 | 缺 key，见 10.5 |
+| `ops_create_operator_phone_hmac_unavailable …` | 运营建号 503 | 缺 key，见 10.5 |
+| `fund_trial_phone_hmac_missing uid=…` | 体验版 500 | 有手机号无 hmac，见 10.3（唯一的 ERROR 类） |
+
+判断口径：这些 409/503 记录**不带 `"status":500`**（WARN 行的 `status` 字段恒为 0）。若看到 `"level":"error"` + `"status":500` + `register_insert_user_failed` / `ops_create_operator_insert_user_failed`，那才是真故障（DB 不可写、死锁、缺列）。

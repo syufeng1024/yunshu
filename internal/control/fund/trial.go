@@ -43,6 +43,11 @@ type trialClaimResponse struct {
 // claim: device hash, phone, IP segment, and the account's own claim flag.
 // E-mail is deliberately not a factor — it is free to create, so relying on
 // it would turn the trial into an unlimited grant.
+//
+// The phone factor compares t_user.phone_hmac (the stored HMAC), never the
+// plaintext column: the hash survives cancellation and any future PII clearing,
+// which is why migration 0011 created it. Only fingerprintHash needs a key
+// (FP_HMAC_KEY); the phone hash is read, not recomputed.
 func (s *Service) ClaimTrial(w http.ResponseWriter, r *http.Request) {
 	uid, apiErr := sessionUID(r)
 	if apiErr != nil {
@@ -82,11 +87,28 @@ func (s *Service) ClaimTrial(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Phone: a different account on the same number blocks.
-	var phone string
+	//
+	// The comparison is on phone_hmac, not the plaintext phone column, for two
+	// reasons: t_user.phone carries no unique key since migration 0011 (so a
+	// plaintext join could match several rows), and a cancelled or PII-cleared
+	// account keeps its hmac — which is the whole point of the column — while
+	// its phone may one day be NULL. No key is needed here: the stored hash is
+	// compared, never recomputed (see Service.FingerprintKey for the one key
+	// this handler does require).
+	//
+	// Three states come back, and they are not interchangeable:
+	//   phone == ""               no handset on the account; skip the check
+	//   phone != "" && hmac != "" normal: compare hashes
+	//   phone != "" && hmac == "" the number is known but its hash is not —
+	//                             a manual DB edit or a backfill that has not
+	//                             run. Refuse (500) rather than grant: paying
+	//                             out with an unknown de-duplication key is
+	//                             exactly what an abuser wants.
+	var phone, phoneHMAC string
 	var claimedAt sql.NullTime
 	err := s.DB.QueryRowContext(ctx, `
-		SELECT COALESCE(phone, ''), trial_claimed_at
-		  FROM t_user WHERE id = ? AND deleted_at IS NULL`, uid).Scan(&phone, &claimedAt)
+		SELECT COALESCE(phone, ''), COALESCE(phone_hmac, ''), trial_claimed_at
+		  FROM t_user WHERE id = ? AND deleted_at IS NULL`, uid).Scan(&phone, &phoneHMAC, &claimedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		mw.WriteError(w, r, mw.SessionMissing())
 		return
@@ -96,13 +118,20 @@ func (s *Service) ClaimTrial(w http.ResponseWriter, r *http.Request) {
 		mw.WriteError(w, r, apierr.New(apierr.CodeInternalError))
 		return
 	}
-	if phone != "" {
+	if phone != "" && phoneHMAC == "" {
+		// uid only: the phone number and its hash are both PII-adjacent and
+		// this line ends up in tickets.
+		s.logError(ctx, fmt.Sprintf("fund_trial_phone_hmac_missing uid=%d; refusing trial claim", uid))
+		mw.WriteError(w, r, apierr.New(apierr.CodeInternalError))
+		return
+	}
+	if phoneHMAC != "" {
 		var phoneClaimed int64
 		if err := s.DB.QueryRowContext(ctx, `
 			SELECT COUNT(*) FROM t_device_fingerprint d
 			  JOIN t_user u ON u.id = d.granted_user_id
-			 WHERE d.trial_granted = 1 AND u.phone = ? AND u.id <> ?`,
-			phone, uid).Scan(&phoneClaimed); err != nil {
+			 WHERE d.trial_granted = 1 AND u.phone_hmac = ? AND u.id <> ?`,
+			phoneHMAC, uid).Scan(&phoneClaimed); err != nil {
 			s.logError(ctx, "fund_trial_phone_read_failed: "+err.Error())
 			mw.WriteError(w, r, apierr.New(apierr.CodeInternalError))
 			return
