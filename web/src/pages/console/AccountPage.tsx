@@ -21,6 +21,10 @@ export default function AccountPage() {
   const navigate = useNavigate()
 
   const [nickname, setNickname] = useState(user?.display_name ?? '')
+  const [username, setUsername] = useState(user?.username ?? '')
+  // 只有用户真的改过用户名才把它放进请求体：这个字段的三态语义是
+  // 缺省=不改、空串=清空、有值=设置，未改动时发送会变成一次误清空。
+  const [usernameDirty, setUsernameDirty] = useState(false)
   const [profileSaving, setProfileSaving] = useState(false)
   const [profileError, setProfileError] = useState<string | null>(null)
   const [profileSaved, setProfileSaved] = useState(false)
@@ -38,16 +42,18 @@ export default function AccountPage() {
   const [cancelHint, setCancelHint] = useState<string | null>(null)
   const [cancelSubmitting, setCancelSubmitting] = useState(false)
 
-  const saveNickname = async () => {
+  const saveProfile = async () => {
     setProfileSaving(true)
     setProfileError(null)
     setProfileSaved(false)
     try {
-      const data = await api.patch<{ user: CurrentUser }>('/api/v1/auth/profile', {
-        nickname: nickname.trim(),
-      })
+      const body: { nickname: string; username?: string } = { nickname: nickname.trim() }
+      if (usernameDirty) body.username = username.trim()
+      const data = await api.patch<{ user: CurrentUser }>('/api/v1/auth/profile', body)
       // 直接写回 store：否则侧边栏与页头仍是旧名字，看起来像没保存成功。
       useAuthStore.setState({ user: data.user })
+      setUsername(data.user.username ?? '')
+      setUsernameDirty(false)
       setProfileSaved(true)
     } catch (error) {
       setProfileError(errorMessage(error))
@@ -122,10 +128,10 @@ export default function AccountPage() {
             <dt className="text-xs text-ink-muted">登录邮箱</dt>
             <dd className="mt-1 text-ink">{user?.email ?? '—'}</dd>
           </div>
-          <div className="sm:col-span-2">
-            <dt className="text-xs text-ink-muted">显示名称</dt>
-            <dd className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
-              <div className="sm:max-w-xs sm:flex-1">
+          <div className="sm:col-span-2 space-y-4">
+            <div>
+              <dt className="text-xs text-ink-muted">显示名称</dt>
+              <dd className="mt-2">
                 <Input
                   aria-label="显示名称"
                   value={nickname}
@@ -133,26 +139,48 @@ export default function AccountPage() {
                     setNickname(event.target.value)
                     setProfileSaved(false)
                   }}
-                  placeholder="留空则显示登录邮箱"
+                  placeholder="留空则显示用户名或登录邮箱"
                 />
-              </div>
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs text-ink-muted">登录用户名（可选）</dt>
+              <dd className="mt-2">
+                <Input
+                  aria-label="登录用户名"
+                  value={username}
+                  onChange={(event) => {
+                    setUsername(event.target.value)
+                    setUsernameDirty(true)
+                    setProfileSaved(false)
+                  }}
+                  placeholder="留空则只能用邮箱 / 手机号登录"
+                  autoComplete="username"
+                />
+              </dd>
+              <p className="mt-1 text-xs text-ink-muted">
+                3–32 位，字母开头，可用小写字母、数字、点、下划线、短横线。设置后可用它登录，
+                也可以随时清空。
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
               <Button
                 type="button"
                 variant="secondary"
-                onClick={() => void saveNickname()}
+                onClick={() => void saveProfile()}
                 loading={profileSaving}
               >
-                保存昵称
+                保存资料
               </Button>
-            </dd>
+              {profileSaved ? (
+                <span role="status" className="text-xs text-success">
+                  已保存
+                </span>
+              ) : null}
+            </div>
             {profileError ? (
-              <p role="alert" className="mt-1 text-xs text-danger">
+              <p role="alert" className="text-xs text-danger">
                 {profileError}
-              </p>
-            ) : null}
-            {profileSaved ? (
-              <p role="status" className="mt-1 text-xs text-success">
-                昵称已保存
               </p>
             ) : null}
           </div>
@@ -172,7 +200,7 @@ export default function AccountPage() {
           </div>
         </dl>
         <p className="mt-4 text-xs text-ink-muted">
-          登录邮箱与账号角色不可自助修改；需要变更请提交工单。
+          登录邮箱与账号角色不可自助修改；需要变更请提交工单。用户名可随时设置或清空。
         </p>
       </section>
 

@@ -60,6 +60,8 @@
 | 0024 | `t_admin_audit_log` 补 `idx_aal_created (created_at, id)` 与 `idx_aal_action_created (action, created_at, id)` | 已落盘（T11 第二段） |
 | 0025 | `t_balance_adjust` / `t_announcement_model` 建表 | 已落盘（T24 段 2） |
 | 0026 | `t_integration` 建表 + 5 个工具种子（`enabled=0`、模板 NULL） | 已落盘（T33 段 1） |
+| 0027 | `t_user` 加 `username varchar(32) NULL`（`AFTER user_no`）+ `uk_user_username`；存量行不回填 | 已落盘（INC-admin-bootstrap） |
+| 0028 | `t_user` 加 `password_is_initial tinyint(1) NOT NULL DEFAULT 0`（`AFTER password_updated_at`）：仅引导置 1，改密清零，只驱动前端提醒 | 已落盘（INC-admin-bootstrap） |
 
 > **需回写 TDS §8.6**：0018 / 0019 / 0020 / 0021 是 TDS §8.6 裁定表之外的新增占用，由交付总监统一改源文档；实现方未改 TDS。
 
@@ -69,7 +71,7 @@
 
 | 表 | 迁移 | 分层 | 关键唯一键 |
 | :--- | :--- | :--- | :--- |
-| `t_user` | 0001 | 账号 | `uk_user_no`、`uk_user_email`、`uk_user_idno`；`0011` 起手机号唯一性迁到 `uk_user_phone_hmac` |
+| `t_user` | 0001 | 账号 | `uk_user_no`、`uk_user_email`、`uk_user_idno`；`0011` 起手机号唯一性迁到 `uk_user_phone_hmac`；`0027` 起登录用户名唯一性由 `uk_user_username` 承担（列可空，NULL 可重复；用户名可由本人在账户设置里设置或清空）；`0028` 起 `password_is_initial` 标记初始口令（只用于提醒） |
 | `t_verify_record` | 0001 | 账号 | — |
 | `t_device_fingerprint` | 0001 | 账号 | `uk_fp_hash_user` |
 | `t_verification_code` | 0001 | 账号 | — |

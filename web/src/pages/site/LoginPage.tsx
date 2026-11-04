@@ -143,7 +143,7 @@ export default function LoginPage() {
     clearFeedback()
     const account = identifier.trim()
     if (!account) {
-      setError('请输入邮箱或手机号。')
+      setError('请输入邮箱、手机号或用户名。')
       return
     }
     if (loginMode === 'password' && !password) {
@@ -309,11 +309,11 @@ export default function LoginPage() {
       </div>
 
       <Input
-        label="邮箱"
+        label="账号"
         value={identifier}
         onChange={(event) => setIdentifier(event.target.value)}
         autoComplete="username"
-        placeholder="you@example.com"
+        placeholder="邮箱 / 手机号 / 用户名"
         required
       />
 
@@ -374,7 +374,7 @@ export default function LoginPage() {
         登录
       </Button>
 
-      <p className="text-xs text-ink-muted">暂只支持邮箱登录；短信验证码未开放。</p>
+      <p className="text-xs text-ink-muted">支持邮箱、手机号或用户名登录；短信验证码未开放。</p>
 
       {resetOpen ? (
         <div className="space-y-3 rounded-lg border border-border bg-surface-muted p-3">

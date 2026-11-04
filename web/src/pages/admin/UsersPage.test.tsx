@@ -7,7 +7,7 @@ import { ToastViewport } from '@/components'
 import { useAuthStore } from '@/stores/auth'
 import { useToastStore } from '@/stores/toast'
 import { renderWithProviders } from '@/test/renderConsole'
-import AdminUsersPage from './UsersPage'
+import AdminUsersPage, { detectUserSearchField } from './UsersPage'
 
 vi.mock('@/api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/client')>()
@@ -115,6 +115,74 @@ const opsUser = {
 }
 
 describe('UsersPage', () => {
+  it('用户名字段按 username 查询，用户号仍按 user_no', () => {
+    // 自动判定顺序决定了内置超管能不能被搜到：admin 没有邮箱/手机号，
+    // 如果被当成 user_no 查询，结果永远是空列表。
+    expect(detectUserSearchField('admin')).toBe('username')
+    expect(detectUserSearchField('ops.zhang')).toBe('username')
+    expect(detectUserSearchField('U20260301001')).toBe('user_no')
+    expect(detectUserSearchField('ops-demo@example.com')).toBe('email')
+    expect(detectUserSearchField('13800138000')).toBe('phone')
+  })
+
+  it('列表展示 username，且不把空邮箱/手机号渲染成两行破折号', async () => {
+    const usernameOnly: AdminUser = {
+      ...demoUser,
+      id: 777,
+      user_no: 'U202600777',
+      username: 'admin',
+      email: undefined,
+      phone: undefined,
+      nickname: '超级管理员',
+      role: 'SUPER_ADMIN',
+    }
+    mockedGet.mockImplementation((path: string) => {
+      if (path.startsWith('/api/admin/users?')) {
+        return Promise.resolve({ items: [usernameOnly], page: 1, page_size: 20, total: 1 })
+      }
+      return Promise.resolve(emptyAudit)
+    })
+    renderWithProviders(<AdminUsersPage />)
+
+    expect(await screen.findByText('@admin')).toBeInTheDocument()
+    // 该行只有用户名，不应出现两个占位破折号淹没它。
+    expect(screen.queryAllByText('—')).toHaveLength(0)
+  })
+
+  it('用户名字段按 username 查询，用户号仍按 user_no', () => {
+    // 自动判定顺序决定了内置超管能不能被搜到：admin 没有邮箱/手机号，
+    // 如果被当成 user_no 查询，结果永远是空列表。
+    expect(detectUserSearchField('admin')).toBe('username')
+    expect(detectUserSearchField('ops.zhang')).toBe('username')
+    expect(detectUserSearchField('U20260301001')).toBe('user_no')
+    expect(detectUserSearchField('ops-demo@example.com')).toBe('email')
+    expect(detectUserSearchField('13800138000')).toBe('phone')
+  })
+
+  it('列表展示 username，且不把空邮箱/手机号渲染成两行破折号', async () => {
+    const usernameOnly: AdminUser = {
+      ...demoUser,
+      id: 777,
+      user_no: 'U202600777',
+      username: 'admin',
+      email: undefined,
+      phone: undefined,
+      nickname: '超级管理员',
+      role: 'SUPER_ADMIN',
+    }
+    mockedGet.mockImplementation((path: string) => {
+      if (path.startsWith('/api/admin/users?')) {
+        return Promise.resolve({ items: [usernameOnly], page: 1, page_size: 20, total: 1 })
+      }
+      return Promise.resolve(emptyAudit)
+    })
+    renderWithProviders(<AdminUsersPage />)
+
+    expect(await screen.findByText('@admin')).toBeInTheDocument()
+    // 该行只有用户名，不应出现两个占位破折号淹没它。
+    expect(screen.queryAllByText('—')).toHaveLength(0)
+  })
+
   it('UsersPage：搜索按字段发出对应参数', async () => {
     installMock()
     const user = userEvent.setup()

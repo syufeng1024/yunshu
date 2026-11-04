@@ -118,6 +118,15 @@ func (s *Service) SendVerificationCode(w http.ResponseWriter, r *http.Request) {
 		mw.WriteError(w, r, mw.InvalidField("identifier"))
 		return
 	}
+	// A username has no mailbox and no handset: there is no address to deliver a
+	// code to, so this is a malformed request rather than an unavailable
+	// channel. Answered before the mode check so the caller learns the real
+	// reason instead of "verification is not enabled".
+	if err := RequireEmailOrPhone(ident); err != nil {
+		mw.WriteError(w, r, mw.InvalidField("identifier").
+			WithHint("用户名仅用于运营账号，请使用邮箱或手机号"))
+		return
+	}
 	if s.verificationMode() == VerificationOff {
 		e := mw.InvalidField("purpose")
 		e = e.WithHint("本部署未启用验证码，请直接使用密码登录或注册")
@@ -352,4 +361,3 @@ func verificationMailBody(code string) string {
 		"如果不是你本人操作，请忽略这封邮件，不要把这个验证码告诉任何人。\n\n" +
 		"—— 云枢"
 }
-

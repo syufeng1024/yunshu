@@ -195,7 +195,8 @@ func (s *Service) finishLogin(w http.ResponseWriter, r *http.Request, row userRo
 	csrfToken := s.Sessions.SetCSRFCookie(w, sess.SID)
 	s.auditLogin(r.Context(), r, row.uid, row.role, strconv.FormatInt(row.uid, 10), "OK")
 	_ = mw.WriteJSON(w, http.StatusOK, loginResponse{
-		User:      view(row.uid, row.email, row.phone, row.nickname, row.role, row.status),
+		User: view(row.uid, row.email, row.phone, row.username, row.nickname,
+			row.role, row.status, row.passwordIsInitial),
 		CSRFToken: csrfToken,
 	})
 }
@@ -221,7 +222,8 @@ func (s *Service) Me(w http.ResponseWriter, r *http.Request) {
 	token := s.Sessions.SetCSRFCookie(w, sess.SID)
 	w.Header().Set(mw.CSRFHeaderName, token)
 	_ = mw.WriteJSON(w, http.StatusOK, meResponse{
-		userView:  view(sess.UID, sess.Email, sess.Phone, sess.Nickname, sess.Role, sess.Status),
+		userView: view(sess.UID, sess.Email, sess.Phone, sess.Username, sess.Nickname,
+			sess.Role, sess.Status, sess.PasswordIsInitial),
 		CSRFToken: token,
 	})
 }
@@ -252,29 +254,45 @@ func (s *Service) Logout(w http.ResponseWriter, r *http.Request) {
 }
 
 type userRow struct {
-	uid      int64
-	hash     string
-	algo     string
-	status   string
-	role     string
-	email    string
-	phone    string
-	nickname string
+	uid               int64
+	hash              string
+	algo              string
+	status            string
+	role              string
+	email             string
+	phone             string
+	username          string
+	nickname          string
+	passwordIsInitial bool
 }
 
+// findUser looks the account up by the column its identifier kind names.
+//
+// The column string is a compile-time constant chosen by a closed switch, never
+// client input: ident.Value is always bound through a placeholder. A refactor
+// that interpolates ident.Kind (or anything else derived from the body) into
+// this query would turn the login form into SQL injection.
+//
+// username and password_is_initial are read here (not in a second query) so the
+// login response can carry both the optional username and the
+// "still using the initial password" hint in one round trip.
 func (s *Service) findUser(ctx context.Context, ident Identifier) (userRow, error) {
 	column := "email"
-	if ident.Kind == KindPhone {
+	switch ident.Kind {
+	case KindPhone:
 		column = "phone"
+	case KindUsername:
+		column = "username"
 	}
 	q := `SELECT id, password_hash, password_algo, status, role,
-		COALESCE(email, ''), COALESCE(phone, ''), nickname
+		COALESCE(email, ''), COALESCE(phone, ''), COALESCE(username, ''), nickname,
+		password_is_initial
 		FROM t_user
 		WHERE deleted_at IS NULL AND ` + column + ` = ?`
 	var row userRow
 	err := s.DB.QueryRowContext(ctx, q, ident.Value).Scan(
 		&row.uid, &row.hash, &row.algo, &row.status, &row.role,
-		&row.email, &row.phone, &row.nickname,
+		&row.email, &row.phone, &row.username, &row.nickname, &row.passwordIsInitial,
 	)
 	if err != nil {
 		return userRow{}, err

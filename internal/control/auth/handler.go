@@ -60,10 +60,25 @@ type userView struct {
 	DisplayName string `json:"display_name"`
 	Role        string `json:"role"`
 	Status      string `json:"status"`
+	// Username is the account's optional login name. Empty means "not set":
+	// the account logs in with its email/phone only. It is additive, so an old
+	// client that ignores it keeps working.
+	Username string `json:"username"`
+	// PasswordWarning tells the client to show a "still using the initial
+	// password" reminder. It is a hint, never a gate: the session is already
+	// issued and every route stays reachable. Only the built-in super admin
+	// gets it, and it turns off as soon as the password is changed.
+	PasswordWarning bool `json:"password_warning"`
 }
 
-func view(uid int64, email, phone, nickname, role, status string) userView {
+// view builds the public shape of one account. username is optional and
+// passwordWarning is only ever true for an account whose password was written
+// by the bootstrap (t_user.password_is_initial = 1).
+func view(uid int64, email, phone, username, nickname, role, status string, passwordWarning bool) userView {
 	name := nickname
+	if name == "" {
+		name = username
+	}
 	if name == "" {
 		name = email
 	}
@@ -71,11 +86,13 @@ func view(uid int64, email, phone, nickname, role, status string) userView {
 		name = phone
 	}
 	return userView{
-		ID:          strconv.FormatInt(uid, 10),
-		Email:       email,
-		DisplayName: name,
-		Role:        role,
-		Status:      status,
+		ID:              strconv.FormatInt(uid, 10),
+		Email:           email,
+		DisplayName:     name,
+		Role:            role,
+		Status:          status,
+		Username:        username,
+		PasswordWarning: passwordWarning,
 	}
 }
 

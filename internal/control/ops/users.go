@@ -21,8 +21,12 @@ const (
 )
 
 type userView struct {
-	ID            int64  `json:"id"`
-	UserNo        string `json:"user_no"`
+	ID     int64  `json:"id"`
+	UserNo string `json:"user_no"`
+	// Username is the optional login name. The built-in super admin has neither
+	// an email nor a phone, so without this field its row in the operator's user
+	// list renders with no identifier at all.
+	Username      string `json:"username,omitempty"`
 	Email         string `json:"email,omitempty"`
 	Phone         string `json:"phone,omitempty"`
 	Nickname      string `json:"nickname"`
@@ -94,7 +98,7 @@ type userDisableRequest struct {
 }
 
 const userSelectColumns = `
-	u.id, u.user_no, u.email, u.phone, u.nickname, u.role, u.status,
+	u.id, u.user_no, u.username, u.email, u.phone, u.nickname, u.role, u.status,
 	u.disable_source, u.disable_reason, u.disabled_at, u.disabled_by,
 	u.risk_score, u.plan_id, COALESCE(p.code, ''), COALESCE(p.name, ''),
 	u.created_at, u.updated_at`
@@ -115,6 +119,7 @@ func (s *Service) ListUsers(w http.ResponseWriter, r *http.Request) {
 	}{
 		{"email", "u.email"},
 		{"phone", "u.phone"},
+		{"username", "u.username"},
 		{"user_no", "u.user_no"},
 	} {
 		raw := strings.TrimSpace(q.Get(f.param))
@@ -409,21 +414,22 @@ func (s *Service) EnableUser(w http.ResponseWriter, r *http.Request) {
 
 func scanUser(row rowScanner) (userView, error) {
 	var (
-		v             userView
-		email, phone  sql.NullString
-		disableSource sql.NullString
-		disableReason sql.NullString
-		disabledAt    sql.NullTime
-		disabledBy    sql.NullInt64
-		planID        sql.NullInt64
-		createdAt     time.Time
-		updatedAt     time.Time
+		v                      userView
+		username, email, phone sql.NullString
+		disableSource          sql.NullString
+		disableReason          sql.NullString
+		disabledAt             sql.NullTime
+		disabledBy             sql.NullInt64
+		planID                 sql.NullInt64
+		createdAt              time.Time
+		updatedAt              time.Time
 	)
-	if err := row.Scan(&v.ID, &v.UserNo, &email, &phone, &v.Nickname, &v.Role,
+	if err := row.Scan(&v.ID, &v.UserNo, &username, &email, &phone, &v.Nickname, &v.Role,
 		&v.Status, &disableSource, &disableReason, &disabledAt, &disabledBy,
 		&v.RiskScore, &planID, &v.PlanCode, &v.PlanName, &createdAt, &updatedAt); err != nil {
 		return userView{}, err
 	}
+	v.Username = username.String
 	v.Email = email.String
 	v.Phone = phone.String
 	v.DisableSource = disableSource.String

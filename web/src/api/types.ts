@@ -70,7 +70,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * 邮箱/手机号 + 密码登录
+         * 邮箱/手机号/用户名 + 密码登录
          * @description 连续失败达到阈值后按 identifier + IP 锁定，锁定期内正确密码同样返回 429。
          *     账号维度返回 `login_locked`，IP 维度返回 `rpm_limit_exceeded`。
          *     成功返回会话 cookie、可读的 `csrf` cookie 与响应体中的 `csrf_token`。
@@ -97,6 +97,31 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * 修改本人昵称与可选用户名
+         * @description nickname 必填（与注册同一规则，去首尾空格后按 rune 计数 ≤ 64）。
+         *     username 可选：**字段缺省**表示不改动；**空串**表示清空（清空后只能用
+         *     邮箱/手机号登录；账号既无邮箱也无手机号时返回 400，避免把自己锁死）；
+         *     非空值按与登录标识相同的规则归一化（3..32 字节、字母开头、仅
+         *     a-z0-9._-、统一小写），并受 `uk_user_username` 唯一约束，重复时返回 409。
+         *     本次改动不影响会话，响应回传更新后的账号。
+         */
+        patch: operations["patchProfile"];
         trace?: never;
     };
     "/api/v1/auth/logout": {
@@ -1150,6 +1175,13 @@ export interface components {
              *     并在响应头重复一次。
              */
             csrf_token: string;
+            /** @description 账号自选的登录用户名；未设置为空串。设置后可用它（或邮箱/手机号）登录 */
+            username?: string;
+            /**
+             * @description true 表示该账号仍在使用开通时下发的初始口令（仅内置超级管理员会被置位）。
+             *     这只是提示，不拦截任何接口；改密成功后即变回 false。
+             */
+            password_warning?: boolean;
         };
         AuthUser: {
             id: string;
@@ -1158,14 +1190,28 @@ export interface components {
             display_name: string;
             role: components["schemas"]["UserRole"];
             status: components["schemas"]["UserStatus"];
+            /** @description 账号自选的登录用户名；未设置为空串 */
+            username?: string;
+            /** @description 仍在使用初始口令时为 true；仅提示，不拦截 */
+            password_warning?: boolean;
         };
         LoginRequest: {
-            /** @description 邮箱或手机号；手机号支持 +86 前缀 */
+            /** @description 邮箱、手机号或运营账号用户名；含 @ 判为邮箱，去分隔符后全为数字且 6..20 位判为手机号，其余按用户名（3..32 字节、字母开头、小写归一） */
             identifier: string;
             /** Format: password */
             password: string;
             /** @description 验证码；第一段只接受空值，非空返回 400 */
             code?: string;
+        };
+        ProfileUpdateRequest: {
+            /** @description 去首尾空格后按 rune 计数；空串表示清空昵称（展示名回退到用户名/邮箱/手机号） */
+            nickname: string;
+            /**
+             * @description 可选登录用户名。字段缺省 = 不改动；空串 = 清空（账号必须仍有邮箱或手机号，
+             *     否则 400）；非空按 3..32 字节、字母开头、仅 a-z0-9._- 归一化为小写。
+             *     唯一约束冲突返回 409。
+             */
+            username?: string;
         };
         RegisterRequest: {
             /** @description 邮箱或手机号；手机号支持 +86 前缀 */
@@ -2276,6 +2322,8 @@ export interface components {
             /** Format: int64 */
             id: number;
             user_no: string;
+            /** @description 自选登录用户名；未设置时省略。内置超管只有用户名，没有邮箱/手机号 */
+            username?: string;
             email?: string | null;
             phone?: string | null;
             nickname: string;
@@ -3269,6 +3317,59 @@ export interface operations {
             };
             /** @description 账号不可用 */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    patchProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfileUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description 更新后的账号 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        user: components["schemas"]["AuthUser"];
+                    };
+                };
+            };
+            /** @description 字段不合法（invalid_request_body；nickname / username） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 未登录或会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 用户名已被占用（resource_state_conflict） */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4963,6 +5064,8 @@ export interface operations {
             query?: {
                 email?: string;
                 phone?: string;
+                /** @description 按登录用户名模糊匹配 */
+                username?: string;
                 user_no?: string;
                 status?: "NORMAL" | "DISABLED" | "FROZEN_OVERDRAFT";
                 page?: number;

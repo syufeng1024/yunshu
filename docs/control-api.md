@@ -147,6 +147,7 @@ OpenAPI 已同步：`/api/admin/overview`、`/api/admin/tickets/{id}`、`/api/ad
 - 幂等：`UPDATE ... WHERE state='PENDING'` 的 `RowsAffected()` 是唯一闸门；重复审批返回 409 `resource_state_conflict`。账本侧 `uk_le_idem` 是第二道防线。
 - 审计：提交、通过、驳回各一行，`target_type='t_balance_adjust'`、`target_id` 为单据 id，`before_json`/`after_json` 含状态、方向、金额、理由、审批人；`GET /api/admin/audit-logs?target_type=t_balance_adjust&target_id=<id>` 可直接命中。
 - 用户详情 `GET /api/admin/users/{id}` 追加 `latest_balance_adjust`：最近一张单据（按 `created_at DESC, id DESC`），无记录为 `null`。
+- `GET /api/admin/users` 与 `GET /api/admin/users/{id}` 返回 `username`（未设置时省略该字段）；列表新增 `?username=` 模糊筛选，与 email / phone / user_no 相互独立。内置超管只有用户名，没有邮箱/手机号，运营台据此展示与检索。
 
 ### 余额调整落账
 
@@ -384,6 +385,57 @@ Key 开启 `ip_whitelist_mode=ON` 时，白名单必须包含 controld 所在网
 | 通道 | `AUTH_VERIFICATION_MODE=log`（默认，验证码打到日志，仅开发/CI）或 `smtp`（发邮件）；`smtp` 但未配 `SMTP_*` 时进程启动失败 |
 
 登录 body 二选一：`{identifier, password}` 或 `{identifier, code}`；两者同时提交返回 400（避免“看起来两项都验过”）。验证码登录与密码登录共用同一套账号/IP 锁定计数。
+
+### 登录标识（identifier）
+
+`POST /api/v1/auth/login` 的 `identifier` 接受**邮箱、手机号或运营账号用户名**三类，判定顺序固定、不可配置，客户端只提交这一个字段（不存在 `identifier_kind` 参数）：
+
+| 顺序 | 判定 | 归一化 | 落的列 |
+| :--- | :--- | :--- | :--- |
+| 1 | 含 `@` | `TrimSpace` → 全角转半角 → 小写；沿用既有邮箱校验（≤254、单 `@`、域名含点、无控制字符） | `t_user.email` |
+| 2 | 去分隔符（空格/`-`/`(`/`)`/`+`/`.`/换行）后**全为数字且 6..20 位** | 去掉分隔符与前缀 `+`（与本次改动前逐字一致） | `t_user.phone` |
+| 3 | 其余 | 小写后匹配 `^[a-z][a-z0-9._-]{2,31}$` | `t_user.username` |
+
+要点：
+
+- **用户名对全部账号可选**：内置超管由引导写入；普通客户可在账户设置里自行设置，也可以留空。留空（`username IS NULL`）时只能用邮箱/手机号登录。
+- 用户名规则：3..32 字节、首字节必须是 ASCII 字母、只允许 `a-z 0-9 . _ -`。由此**全数字用户名被禁止**，所以用户名永远不会与手机号歧义。大小写不敏感（归一化为小写后入库与查询）。
+- 第三类之外（例如 `ab`、`_admin`、`1admin`、`admin$`、含中文）一律 `401 invalid_credentials`，与“账号不存在”不可区分；不新增错误码。
+- **注册 / 发验证码 / 运营建号（`POST /api/admin/users`）不接受用户名**：这三条路径都要能向账号绑定的地址投递验证码或找回链接，用户名账号没有地址。传入用户名返回 `400 invalid_request_body` + field `identifier`。用户名只能由本人通过 `PATCH /api/v1/auth/profile` 设置。
+- 锁定不因标识类型而豁免：K28 的键是 `sha256(归一化后的值)`，`admin` 与任何邮箱/手机号取值不同，但阈值（5 次 / 15 分钟）与 IP 维度（20 次 / 10 分钟）完全相同。
+
+### 自助资料（`PATCH /api/v1/auth/profile`）
+
+| 字段 | 语义 |
+| :--- | :--- |
+| `nickname` | 必填。去首尾空格，按 rune ≤ 64，不得含控制字符；空串表示清空（显示名回退到用户名 → 邮箱 → 手机号） |
+| `username` | 可选。**字段缺省 = 不改动**；`""` = 清空；非空按上面的用户名校验并小写归一 |
+
+- 用户名受 `uk_user_username` 唯一约束，重复返回 `409 resource_state_conflict`（“该用户名已被占用”）。
+- **清空保护**：账号既无邮箱也无手机号时不允许清空用户名（返回 `400`），否则该账号将没有任何登录标识——内置超管正是这种账号。
+- 改用户名不影响当前会话，因为会话只绑 uid。
+
+### 初始口令提醒（`password_warning`）
+
+- `t_user.password_is_initial = 1` 表示“仍在使用开通时下发的口令”，只有启动引导会置位；`POST /api/v1/auth/password` 成功时在同一事务里清零。
+- 登录、`GET /api/v1/auth/me`、`PATCH /api/v1/auth/profile` 的 `user` 对象都会带 `password_warning: true|false`。
+- **它只是提醒，不拦截**：账号照常登录、照常访问全部接口；前端在运营后台顶部显示一条“请尽快修改密码”的横幅，改密后自动消失。
+- 存量账号升级后一律为 `0`（不凭空弹提醒）。
+
+### 内置超级管理员（admin）
+
+| 项 | 值 |
+| :--- | :--- |
+| 创建者 | `controld` 启动引导（`internal/control/bootstrap`），**只有控制面进程**执行；`gatewayd` / `jobsd` 不做任何引导 |
+| 账号 | `ADMIN_BOOTSTRAP_USERNAME`，默认 `admin`；`role=SUPER_ADMIN`、`status=NORMAL`、`nickname=超级管理员`（控制台显示名取自它，该账号 `email`/`phone` 均为 NULL） |
+| 初始口令 | `ADMIN_BOOTSTRAP_PASSWORD`，默认 `12345678`（**公开弱口令**，仅用于首次部署登录） |
+| 幂等 | 用 `uk_user_username` 唯一键判“已存在”：先 INSERT、捕 1062，已存在时**不做任何修改**（不改角色、不改状态、不重置口令），记一条 INFO；若唯一键被**软删除**账号占用则记 WARN「需人工处理」且不复活该行（唯一键不含 `deleted_at`，登录侧带 `deleted_at IS NULL` 永远查不到它） |
+| 开关 | `ADMIN_BOOTSTRAP_DISABLED=true` 完全跳过（存量环境已有超管时使用） |
+| 失败处置 | **两档**：配置非法（用户名/口令不合规、开关非布尔）→ 进程**拒绝启动**；一切运行时 SQL 错误（含 1054「迁移 0027 未应用」）→ 只打 ERROR、**进程继续服务**，详见 `docs/ops-runbook.md` §9.5 |
+| 首登后 | 登录响应带 `password_warning: true`，运营后台顶部显示“请尽快修改密码”横幅（**只提醒，不拦截**）；`POST /api/v1/auth/password` 改密成功后标记清零、横幅消失，同时吊销该 uid 的全部会话 |
+| 审计 | 创建成功时写 1 条 `t_admin_audit_log`：`operator_id=0`、`operator_role=SYSTEM`、`module=USER`、`action=CREATE`、`target_type=t_user`、`after_json` 里的 identifier 已脱敏 |
+
+`SUPER_ADMIN` 是唯一持有 `admin.all` 的角色，因此这是唯一能用 `POST /api/admin/users`、角色变更等运营接口的账号。
 
 CSRF 校验只作用于**会话鉴权**的状态变更方法：`POST` / `PATCH` / `PUT` / `DELETE`，且路径以 `/api/` 开头。豁免：
 

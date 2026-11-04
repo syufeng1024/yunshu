@@ -91,6 +91,8 @@ curl -s localhost:8081/readyz    # 依赖就绪后 200（依赖抖动时非 200�
 
 > 端口冲突时改 `.env`：`GATEWAY_HTTP_ADDR`、`CONTROL_HTTP_ADDR`、`GATEWAY_METRICS_ADDR` 等（见 `docs/dev-setup.md`）。
 
+`controld` 启动时会幂等创建内置超级管理员：用 `admin` / `ADMIN_BOOTSTRAP_PASSWORD`（默认 `12345678`，见 `.env.example`）登录 `/admin`，**登录后必须立即改密**（`POST /api/v1/auth/password`）。已存在时不会被覆盖，也不会重置口令；要跳过这一步设 `ADMIN_BOOTSTRAP_DISABLED=true`。
+
 ### 2. 全栈容器化部署（一条命令起完整站点）
 
 ```bash
@@ -98,6 +100,8 @@ make stack-env    # 生成 deploy/.env.stack（含随机密钥）
 make stack-up     # MySQL + Redis + 三进程 + 前端
 make stack-smoke  # 冒烟：迁移落库、三进程 ready、站点首页、内网门
 ```
+
+首次部署后用 `admin` / `ADMIN_BOOTSTRAP_PASSWORD`（默认 `12345678`，在 `deploy/.env.stack` 里覆盖成强口令）登录 `/admin`，并**立即改密**；三个变量与适用场景见 `docs/ops-runbook.md` §9。
 
 ---
 

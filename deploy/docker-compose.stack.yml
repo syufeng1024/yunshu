@@ -39,6 +39,13 @@ x-app-env: &app-env
   # EXPORT_HMAC_KEY 留空时导出接口 503 config_unavailable。
   EXPORT_DIR: ${EXPORT_DIR:-/tmp/yunshu-exports}
   EXPORT_HMAC_KEY: ${EXPORT_HMAC_KEY:-}
+  # 内置超级管理员引导（只有 controld 读这三个变量；gatewayd / jobsd 忽略）。
+  # 必须在这里显式列出：本锚点是后端进程的 env 白名单，漏掉不会报错，
+  # 只会让 .env.stack 里设的值静默失效、退回代码里的公开默认口令。
+  # 幂等：t_user.username 已存在时跳过，不覆盖角色、状态与口令。
+  ADMIN_BOOTSTRAP_USERNAME: ${ADMIN_BOOTSTRAP_USERNAME:-admin}
+  ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-12345678}
+  ADMIN_BOOTSTRAP_DISABLED: ${ADMIN_BOOTSTRAP_DISABLED:-false}
 
 x-app-image: &app-image
   image: yunshu-app:${IMAGE_TAG:-local}

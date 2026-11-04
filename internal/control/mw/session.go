@@ -35,15 +35,20 @@ const (
 
 // Session is the authenticated principal loaded for one request.
 type Session struct {
-	SID       string
-	UID       int64
-	Role      string
-	Status    string
-	Email     string
-	Phone     string
-	Nickname  string
-	IssuedAt  time.Time
-	ExpiresAt time.Time
+	SID      string
+	UID      int64
+	Role     string
+	Status   string
+	Email    string
+	Phone    string
+	Username string
+	Nickname string
+	// PasswordIsInitial mirrors t_user.password_is_initial: the account still
+	// uses the password written at provisioning time. It only drives a UI
+	// reminder; nothing in the authorization path reads it.
+	PasswordIsInitial bool
+	IssuedAt          time.Time
+	ExpiresAt         time.Time
 }
 
 // DisplayName returns the name the console shows.
@@ -234,12 +239,12 @@ func (m *SessionManager) Load(ctx context.Context, r *http.Request) (*Session, *
 	}
 
 	sess := &Session{SID: sid, UID: uid, IssuedAt: issued, ExpiresAt: now.Add(m.ttl())}
-	var role, status, email, phone, nickname sql.NullString
+	var role, status, email, phone, username, nickname sql.NullString
 	err = m.DB.QueryRowContext(ctx, `
-		SELECT role, status, email, phone, nickname
+		SELECT role, status, email, phone, username, nickname, password_is_initial
 		  FROM t_user
 		 WHERE id = ? AND deleted_at IS NULL`, uid,
-	).Scan(&role, &status, &email, &phone, &nickname)
+	).Scan(&role, &status, &email, &phone, &username, &nickname, &sess.PasswordIsInitial)
 	if errors.Is(err, sql.ErrNoRows) {
 		m.revoke(ctx, sid)
 		return nil, SessionMissing()
@@ -251,6 +256,7 @@ func (m *SessionManager) Load(ctx context.Context, r *http.Request) (*Session, *
 	sess.Status = status.String
 	sess.Email = email.String
 	sess.Phone = phone.String
+	sess.Username = username.String
 	sess.Nickname = nickname.String
 
 	switch sess.Status {

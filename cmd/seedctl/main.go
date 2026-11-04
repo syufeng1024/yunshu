@@ -65,6 +65,14 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("identifier: %w", err)
 	}
+	// seedctl builds a customer account with a funded balance and an API key,
+	// and prints the plaintext key. A username account has no email and no
+	// phone, so every later recovery path (verification code, operator lookup
+	// by address) would be closed for it. Refusing is the honest answer; the
+	// local database is reseeded with an email or a phone in seconds.
+	if err := auth.RequireEmailOrPhone(ident); err != nil {
+		return fmt.Errorf("seedctl 不接受用户名标识：%s（请用 -email 或 -phone）", identRaw)
+	}
 
 	dsn := strings.TrimSpace(os.Getenv("DB_DSN"))
 	if dsn == "" {

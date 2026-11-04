@@ -42,7 +42,7 @@ import { useAuthStore } from '@/stores/auth'
 const PAGE_SIZE = 20
 
 type StatusFilter = 'ALL' | AdminUserStatus
-type SearchField = 'AUTO' | 'email' | 'phone' | 'user_no'
+type SearchField = 'AUTO' | 'email' | 'phone' | 'username' | 'user_no'
 type DetectedField = Exclude<SearchField, 'AUTO'>
 
 const ROLE_LABEL: Record<string, string> = {
@@ -84,6 +84,7 @@ const STATUS_LABEL: Record<string, string> = {
 const SEARCH_FIELD_LABEL: Record<DetectedField, string> = {
   email: '邮箱',
   phone: '手机号',
+  username: '用户名',
   user_no: '用户号',
 }
 
@@ -113,14 +114,21 @@ function normalizeDigits(raw: string): string {
 
 /**
  * users.go has no `q` parameter: the endpoint only performs independent LIKE
- * matches on email / phone / user_no. The automatic rule is shown in the UI so
- * an operator can see which column will be queried, and the select can
- * override it.
+ * matches on email / phone / username / user_no. The automatic rule is shown in
+ * the UI so an operator can see which column will be queried, and the select
+ * can override it.
+ *
+ * user_no has a fixed shape (U + yyyymmdd + 3 digits, 12 chars). Matching that
+ * shape first is what keeps `admin` from being sent as a user_no and returning
+ * an empty page — the built-in super admin has no email or phone, so its
+ * username is the only identifier an operator can search by.
  */
 export function detectUserSearchField(raw: string): DetectedField {
   const value = normalizeDigits(raw).trim()
   if (value.includes('@')) return 'email'
   if (/^\d{11}$/.test(value)) return 'phone'
+  if (/^U\d{11}$/i.test(value)) return 'user_no'
+  if (/^[a-z][a-z0-9._-]{2,31}$/i.test(value)) return 'username'
   return 'user_no'
 }
 
@@ -166,6 +174,7 @@ export default function AdminUsersPage() {
   if (searchValue) {
     if (effectiveField === 'email') queryParams.email = searchValue
     else if (effectiveField === 'phone') queryParams.phone = searchValue
+    else if (effectiveField === 'username') queryParams.username = searchValue
     else queryParams.userNo = searchValue
   }
 
@@ -412,8 +421,8 @@ export default function AdminUsersPage() {
   const listError = list.isError ? errorMessage(list.error) : null
   const listHint = list.isError ? errorHint(list.error) : null
   const searchHint = searchValue
-    ? `自动判定：含 @ → 邮箱；纯 11 位数字 → 手机号；其余 → 用户号。当前按${SEARCH_FIELD_LABEL[effectiveField]}查询。`
-    : '自动判定：含 @ → 邮箱；纯 11 位数字 → 手机号；其余 → 用户号。也可手动指定查询字段。'
+    ? `自动判定：含 @ → 邮箱；纯 11 位数字 → 手机号；U 开头的 12 位 → 用户号；其余按用户名。当前按${SEARCH_FIELD_LABEL[effectiveField]}查询。`
+    : '自动判定：含 @ → 邮箱；纯 11 位数字 → 手机号；U 开头的 12 位 → 用户号；其余按用户名。也可手动指定查询字段。'
 
   const columns: TableColumn<AdminUser>[] = [
     {
@@ -428,13 +437,25 @@ export default function AdminUsersPage() {
     },
     {
       key: 'contact',
-      header: '联系方式',
-      render: (user) => (
-        <div className="space-y-0.5 text-xs text-ink-secondary">
-          <p>{user.email || '—'}</p>
-          <p>{user.phone || '—'}</p>
-        </div>
-      ),
+      header: '登录标识',
+      render: (user) => {
+        // 内置超管只有 username（email/phone 均为 NULL）。只显示空行会让这一行
+        // 看起来像"没有账号信息"，所以过滤掉空值，全部为空时才退回一个破折号。
+        const identifiers = [
+          user.username ? `@${user.username}` : '',
+          user.email ?? '',
+          user.phone ?? '',
+        ].filter((value) => value !== '')
+        return (
+          <div className="space-y-0.5 text-xs text-ink-secondary">
+            {identifiers.length > 0 ? (
+              identifiers.map((value) => <p key={value}>{value}</p>)
+            ) : (
+              <p>—</p>
+            )}
+          </div>
+        )
+      },
     },
     {
       key: 'role',
@@ -549,6 +570,7 @@ export default function AdminUsersPage() {
             { value: 'AUTO', label: '自动判定' },
             { value: 'email', label: '邮箱' },
             { value: 'phone', label: '手机号' },
+            { value: 'username', label: '用户名' },
             { value: 'user_no', label: '用户号' },
           ]}
         />
@@ -618,6 +640,10 @@ export default function AdminUsersPage() {
               <h3 className="text-sm font-semibold text-ink">资料</h3>
               <DetailRow label="用户号" value={<code>{detailUser.user_no}</code>} />
               <DetailRow label="昵称" value={detailUser.nickname || '—'} />
+              <DetailRow
+                label="用户名"
+                value={detailUser.username ? <code>@{detailUser.username}</code> : '—'}
+              />
               <DetailRow label="邮箱" value={detailUser.email || '—'} />
               <DetailRow label="手机号" value={detailUser.phone || '—'} />
               <DetailRow label="角色" value={ROLE_LABEL[detailUser.role] ?? detailUser.role} />

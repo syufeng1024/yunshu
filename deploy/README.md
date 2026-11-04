@@ -176,6 +176,23 @@ docker compose --env-file deploy/.env.stack -f deploy/docker-compose.stack.yml u
 `deploy/.env.stack` 里只有 `MYSQL_ROOT_PASSWORD` 需要人工确认；`SESSION_SECRET`、
 `CHANNEL_KEY_KEK`、`GATEWAY_METRICS_TOKEN` 由 `env` 子命令随机生成。
 
+### 首次部署：登录 → 改密
+
+`controld` 启动时会把内置超级管理员建出来（幂等，已存在就跳过，不改角色也不重置口令）。两个步骤不能省：
+
+1. **登录**：打开 `http://<宿主>:8088/admin`，账号 `ADMIN_BOOTSTRAP_USERNAME`（默认 `admin`），
+   口令 `ADMIN_BOOTSTRAP_PASSWORD`（默认 `12345678`，**公开弱口令**）。登录页需要勾选用户协议。
+2. **改密**：登录后 `POST /api/v1/auth/password`（`{old_password, new_password}`，带 `X-CSRF-Token`），
+   成功后该账号的全部会话会被吊销，重新登录一次确认。
+
+相关的三个变量（`ADMIN_BOOTSTRAP_USERNAME` / `ADMIN_BOOTSTRAP_PASSWORD` / `ADMIN_BOOTSTRAP_DISABLED`）
+在 `deploy/.env.stack.example` 里有注释；它们只被 `controld` 读取，但因为在
+`docker-compose.stack.yml` 的 `x-app-env` 白名单里，改 `.env.stack` 才会生效。
+存量环境已经有超管、不想再跑引导时设 `ADMIN_BOOTSTRAP_DISABLED=true`。
+k8s 部署同理：`deploy/k8s/configmap.yaml` 只放非密配置，带口令的
+`ADMIN_BOOTSTRAP_PASSWORD` 应进凭据资源；不设置时用的是代码里的公开默认值，
+所以那条路径上线后**必须先改密**。
+
 ## 端口
 
 | 服务 | 宿主端口 | 说明 |
@@ -293,6 +310,9 @@ curl -s http://127.0.0.1:8088/healthz
 5. **单副本。** `jobsd` 靠 `t_job_lock` 选主，多副本本身是安全的；但 `mysql` /
    `redis` 都是单点，没有主从。上生产要换成托管实例或补上高可用。
 6. **`gatewayd` 的 metrics 没有认证就不该出网。** 空 token 时 `/metrics` 谁都能读。
+7. **内置超管的初始口令必须改。** `ADMIN_BOOTSTRAP_PASSWORD` 的默认值 `12345678`
+   是公开弱口令；不改密等于把运营后台的钥匙挂在门上。改法见「首次部署：登录 → 改密」，
+   检查项见 `docs/go-live-checklist.md` 第 27 项。
 
 ## 当前阶段：站点数据为什么是空的
 

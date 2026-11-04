@@ -1067,6 +1067,8 @@ export type AdminUserStatus = 'NORMAL' | 'DISABLED' | 'FROZEN_OVERDRAFT'
 export interface AdminUser {
   id: number
   user_no: string
+  /** 自选登录用户名；未设置时后端省略该字段（内置超管只有它，没有邮箱/手机号）。 */
+  username?: string
   email?: string
   phone?: string
   nickname: string
@@ -1145,6 +1147,7 @@ export type AdminUserListResponse = Page<AdminUser>
 export interface AdminUserListParams extends PageParams {
   email?: string
   phone?: string
+  username?: string
   userNo?: string
   status?: AdminUserStatus
   sort?: 'created_at' | 'updated_at' | 'id' | 'risk_score' | 'user_no'
@@ -1161,6 +1164,8 @@ function userQuery(params: AdminUserListParams): string {
   if (email) search.set('email', email)
   const phone = params.phone?.trim()
   if (phone) search.set('phone', phone)
+  const username = params.username?.trim()
+  if (username) search.set('username', username)
   const userNo = params.userNo?.trim()
   if (userNo) search.set('user_no', userNo)
   if (params.status) search.set('status', params.status)

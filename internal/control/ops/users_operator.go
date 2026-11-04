@@ -89,6 +89,17 @@ func (s *Service) CreateOperatorUser(w http.ResponseWriter, r *http.Request) {
 		mw.WriteError(w, r, mw.InvalidField("identifier"))
 		return
 	}
+	// A username is refused here: an account whose only identifier is a username
+	// has no address to receive a recovery code, so forgetting its password
+	// would leave it permanently unreachable. Opening it would mean minting an
+	// account that cannot rescue itself. The one deliberate exception is the
+	// built-in SUPER_ADMIN, created by the controld startup bootstrap
+	// (internal/control/bootstrap) which is not reachable over HTTP at all.
+	if err := auth.RequireEmailOrPhone(ident); err != nil {
+		mw.WriteError(w, r, mw.InvalidField("identifier").
+			WithHint("运营建号只接受邮箱或手机号，用户名仅供内置超级管理员使用"))
+		return
+	}
 	if err := auth.ValidatePassword(req.Password); err != nil {
 		mw.WriteError(w, r, mw.InvalidField("password"))
 		return

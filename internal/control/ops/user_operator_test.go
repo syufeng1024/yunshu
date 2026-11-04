@@ -325,6 +325,48 @@ func TestCreateOperatorUserRejectsWeakPassword(t *testing.T) {
 	}
 }
 
+// A username is not a deliverable address, so an operator-provisioned account
+// must not be created with one: it could never receive a recovery code. The
+// built-in SUPER_ADMIN is the sole username account and is created by the
+// controld startup bootstrap, not by this endpoint.
+func TestCreateOperatorUserRejectsUsername(t *testing.T) {
+	svc := newTestService(t)
+	adminUID := newTestUser(t, "SUPER_ADMIN")
+
+	for name, identifier := range map[string]string{
+		"plain":           "opszhang",
+		"mixed-case":      "OpsZhang",
+		"with-dot":        "ops.zhang",
+		"with-underscore": "ops_zhang",
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := createOperator(t, svc, adminUID, map[string]any{
+				"identifier": identifier,
+				"password":   operatorTestPassword,
+				"nickname":   "运营张",
+				"role":       "OPS",
+			})
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s, want 400", rec.Code, rec.Body.String())
+			}
+			body := errorBody(t, rec)
+			if body.Error.Code != "invalid_request_body" ||
+				!strings.Contains(body.Error.Message, "identifier") {
+				t.Fatalf("error = %+v, want invalid_request_body naming identifier", body.Error)
+			}
+		})
+	}
+
+	var n int
+	if err := testDB.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM t_user WHERE username IS NOT NULL AND username LIKE 'ops%'`).Scan(&n); err != nil {
+		t.Fatalf("count username rows: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("a rejected operator creation wrote %d username rows", n)
+	}
+}
+
 func TestChangeUserRoleRejectsSelfChange(t *testing.T) {
 	svc := newTestService(t)
 	adminUID := newTestUser(t, "SUPER_ADMIN")

@@ -64,6 +64,15 @@ func (s *Service) Register(w http.ResponseWriter, r *http.Request) {
 		mw.WriteError(w, r, mw.InvalidField("identifier"))
 		return
 	}
+	// A username is not an address: registration proves mailbox ownership with a
+	// code, and there is nowhere to send one. Refusing here (rather than letting
+	// the code step fail with a confusing "invalid code") keeps the reason
+	// visible in the field hint.
+	if err := RequireEmailOrPhone(ident); err != nil {
+		mw.WriteError(w, r, mw.InvalidField("identifier").
+			WithHint("用户名仅用于运营账号，请使用邮箱或手机号"))
+		return
+	}
 	code := strings.TrimSpace(req.Code)
 	if s.verificationRequired() {
 		if code == "" {
@@ -122,7 +131,7 @@ func (s *Service) Register(w http.ResponseWriter, r *http.Request) {
 	csrfToken := s.Sessions.SetCSRFCookie(w, sess.SID)
 	_ = mw.WriteJSON(w, http.StatusCreated, registerResponse{
 		User: view(uid, ident.valueFor(KindEmail), ident.valueFor(KindPhone),
-			nickname, "PERSONAL", "NORMAL"),
+			"", nickname, "PERSONAL", "NORMAL", false),
 		CSRFToken: csrfToken,
 	})
 }
@@ -200,12 +209,22 @@ func (s *Service) insertUser(ctx context.Context, r *http.Request, ident Identif
 // so the column list and the user_no allocator cannot drift between the two.
 const RolePersonal = "PERSONAL"
 
+// RoleSuperAdmin is the built-in administrator role. It is the only role that
+// holds admin.all, so the startup bootstrap (internal/control/bootstrap) writes
+// it directly rather than going through the operator console, which cannot
+// create an account without an email or phone.
+const RoleSuperAdmin = "SUPER_ADMIN"
+
 // InsertUserRowTx inserts one t_user row for the caller's transaction: the same
-// thirteen columns, the same user_no allocator and the same duplicate handling
+// fourteen columns, the same user_no allocator and the same duplicate handling
 // as public registration. Exported for internal/control/ops, whose
 // POST /api/admin/users provisions operator accounts; a second INSERT written
 // there would silently stop matching this one (a new NOT NULL column, a new
 // unique key) the first time registration changes.
+//
+// The identifier's Kind picks which of the three login columns gets the value
+// (email / phone / username); the other two stay NULL. The signature does not
+// change when a kind is added, so the two existing callers need no edit.
 //
 // The caller owns the transaction, the credit-account row and the audit row; a
 // duplicate identifier comes back as the driver's 1062 error and must be
@@ -217,27 +236,34 @@ func InsertUserRowTx(ctx context.Context, tx *sql.Tx, ident Identifier,
 
 func insertUserRow(ctx context.Context, tx *sql.Tx, ident Identifier, nickname, agreement, hash, role string, now time.Time) (int64, error) {
 	const q = `INSERT INTO t_user
-		(user_no, email, phone, password_hash, password_algo, password_updated_at,
+		(user_no, username, email, phone, password_hash, password_algo, password_updated_at,
 		 nickname, role, status, agreement_version, agreed_at, created_at, updated_at)
-		VALUES (?,?,?,?,'bcrypt',?,?,?,'NORMAL',?,?,?,?)`
+		VALUES (?,?,?,?,?,'bcrypt',?,?,?,'NORMAL',?,?,?,?)`
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
 		userNo, err := newUserNo(now)
 		if err != nil {
 			return 0, err
 		}
-		var email, phone any
-		if ident.Kind == KindEmail {
+		// Exactly one of the three login columns is written; the rest bind NULL.
+		// A username row therefore has email IS NULL AND phone IS NULL, which is
+		// what keeps it out of the "no recovery path" problem and out of
+		// uk_user_email / uk_user_phone_hmac.
+		var email, phone, username any
+		switch ident.Kind {
+		case KindEmail:
 			email = ident.Value
-		} else {
+		case KindPhone:
 			phone = ident.Value
+		case KindUsername:
+			username = ident.Value
 		}
 		var agreedAt any
 		if agreement != "" {
 			agreedAt = now
 		}
 		res, err := tx.ExecContext(ctx, q,
-			userNo, email, phone, hash, now, nickname, role, agreement, agreedAt, now, now)
+			userNo, username, email, phone, hash, now, nickname, role, agreement, agreedAt, now, now)
 		if err == nil {
 			return res.LastInsertId()
 		}
@@ -245,9 +271,10 @@ func insertUserRow(ctx context.Context, tx *sql.Tx, ident Identifier, nickname, 
 		if !isDuplicate(err) {
 			return 0, err
 		}
-		// A duplicate on uk_user_email/uk_user_phone must not be retried with a
-		// new user_no: the caller returns "already registered". Retrying only
-		// helps a user_no collision.
+		// A duplicate on uk_user_email / uk_user_phone_hmac / uk_user_username
+		// must not be retried with a new user_no: the caller returns "already
+		// registered" (or, for the startup bootstrap, "already exists").
+		// Retrying only helps a user_no collision.
 		if !strings.Contains(err.Error(), "uk_user_no") {
 			return 0, err
 		}

@@ -116,6 +116,19 @@ export function AdminLayout() {
         </header>
 
         <main className="flex-1 overflow-y-auto">
+          {/* 初始口令提醒：只提示、不拦截。账号仍使用开通时下发的口令时出现，
+              改密成功后 password_warning 变 false，横幅自然消失。 */}
+          {user?.password_warning ? (
+            <div
+              role="alert"
+              className="border-b border-warning bg-warning-soft px-4 py-2 text-xs text-warning sm:px-6"
+            >
+              当前账号仍在使用初始密码，请尽快修改。
+              <Link to={ROUTES.consoleAccount} className="ml-1 font-semibold underline">
+                去修改密码
+              </Link>
+            </div>
+          ) : null}
           <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
             <Outlet />
           </div>

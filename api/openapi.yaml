@@ -90,7 +90,7 @@ paths:
     post:
       operationId: postLogin
       tags: [auth]
-      summary: 邮箱/手机号 + 密码登录
+      summary: 邮箱/手机号/用户名 + 密码登录
       description: |
         连续失败达到阈值后按 identifier + IP 锁定，锁定期内正确密码同样返回 429。
         账号维度返回 `login_locked`，IP 维度返回 `rpm_limit_exceeded`。
@@ -166,6 +166,56 @@ paths:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '403':
           description: 账号不可用
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/v1/auth/profile:
+    patch:
+      operationId: patchProfile
+      tags: [auth]
+      summary: 修改本人昵称与可选用户名
+      description: |
+        nickname 必填（与注册同一规则，去首尾空格后按 rune 计数 ≤ 64）。
+        username 可选：**字段缺省**表示不改动；**空串**表示清空（清空后只能用
+        邮箱/手机号登录；账号既无邮箱也无手机号时返回 400，避免把自己锁死）；
+        非空值按与登录标识相同的规则归一化（3..32 字节、字母开头、仅
+        a-z0-9._-、统一小写），并受 `uk_user_username` 唯一约束，重复时返回 409。
+        本次改动不影响会话，响应回传更新后的账号。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfileUpdateRequest'
+      responses:
+        '200':
+          description: 更新后的账号
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user:
+                    $ref: '#/components/schemas/AuthUser'
+        '400':
+          description: 字段不合法（invalid_request_body；nickname / username）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 未登录或会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: 用户名已被占用（resource_state_conflict）
           content:
             application/json:
               schema:
@@ -1562,6 +1612,10 @@ paths:
         - name: phone
           in: query
           schema: {type: string, maxLength: 128}
+        - name: username
+          in: query
+          schema: {type: string, maxLength: 128}
+          description: 按登录用户名模糊匹配
         - name: user_no
           in: query
           schema: {type: string, maxLength: 128}
@@ -2683,6 +2737,14 @@ components:
             HMAC(secret, "csrf|"+sid)，与可读的 `csrf` cookie 同值；
             写请求回传到 X-CSRF-Token 头。GET /api/v1/auth/me 每次下发新 cookie
             并在响应头重复一次。
+        username:
+          type: string
+          description: 账号自选的登录用户名；未设置为空串。设置后可用它（或邮箱/手机号）登录
+        password_warning:
+          type: boolean
+          description: |
+            true 表示该账号仍在使用开通时下发的初始口令（仅内置超级管理员会被置位）。
+            这只是提示，不拦截任何接口；改密成功后即变回 false。
     AuthUser:
       type: object
       required: [id, email, display_name, role, status]
@@ -2698,13 +2760,19 @@ components:
           $ref: '#/components/schemas/UserRole'
         status:
           $ref: '#/components/schemas/UserStatus'
+        username:
+          type: string
+          description: 账号自选的登录用户名；未设置为空串
+        password_warning:
+          type: boolean
+          description: 仍在使用初始口令时为 true；仅提示，不拦截
     LoginRequest:
       type: object
       required: [identifier, password]
       properties:
         identifier:
           type: string
-          description: 邮箱或手机号；手机号支持 +86 前缀
+          description: 邮箱、手机号或运营账号用户名；含 @ 判为邮箱，去分隔符后全为数字且 6..20 位判为手机号，其余按用户名（3..32 字节、字母开头、小写归一）
         password:
           type: string
           format: password
@@ -2712,6 +2780,20 @@ components:
         code:
           type: string
           description: 验证码；第一段只接受空值，非空返回 400
+    ProfileUpdateRequest:
+      type: object
+      required: [nickname]
+      properties:
+        nickname:
+          type: string
+          maxLength: 64
+          description: 去首尾空格后按 rune 计数；空串表示清空昵称（展示名回退到用户名/邮箱/手机号）
+        username:
+          type: string
+          description: |
+            可选登录用户名。字段缺省 = 不改动；空串 = 清空（账号必须仍有邮箱或手机号，
+            否则 400）；非空按 3..32 字节、字母开头、仅 a-z0-9._- 归一化为小写。
+            唯一约束冲突返回 409。
     RegisterRequest:
       type: object
       required: [identifier, password]
@@ -3625,6 +3707,7 @@ components:
       properties:
         id: {type: integer, format: int64}
         user_no: {type: string}
+        username: {type: string, description: 自选登录用户名；未设置时省略。内置超管只有用户名，没有邮箱/手机号}
         email: {type: string, nullable: true}
         phone: {type: string, nullable: true}
         nickname: {type: string}

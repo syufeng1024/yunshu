@@ -109,7 +109,7 @@ func (s *Service) ChangePassword(w http.ResponseWriter, r *http.Request) {
 
 	res, err := tx.ExecContext(ctx, `
 		UPDATE t_user
-		   SET password_hash = ?, password_updated_at = ?, updated_at = ?
+		   SET password_hash = ?, password_updated_at = ?, password_is_initial = 0, updated_at = ?
 		 WHERE id = ? AND deleted_at IS NULL`,
 		string(newHash), now, now, sess.UID)
 	if err != nil {

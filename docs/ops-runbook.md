@@ -170,3 +170,141 @@ UPDATE t_reconcile_diff
 | `TicketSLAFirstResponseOverdue`（P1） | `max(gw_ticket_sla_overdue) > 0` | PRD §9.2 承诺首次响应 ≤ 4 小时，欠一张就已违约，所以阈值只能是 0。数值由 jobsd 每 30s 用 `ticket.FirstResponseOverdueSQL` 采样，与 `GET /api/admin/overview` 的 `alerts.sla_overdue` 同一条 SQL。按 `first_response_due_at` 升序认领（后台 `/admin/tickets` 的「SLA 超时」筛选）。**不要用自动关闭处置**——那会把「平台没回」记成「工单已了结」（PRD F21-2） |
 
 **降级期间的统一口径**：先看 `gw_ratelimit_unavailable_total` 是否在涨（Redis 真不可用），再看 `gw_ratelimit_degraded_total{dim}` 是否同时在涨（并发维度确实退到了节点内计数）；两者的语义自 G29 起是分开的——`degraded` **只在因 Redis 失败而本地判定时**自增，`GW_RATELIMIT_DEGRADE_MODE=concurrency_only` 本身不会让它涨。然后再看 reject 比例是否被降级放大。降级是**预期行为**，不要当成故障处理；但 `concurrency` 降级意味着实际并发上限按副本数缩小了，如果同时在扩缩容，需要把「名义值 ÷ 副本数」算给业务方。
+
+## 9 内置超级管理员（admin）
+
+`controld` 启动时会把内置超管建成幂等的一步（`internal/control/bootstrap`）。它**只在控制面进程**执行，`gatewayd` / `jobsd` 完全不做；多副本同时启动时只有一个副本真的插入，其余两个拿到唯一键冲突后按「已存在」处理。
+
+| 项 | 值 |
+| :--- | :--- |
+| 账号名 | `ADMIN_BOOTSTRAP_USERNAME`（默认 `admin`） |
+| 初始口令 | `ADMIN_BOOTSTRAP_PASSWORD`（默认 `12345678`，**公开弱口令**） |
+| 角色 / 状态 | `SUPER_ADMIN` / `NORMAL`；`nickname=超级管理员`；`email` 与 `phone` 均为 `NULL` |
+| 幂等判据 | `t_user.uk_user_username`：已存在即跳过，**不改角色、不改状态、不重置口令** |
+
+### 9.1 首次部署的凭据从哪来
+
+1. 部署前把 `ADMIN_BOOTSTRAP_USERNAME` / `ADMIN_BOOTSTRAP_PASSWORD` 写进 env 文件（三个变量的清单见 `.env.example`；全栈容器化见 `deploy/README.md`）。口令长度必须 8..72 字节，不合法会让 `controld` **拒绝启动**。
+2. 启动后检查 `controld` 日志：首次创建会出现**一条 WARN**「已创建内置超级管理员 username=admin（role=SUPER_ADMIN）；初始密码取 ADMIN_BOOTSTRAP_PASSWORD，请立即修改初始密码」。日志里不会出现口令本身、不会出现 bcrypt hash、不会出现 DSN。
+3. 用该账号登录 `/admin`。**登录页要勾选用户协议**（对所有账号一致，不是超管特例）。
+4. **尽快改密**（见 9.2）。系统**不强制**：登录后运营后台顶部会出现一条「当前账号仍在使用初始密码，请尽快修改」的提醒横幅（`password_warning=true`，只提示、不拦截任何接口），改密成功后自动消失。`docs/go-live-checklist.md` 仍把"已改密"作为上线自查项——那是流程要求，不是程序拦截。
+
+### 9.2 改密（正常路径）
+
+用会话调用 `POST /api/v1/auth/password`，body `{old_password, new_password}`，需带 `X-CSRF-Token`（值取 `csrf` cookie）。成功后会吊销该 uid 的**全部**会话与 CSRF token，需要重新登录。
+
+### 9.3 忘记密码的人工兜底
+
+> **当前没有任何重置口令的接口。** 唯一能写 `password_hash` 的入口是自助的 `POST /api/v1/auth/password`（要旧口令）。登录页的「忘记密码」也只描述“暂未开放”。因此在「唯一超管忘记口令」这一种情况下，唯一手段是 DBA 直接改库，且**四步都必须做**，少一步就是留后门。
+
+**执行前置条件（缺一不可）**
+
+1. **确认这不是最后一个可用超管**。若结果 `0`，先不要改库——改完要么没人能进后台，要么口令只掌握在改库的人手里。此时正确做法是：先由另一次引导（把 `ADMIN_BOOTSTRAP_USERNAME` 换成新用户名）建出第二个超管，或接受“口令由单人掌握”的风险并记录在案。
+
+   ```sql
+   SELECT COUNT(*) AS other_super_admins
+     FROM t_user
+    WHERE role = 'SUPER_ADMIN' AND status = 'NORMAL' AND deleted_at IS NULL
+      AND username <> 'admin';
+   ```
+
+2. **两人复核**：一人执行、一人在场核对 SQL 与目标 `id`；工单里记下两人工号。
+3. 目标账号先用 `SELECT id, username, role, status FROM t_user WHERE username = 'admin'` 确认只有一行。
+4. 任何自建连接/脚本的 DSN 必须带 `parseTime=true`：引导会读 `deleted_at` 到 `sql.NullTime`，驱动未开启 `parseTime` 时返回 `[]byte`，`Scan` 失败会让引导报错（`bootstrap: ...`）。症状是**进程照常启动、日志 ERROR、没有任何 WARN、`admin` 也登不上**（该错误走 `EnsureSuperAdmin` 的运行时错误分支，按设计不退出进程），不是崩溃重启。仓库的 `.env` / `.env.example` 已带该参数，只影响手工拼 DSN 的场景。
+
+**生成 bcrypt cost 12 的 hash**（二选一，不要在命令行历史里留明文口令）
+
+```bash
+# 方式 A（推荐，仓库内一次性片段；口令从 stdin 读，不进 argv / history）
+cd <仓库根目录>              # 必须在模块内，才用得到 go.mod 里的 golang.org/x/crypto
+cat > /tmp/hashpw.go << 'EOF'
+package main
+
+import (
+	"bufio"
+	"fmt"
+	"os"
+	"strings"
+
+	"golang.org/x/crypto/bcrypt"
+)
+
+func main() {
+	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	hash, err := bcrypt.GenerateFromPassword([]byte(strings.TrimRight(line, "\r\n")), 12)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println(string(hash))
+}
+EOF
+go run /tmp/hashpw.go        # 粘贴新口令后回车，输出 $2a$12$...；用完删掉该文件
+
+# 方式 B（有 apache2-utils 时）
+htpasswd -bnBC 12 "" '<新口令>' | tr -d ':\n'   # 输出 $2y$12$...，Go 的 bcrypt 同样可校验
+```
+
+**落库**
+
+```sql
+UPDATE t_user
+   SET password_hash = '<上一步的 hash>',
+       password_algo = 'bcrypt',
+       password_updated_at = UTC_TIMESTAMP(3),
+       updated_at = UTC_TIMESTAMP(3)
+ WHERE username = 'admin' AND deleted_at IS NULL;
+```
+
+改完立刻验证：用新口令登录一次 `/admin`。**必须同时踢掉旧会话**——`POST /api/v1/auth/password` 改完库会主动吊销（K30 `sess:admin:uid:{uid}` → 逐个 DEL K20 `sess:admin:{sid}`），DBA 直改库绕过了这一步，**旧 cookie 仍然有效**，等于没改：
+
+```bash
+# 列出该 uid 的全部 sid，再逐个删除；最后删索引
+redis-cli -h <host> -p <port> SMEMBERS "sess:admin:uid:<uid>"
+redis-cli -h <host> -p <port> DEL "sess:admin:<sid>"     # 对每个 sid 执行
+redis-cli -h <host> -p <port> DEL "sess:admin:uid:<uid>"
+```
+
+**补审计**（没有接口就必须手工留痕）
+
+`action` 用 **`UPDATE`**，与 `POST /api/v1/auth/password` 成功路径写的行保持同一套词表（那边也是 `module='USER', action='UPDATE', result='OK'`）。`t_admin_audit_log.action` 是 `varchar(32)`，没有枚举约束，写 `RESET_PASSWORD` 不会报错，但会让“查所有改密审计”的 SQL 漏掉这一条。经手人与工单号进 `reason`，`after_json` 只放非敏感事实——**绝不能出现新口令或它的 hash**。
+
+```sql
+INSERT INTO t_admin_audit_log
+  (trace_id, operator_id, operator_role, operator_ip, module, action,
+   target_type, target_id, before_json, after_json, reason, result, created_at)
+VALUES
+  ('manual-reset', 0, 'SYSTEM', NULL, 'USER', 'UPDATE',
+   't_user', '<uid>', NULL,
+   JSON_OBJECT('password_reset', 'manual',
+               'by', 'dba',
+               'reviewed_by', '<复核人工号>',
+               'sessions_revoked', true),
+   'DBA 手工重置 admin 口令；工单 #<单号>；执行人 <姓名>；两人复核；已清全部会话；未记录口令与 hash',
+   'OK', UTC_TIMESTAMP(3));
+```
+
+字段口径：`operator_id=0` + `operator_role='SYSTEM'` 是“没有具体操作人”的标记（引导程序用同一套），真实经手人写在 `reason` 里——**不要**把某个人的 `t_user.id` 填进 `operator_id`，那会让审计看起来像“该操作人自己改的”。注意 `target_id` 是 `varchar(64)`，与 `bigint` 的 `t_user.id` 比较时必须 `CAST(id AS CHAR)`，否则比较走隐式转换、可能漏行。
+
+### 9.4 `ADMIN_BOOTSTRAP_DISABLED=true` 的适用场景
+
+| 场景 | 为什么要关 |
+| :--- | :--- |
+| 存量环境已经有超管，且口令已改 | 让启动路径完全跳过这一步，日志里不再出现引导相关行 |
+| 多套环境共用一个库 | 只有主环境该建号，其余环境关掉以免出现第二个同名超管 |
+| 迁移 0027 尚未应用（引导只打 ERROR，进程照常启动） | 关掉引导可让日志里不再出现那条 ERROR；**随后必须补迁移并重新打开**，否则新环境永远没有超管 |
+| 安全审计期间冻结账号创建 | 与变更窗口一致 |
+
+### 9.5 引导失败的处置
+
+引导的失败处置是**两档**：配置非法才拒绝启动；一切运行时 SQL 错误只打 ERROR、**进程继续运行**。理由：这是给存量生产进程加的一次性启动动作，把一个瞬时 DB 抖动或“迁移晚应用一个版本”放大成整台控制面起不来，代价远大于一行 ERROR 加 9.3 的手工兜底。缺 `username` 列只影响用户名登录一条路径，存量客户账号照旧用邮箱/手机号登录。
+
+| 日志 | 含义 | 处置 |
+| :--- | :--- | :--- |
+| `admin bootstrap config: ... 必须是布尔值` | `ADMIN_BOOTSTRAP_DISABLED` 不是布尔 | 改成 `true`/`false`/`1`/`0`；**进程已退出** |
+| `admin bootstrap config: ... 必须是合法用户名` | 用户名不合规（邮箱/手机号形态、全数字、含非法字符） | 改成 3..32 字节、字母开头的 `a-z0-9._-`；**进程已退出** |
+| `admin bootstrap config: ... 不符合密码规则` | 口令不在 8..72 字节或纯空白 | 改口令；**进程已退出**。日志**不含口令值** |
+| `admin bootstrap: ... t_user.username 不存在，迁移 0027 未应用；请先执行 make migrate（迁移 0027）后重启 controld` | MySQL 1054，schema 落后于二进制 | 进程**继续运行**（没有超管，也没关系旧账号可用）。执行 `make migrate` 后**重启一次**让引导补建 |
+| `admin bootstrap failed: ...` | 其它运行时 DB 错误（连接、只读、死锁、审计表不可写） | 进程**继续运行**但可能没有超管。先修 DB/权限，再重启一次让引导重跑；期间可按 9.3 手工建号。这些 ERROR 是唯一信号，请配置告警抓 `stage=startup.bootstrap` |
+| `admin bootstrap: username=admin 已存在（role=OPS status=DISABLED），未做任何修改`（INFO） | 库里已有同名活账号且**不是**预期的超管 | **设计如此**：引导不会修复。读一次 `t_user` 核对是人为降级还是历史遗留，按 R3 用另一个超管手工恢复。绝不要用“再启一次”去指望它自动提权 |
+| `admin bootstrap: username=admin 被软删除账号占用，唯一键 uk_user_username 仍被占，需人工处理`（WARN） | 软删行仍占 `uk_user_username`（唯一键不含 `deleted_at`），而登录查询带 `deleted_at IS NULL` 永远查不到它 → 用户名被“幽灵占用” | **不要复活该行**（启动路径恢复已注销账号等于无授权提权）。按业务确认后二选一：把该行 `username` 置 NULL 释放唯一键，或换一个 `ADMIN_BOOTSTRAP_USERNAME` 再重启。处置后补一条审计说明 |

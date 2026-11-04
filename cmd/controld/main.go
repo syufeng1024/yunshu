@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"yunshu.dev/core/internal/config"
 	"yunshu.dev/core/internal/control"
 	"yunshu.dev/core/internal/control/audit"
+	"yunshu.dev/core/internal/control/bootstrap"
 	"yunshu.dev/core/internal/control/mw"
 	"yunshu.dev/core/internal/cryptobox"
 	"yunshu.dev/core/internal/notify/mail"
@@ -114,6 +116,58 @@ func main() {
 	}
 
 	auditWriter := &audit.Writer{DB: mainDB, Now: clock.Real{}}
+
+	// Built-in super administrator (INC-admin-bootstrap). Placed before
+	// control.New on purpose: there must be no window in which the process
+	// accepts logins while username=admin cannot be found.
+	//
+	// Failure handling is two-tier, not all-or-nothing:
+	//   - invalid configuration refuses to start: a username or password that
+	//     can never become valid means the operator has to edit the env file, and
+	//     starting anyway would just hide the mistake behind a missing account;
+	//   - every runtime SQL error — including MySQL 1054 for a schema without
+	//     migration 0027 — is logged and startup continues. This is a one-shot
+	//     action bolted onto an existing production process: turning a transient
+	//     database hiccup, or a migration applied one deploy too late, into "the
+	//     whole control plane is down" costs far more than a visible ERROR line
+	//     plus the runbook's manual fallback. A missing username column only
+	//     affects the username-login path; every existing customer account
+	//     signs in with email or phone.
+	//
+	// gatewayd and jobsd must never run this: the console would be created three
+	// times and the data plane would depend on a control-plane table.
+	bootOpts, bootErr := bootstrap.OptionsFromEnv()
+	if bootErr != nil {
+		logger.Error(rootCtx, "admin bootstrap config: "+bootErr.Error(),
+			obslog.Fields{Stage: "startup", Status: 1})
+		os.Exit(1)
+	}
+	if res, ensureErr := bootstrap.EnsureSuperAdmin(rootCtx, bootstrap.Deps{
+		DB:     mainDB,
+		Audit:  auditWriter,
+		Logger: logger,
+		Now:    clock.Real{},
+	}, bootOpts); ensureErr != nil {
+		switch {
+		case errors.Is(ensureErr, bootstrap.ErrSchemaNotMigrated):
+			logger.Error(rootCtx, "admin bootstrap: "+ensureErr.Error()+"；请先执行 make migrate（迁移 0027）后重启 controld",
+				obslog.Fields{Stage: "startup", Status: 1})
+			// 不退出：缺列只影响用户名登录一条路径，不能让存量客户的控制面陪葬
+		case errors.Is(ensureErr, bootstrap.ErrInvalidConfig):
+			logger.Error(rootCtx, "admin bootstrap config: "+ensureErr.Error(),
+				obslog.Fields{Stage: "startup", Status: 1})
+			os.Exit(1)
+		default:
+			logger.Error(rootCtx, "admin bootstrap failed: "+ensureErr.Error(),
+				obslog.Fields{Stage: "startup"})
+		}
+	} else if res.Outcome == bootstrap.OutcomeCreated {
+		// The WARN "created, change the password now" line is written inside
+		// EnsureSuperAdmin. This INFO adds the uid, which is what an operator
+		// needs to find the t_user row and its audit entry.
+		logger.Info(rootCtx, fmt.Sprintf("admin bootstrap: outcome=%s uid=%d username=%s",
+			res.Outcome, res.UID, res.Username), obslog.Fields{Stage: "startup"})
+	}
 
 	// Payment callback signing secrets. They are read from the environment,
 	// not from t_config_item: the frozen configuration table carries no payment
