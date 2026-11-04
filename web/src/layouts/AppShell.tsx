@@ -1,9 +1,10 @@
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { Badge } from '@/components/Badge'
 import { Icon } from '@/components/Icon'
 import { Logo } from '@/components/Logo'
-import { UserMenu } from '@/components/UserMenu'
 import { ScrollRestorer } from '@/components/ScrollRestorer'
-import { CONSOLE_NAV_GROUPS, ROUTES, SITE_NAV } from '@/lib/constants'
+import { UserMenu } from '@/components/UserMenu'
+import { ROUTES, SITE_NAV, USER_ROLE_LABEL, visibleShellNavGroups } from '@/lib/constants'
 import { cn } from '@/lib/cn'
 import { useAuthStore } from '@/stores/auth'
 
@@ -17,19 +18,27 @@ function navClass({ isActive }: { isActive: boolean }): string {
 }
 
 /**
- * 控制台外壳。
+ * 登录后的唯一外壳，`/console/*` 与 `/admin/*` 两个路由分支共用它。
+ *
+ * 信息架构：一个侧栏、三个分组（常规 / 个人 / 管理员，见 constants.ts 的
+ * SHELL_NAV_GROUPS）。以前是「控制台壳 + 运营后台壳」两套侧栏、两套分组口径，
+ * 超管要跨两个后台来回跳；现在个人功能与管理员功能各归其组，用角色过滤解决
+ * 「我不该看见这一组」。两个分支共用同一个组件，因此两边渲染结果不可能漂移。
  *
  * 布局要点：外层 `h-screen overflow-hidden`，侧栏与内容区各自滚动（侧栏
  * `md:overflow-y-auto`，内容区 `flex-1 overflow-y-auto`）。原来是整页滚动，
- * 菜单跟着长表格一起走——翻到一半想换页面得先把滚动条拉回顶部。
+ * 菜单跟着长表格一起走——翻到一半想换页面得先把滚动条拉回顶部。运营页的表格
+ * 比用户侧更长，这条尤其重要。
  *
  * 顶栏放**站点导航**（首页/定价/模型价格/文档/工具集成）。这里原本钉着一条
  * 「调用地址」，占了首屏最贵的一行，而那个地址在密钥详情与调试台的代码生成里
  * 都有，不需要常驻。
  */
-export function ConsoleLayout() {
+export function AppShell() {
+  const user = useAuthStore((state) => state.user)
   const logout = useAuthStore((state) => state.logout)
   const navigate = useNavigate()
+  const groups = visibleShellNavGroups(user?.role)
 
   const handleLogout = async () => {
     await logout()
@@ -40,15 +49,20 @@ export function ConsoleLayout() {
     <div className="flex h-screen flex-col overflow-hidden bg-canvas md:flex-row">
       <ScrollRestorer />
       <aside className="flex shrink-0 flex-row items-center gap-2 bg-sidebar-bg px-3 py-2 md:h-full md:w-sidebar md:flex-col md:items-stretch md:gap-6 md:overflow-y-auto md:border-r md:border-sidebar-border md:px-4 md:py-5">
-        <div className="flex items-center justify-between md:justify-start">
+        <div className="flex items-center justify-between gap-2 md:justify-start">
           <Logo size="sm" collapsible to={ROUTES.console} />
+          {user ? (
+            <span className="hidden md:inline-flex">
+              <Badge variant="info">{USER_ROLE_LABEL[user.role]}</Badge>
+            </span>
+          ) : null}
         </div>
 
         <nav
-          aria-label="控制台导航"
+          aria-label="侧栏导航"
           className="flex flex-1 items-center gap-1 overflow-x-auto md:mt-2 md:flex-col md:items-stretch md:gap-2 md:overflow-visible"
         >
-          {CONSOLE_NAV_GROUPS.map((group) => (
+          {groups.map((group) => (
             <div key={group.title} className="flex items-center gap-1 md:block">
               <p className="hidden px-3 pb-1 text-xs font-medium text-ink-muted md:block">
                 {group.title}
@@ -105,11 +119,30 @@ export function ConsoleLayout() {
             ))}
           </nav>
           <div className="ml-auto">
-            <UserMenu scope="console" />
+            <UserMenu />
           </div>
         </header>
 
         <main className="flex-1 overflow-y-auto">
+          {/* 初始口令提醒：只提示、不拦截。账号仍使用开通时下发的口令时出现，
+              改密成功后 password_warning 变 false，横幅自然消失。原来只挂在运营
+              后台壳上——可改密码的入口就在「个人 › 账户设置」，人在控制台更需要
+              这条提醒，所以合并后两边都显示。 */}
+          {user?.password_warning ? (
+            <div
+              role="alert"
+              className="border-b border-warning bg-warning-soft px-4 py-2 text-xs text-warning sm:px-6"
+            >
+              当前账号仍在使用初始密码，请尽快修改。
+              <Link to={ROUTES.consoleAccount} className="ml-1 font-semibold underline">
+                去修改密码
+              </Link>
+            </div>
+          ) : null}
+          {/* 两壳的容器宽度原本就都是 max-w-6xl（1152px），合并后沿用同一个值，
+              不额外放宽：运营侧最宽的表格（渠道 / 用户 / 订单）在 6xl 里已经排得
+              下，再宽只会拉长每行的扫视距离；真有超宽表格，横向滚动由 Table 自己
+              承担，不该让整页跟着变宽。 */}
           <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
             <Outlet />
           </div>

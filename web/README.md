@@ -46,7 +46,7 @@ npm run preview
 | `src/api/client.ts` | fetch 封装：统一解析 `{"error":{code,message,hint}}`，401 跳登录 |
 | `src/api/types.ts` | `openapi-typescript` 生成，禁止手改 |
 | `src/components/` | Button / Input / Select / Table / Modal / Drawer / Toast / Tabs / Badge / Tooltip / CopyBlock / EmptyState / Skeleton / StatCard / LineChart |
-| `src/layouts/` | SiteLayout（Header/Footer）、ConsoleLayout、AdminLayout（深色侧栏） |
+| `src/layouts/` | SiteLayout（Header/Footer）、AppShell（登录后唯一的壳：侧栏「常规 / 个人 / 管理员」三组） |
 | `src/lib/format.ts` | 积分 ↔ 元、微积分 ↔ 积分的唯一换算点 |
 | `src/lib/i18n.ts` | 专属渠道对外文案 + 禁用词常量（`TODO(Legal)`） |
 | `src/router/guards.tsx` | 体验层权限守卫；服务端仍需逐接口校验 |

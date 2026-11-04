@@ -16,6 +16,7 @@
     "test:watch": "vitest",
     "e2e": "playwright test",
     "check:copy": "node scripts/check-copy.mjs",
+    "check:tests": "node scripts/check-test-collection.mjs",
     "verify": "npm run typecheck && npm test && npm run check:copy && npm run build"
   },
   "dependencies": {

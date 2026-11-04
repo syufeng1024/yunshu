@@ -837,6 +837,78 @@ export function useUpdateGroup() {
 }
 
 // ---------------------------------------------------------------------------
+// Configuration keys (internal/control/ops/config.go, T05)
+// ---------------------------------------------------------------------------
+
+/** `ROW` = 库里有值；`DEFAULT` = 库里没有行，回落到注册表默认值。 */
+export type ConfigSource = 'ROW' | 'DEFAULT'
+
+/**
+ * configItemView。`value` 是 JSON 任意类型（string / number / boolean /
+ * object / array）——控件类型由它决定，前端不维护键 → 类型的映射表。
+ */
+export interface ConfigItem {
+  key: string
+  namespace: string
+  value: unknown
+  /**
+   * false = 不在 12 个运行时写入白名单内：PUT 会以
+   * 400 `config_value_invalid` 拒绝该键，只能改配置文件后重启进程。
+   */
+  runtime_writable: boolean
+  version: number
+  source: ConfigSource
+}
+
+export interface ConfigListResponse {
+  items: ConfigItem[]
+  total: number
+}
+
+/** `PUT /api/admin/config` 的请求体：允许只提交部分键。 */
+export interface ConfigUpdateRequest {
+  values: Record<string, unknown>
+}
+
+export interface ConfigUpdateResponse {
+  version: number
+  publish_id: string
+  namespaces: string[]
+  changed_keys: string[]
+}
+
+export function fetchAdminConfig(): Promise<ConfigListResponse> {
+  return api.get<ConfigListResponse>('/api/admin/config')
+}
+
+/**
+ * 只提交改动过的键。服务端拒收空 `values`（`invalid_field: values`），
+ * 所以调用方必须先做「有没有改动」的判断，别发空 PUT。
+ */
+export function updateAdminConfig(
+  values: Record<string, unknown>,
+): Promise<ConfigUpdateResponse> {
+  return api.put<ConfigUpdateResponse>('/api/admin/config', { values })
+}
+
+export function useAdminConfig() {
+  return useQuery({
+    queryKey: ['admin', 'config'],
+    queryFn: fetchAdminConfig,
+  })
+}
+
+export function useUpdateAdminConfig() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (values: Record<string, unknown>) => updateAdminConfig(values),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ['admin', 'config'] })
+    },
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Tool integrations (internal/control/ops/integration.go, T33)
 // ---------------------------------------------------------------------------
 

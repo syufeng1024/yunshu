@@ -31,10 +31,10 @@ afterEach(() => {
   })
 })
 
-function renderMenu(scope: 'console' | 'admin' = 'console') {
+function renderMenu() {
   return render(
     <MemoryRouter>
-      <UserMenu scope={scope} />
+      <UserMenu />
     </MemoryRouter>,
   )
 }
@@ -59,11 +59,19 @@ describe('UserMenu', () => {
     }
   })
 
-  it('offers the cross-console switch only to admins', async () => {
+  /**
+   * 防回退：账号菜单里不再有「运营后台」/「返回控制台」两个互跳项。
+   *
+   * 它们存在的唯一理由是当时有两个独立的后台壳；现在 `/console` 与 `/admin` 共用
+   * 同一个侧栏，管理员入口就在侧栏「管理员」分组里。谁把互跳项加回来，说明侧栏
+   * 又被拆成了两套。
+   */
+  it('不再提供跨后台互跳项，连管理员也没有', async () => {
     const user = userEvent.setup()
     const first = renderMenu()
     await user.click(screen.getByRole('button', { name: '账号菜单' }))
     expect(screen.queryByRole('menuitem', { name: '运营后台' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: '返回控制台' })).not.toBeInTheDocument()
     first.unmount()
 
     act(() => {
@@ -71,7 +79,15 @@ describe('UserMenu', () => {
     })
     renderMenu()
     await user.click(screen.getByRole('button', { name: '账号菜单' }))
-    expect(screen.getByRole('menuitem', { name: '运营后台' })).toHaveAttribute('href', '/admin')
+    expect(screen.queryByRole('menuitem', { name: '运营后台' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: '返回控制台' })).not.toBeInTheDocument()
+    // 管理员的菜单项与个人用户完全一致：位置感交给侧栏的选中态，不再由菜单自称。
+    expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+      '个人资料',
+      '我的订阅',
+      '钱包与充值',
+      '退出登录',
+    ])
   })
 
   it('closes on Escape', async () => {

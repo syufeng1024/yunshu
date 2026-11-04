@@ -1,15 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Icon } from './Icon'
-import { ROUTES, USER_ROLE_LABEL, isAdminRole } from '@/lib/constants'
+import { ROUTES, USER_ROLE_LABEL } from '@/lib/constants'
 import type { IconName } from '@/lib/constants'
 import { cn } from '@/lib/cn'
 import { useAuthStore } from '@/stores/auth'
-
-interface UserMenuProps {
-  /** 当前所处的一端：菜单里标出位置，并给出切到另一端的入口。 */
-  scope: 'console' | 'admin'
-}
 
 /**
  * 右上角的账号菜单。
@@ -17,8 +12,13 @@ interface UserMenuProps {
  * 原来账号与「退出登录」钉在侧栏最底部：那里的可点区域小、离内容远，而且侧栏
  * 一旦变长就得滚到底才能退出。收到顶栏右上角是这类产品的通用位置——它属于
  * 「当前登录的人」，不属于任何一组菜单。
+ *
+ * 这里曾经还有「运营后台」/「返回控制台」两项，用来在两个独立的后台壳之间互跳。
+ * 现在 `/console` 与 `/admin` 共用同一个侧栏（layouts/AppShell.tsx），管理员入口
+ * 就在侧栏的「管理员」分组里，互跳项已无意义，连同 `scope` 属性一并删掉——
+ * 「当前在哪一端」由侧栏的选中态回答，菜单不必再自称位置。
  */
-export function UserMenu({ scope }: UserMenuProps) {
+export function UserMenu() {
   const user = useAuthStore((state) => state.user)
   const logout = useAuthStore((state) => state.logout)
   const navigate = useNavigate()
@@ -45,19 +45,14 @@ export function UserMenu({ scope }: UserMenuProps) {
 
   const displayName = user.display_name || user.email
   const initial = displayName.trim().charAt(0).toUpperCase() || '?'
-  const admin = isAdminRole(user.role)
 
+  // 账号菜单只放「属于这个人」的三项（资料 / 订阅 / 钱包）。这些入口在侧栏的
+  // 「个人」分组里也有：菜单是快捷入口，侧栏是完整导航，两处不冲突。
   const items: { to: string; icon: IconName; label: string }[] = [
     { to: ROUTES.consoleAccount, icon: 'users', label: '个人资料' },
     { to: ROUTES.consoleSubscription, icon: 'tag', label: '我的订阅' },
     { to: ROUTES.consoleRecharge, icon: 'wallet', label: '钱包与充值' },
   ]
-  if (admin && scope === 'console') {
-    items.push({ to: ROUTES.admin, icon: 'shield', label: '运营后台' })
-  }
-  if (admin && scope === 'admin') {
-    items.push({ to: ROUTES.console, icon: 'home', label: '返回控制台' })
-  }
 
   const handleLogout = async () => {
     setOpen(false)
@@ -102,11 +97,7 @@ export function UserMenu({ scope }: UserMenuProps) {
             </span>
             <div className="min-w-0">
               <p className="truncate text-sm font-medium text-ink">{displayName}</p>
-              <p className="truncate text-xs text-ink-muted">
-                {USER_ROLE_LABEL[user.role]}
-                <span className="mx-1">·</span>
-                {scope === 'admin' ? '运营后台' : '控制台'}
-              </p>
+              <p className="truncate text-xs text-ink-muted">{USER_ROLE_LABEL[user.role]}</p>
             </div>
           </div>
 

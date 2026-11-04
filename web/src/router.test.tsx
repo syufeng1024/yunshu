@@ -1,7 +1,8 @@
 import type { ReactElement } from 'react'
 import type { RouteObject } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
-import { ADMIN_PRICING_ROLES, ROUTES } from '@/lib/constants'
+import { AppShell } from '@/layouts/AppShell'
+import { ADMIN_PRICING_ROLES, ADMIN_SYSTEM_ROLES, ROUTES } from '@/lib/constants'
 import { router } from '@/router'
 import type { RequireAuthProps } from '@/router/guards'
 import { RequireAuth } from '@/router/guards'
@@ -22,6 +23,8 @@ import { RequireAuth } from '@/router/guards'
  *    的行为不受本次收窄影响；
  * 3. `pricing` 子路由**仍然存在并挂着页面**——防「用删掉路由的方式下架」，那会把
  *    OPS / SUPER_ADMIN 一起锁在门外。
+ *
+ * `/admin/system`（系统管理）走的是同一套接线，用例在下面独立一节。
  *
  * 只断言 `RequireAuth` 的 props，不断言 403 页的正文文案：那段文案是产品口径、
  * 会单独调整，不该让路由接线测试跟着红。
@@ -93,12 +96,83 @@ describe('/admin/pricing 的角色收窄接线（防假下架）', () => {
     expect(element.props.roles).toBeUndefined()
   })
 
-  it('除 pricing 外没有别的运营子路由被套上角色白名单', () => {
+  it('只有 pricing 与 system 两个子路由被套上角色白名单', () => {
     const guarded = (adminRoute().children ?? []).filter((child) => {
       const element = child.element as ReactElement<Partial<RequireAuthProps>> | null | undefined
       return element !== null && element !== undefined && element.props?.roles !== undefined
     })
 
-    expect(guarded.map((child) => child.path)).toEqual(['pricing'])
+    // 收窄名单是显式列举的：多出一个受守卫的子路由 = 有人新加了页面级角色限制，
+    // 少一个 = 有人把守卫删了（假下架）。两种都要在这里被发现。
+    expect(guarded.map((child) => child.path)).toEqual(['pricing', 'system'])
+  })
+})
+
+/**
+ * 「系统管理」只调 `GET/PUT /api/admin/config`，权限点 `config.write` 只给了
+ * OPS 与 SUPER_ADMIN（`internal/control/mw/authz.go`）。菜单按 ADMIN_SYSTEM_ROLES
+ * 过滤，这里锁住路由层的第二道闸——否则 FINANCE 在地址栏敲 `/admin/system` 就能
+ * 看到一个必然全线 403 的后台页面。
+ */
+describe('/admin/system 的角色收窄接线', () => {
+  it('system 子路由用 RequireAuth 包住，且 roles 取自生产常量 ADMIN_SYSTEM_ROLES', () => {
+    const element = elementOf(adminChild('system'), 'system')
+
+    expect(element.type).toBe(RequireAuth)
+    expect(element.props.role).toBe('admin')
+    // 删掉 `roles={ADMIN_SYSTEM_ROLES}` 会让这一行变红。
+    expect(element.props.roles).toEqual(ADMIN_SYSTEM_ROLES)
+  })
+
+  it('ADMIN_SYSTEM_ROLES 不含 FINANCE，因此真的挡住了财务', () => {
+    const element = elementOf(adminChild('system'), 'system')
+
+    expect(element.props.roles).not.toContain('FINANCE')
+    expect(element.props.roles).toEqual(expect.arrayContaining(['OPS', 'SUPER_ADMIN']))
+  })
+
+  it('system 子路由挂着页面，路由常量与页面标题齐全', () => {
+    const element = elementOf(adminChild('system'), 'system')
+
+    expect(element.props.children).toBeTruthy()
+    expect(ROUTES.adminSystem).toBe('/admin/system')
+  })
+})
+
+/**
+ * 单一外壳的接线：`/console` 与 `/admin` 必须挂**同一个** `AppShell`。
+ *
+ * 组件测试证明不了这一层——`AppShell.test.tsx` 渲染的是 AppShell 自身，把
+ * AdminLayout 重新加回来、两个分支各挂一套时它依然全绿，而侧栏就此悄悄裂成两份。
+ * 所以这里断言 element 里包着的是同一个组件。
+ *
+ * `role` 语义同时锁住：`/console` 是 `role="user"`（任何登录用户可进，个人用户也
+ * 要能看自己的密钥与账单），`/admin` 是 `role="admin"`；父路由都**没有** `roles`，
+ * 单页收窄只发生在 `/admin/pricing` 与 `/admin/system` 两处。
+ */
+describe('两个入口共用同一个外壳（防侧栏再被拆成两套）', () => {
+  it('/console 与 /admin 都是 RequireAuth 包着 AppShell，role 语义不变', () => {
+    const consoleRoute = router.routes.find((route) => route.path === '/console')
+    if (consoleRoute === undefined) {
+      throw new Error('路由树里找不到 path="/console"，router.tsx 的结构变了，本测试需要同步更新')
+    }
+
+    const consoleElement = elementOf(consoleRoute, '/console')
+    const adminElement = elementOf(adminRoute(), '/admin')
+
+    expect(consoleElement.type).toBe(RequireAuth)
+    expect(consoleElement.props.role).toBe('user')
+    expect(consoleElement.props.roles).toBeUndefined()
+
+    expect(adminElement.type).toBe(RequireAuth)
+    expect(adminElement.props.role).toBe('admin')
+    expect(adminElement.props.roles).toBeUndefined()
+
+    // 关键断言：两边挂的必须是同一个外壳组件，不许各自 fork 一份。
+    const consoleShell = consoleElement.props.children as ReactElement
+    const adminShell = adminElement.props.children as ReactElement
+    expect(consoleShell.type).toBe(AppShell)
+    expect(adminShell.type).toBe(AppShell)
+    expect(consoleShell.type).toBe(adminShell.type)
   })
 })

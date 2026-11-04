@@ -1,9 +1,8 @@
 import { lazy } from 'react'
 import { createBrowserRouter } from 'react-router-dom'
-import { AdminLayout } from '@/layouts/AdminLayout'
-import { ConsoleLayout } from '@/layouts/ConsoleLayout'
+import { AppShell } from '@/layouts/AppShell'
 import { SiteLayout } from '@/layouts/SiteLayout'
-import { ADMIN_PRICING_ROLES } from '@/lib/constants'
+import { ADMIN_PRICING_ROLES, ADMIN_SYSTEM_ROLES } from '@/lib/constants'
 import { RequireAuth } from '@/router/guards'
 
 // Route-level code splitting keeps the first paint free of chart/admin code.
@@ -40,6 +39,7 @@ const AdminTicketsPage = lazy(() => import('@/pages/admin/TicketsPage'))
 const AdminModelsPage = lazy(() => import('@/pages/admin/ModelsPage'))
 const AdminOrdersPage = lazy(() => import('@/pages/admin/OrdersPage'))
 const AdminRedeemCodesPage = lazy(() => import('@/pages/admin/RedeemCodesPage'))
+const AdminSystemPage = lazy(() => import('@/pages/admin/SystemPage'))
 
 export const router = createBrowserRouter([
   {
@@ -61,9 +61,12 @@ export const router = createBrowserRouter([
   },
   {
     path: '/console',
+    // 两个入口共用同一个外壳 AppShell：侧栏（常规 / 个人 / 管理员）在 /console 与
+    // /admin 下渲染结果完全一致，超管不必再跨两个后台跳。`role` 的语义不变：
+    // "user" = 任何登录用户可进，"admin" = 需管理员角色。
     element: (
       <RequireAuth role="user">
-        <ConsoleLayout />
+        <AppShell />
       </RequireAuth>
     ),
     children: [
@@ -82,9 +85,10 @@ export const router = createBrowserRouter([
   },
   {
     path: '/admin',
+    // 与外层 `/console` 用同一个 AppShell，只是守卫换成 role="admin"。
     element: (
       <RequireAuth role="admin">
-        <AdminLayout />
+        <AppShell />
       </RequireAuth>
     ),
     children: [
@@ -109,6 +113,17 @@ export const router = createBrowserRouter([
       { path: 'models', element: <AdminModelsPage /> },
       { path: 'orders', element: <AdminOrdersPage /> },
       { path: 'redeem-codes', element: <AdminRedeemCodesPage /> },
+      {
+        // 「系统管理」只调 /api/admin/config（权限点 config.write，只有 OPS 与
+        // SUPER_ADMIN 有）。菜单已按 ADMIN_SYSTEM_ROLES 过滤，这里再堵一次直接
+        // 输地址进来的 FINANCE。
+        path: 'system',
+        element: (
+          <RequireAuth role="admin" roles={ADMIN_SYSTEM_ROLES}>
+            <AdminSystemPage />
+          </RequireAuth>
+        ),
+      },
     ],
   },
 ])

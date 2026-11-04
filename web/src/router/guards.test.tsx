@@ -28,7 +28,7 @@ function userOf(role: UserRole): CurrentUser {
   }
 }
 
-/** 沿用 ConsoleLayout.test.tsx 的 auth store 夹具写法：直接置状态，不打接口。 */
+/** 沿用 AppShell.test.tsx 的 auth store 夹具写法：直接置状态，不打接口。 */
 function signInAs(role: UserRole): void {
   act(() => {
     useAuthStore.setState({ status: 'authenticated', user: userOf(role), error: null, hint: null })
