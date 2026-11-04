@@ -76,11 +76,14 @@ yunshu-api/
 
 ```bash
 make up           # 起 MySQL + Redis 依赖容器
-make migrate      # 应用迁移
-make run-ctl      # 控制面 :8081
+make run-ctl      # 控制面 :8081（ENV=dev 时启动过程会自动补迁移，不必先 make migrate）
 make run-gw       # 网关 :8080，metrics :9090
 make run-jobs     # 后台任务
 ```
+
+> 迁移时机：`ENV=dev/local` 时 `controld` 启动会先自动执行待应用迁移（持有 MySQL 咨询锁，
+> 多副本安全）；其它环境默认不执行，由部署编排的 `migrate` 服务 / Job 先跑完。
+> 想固定行为可显式设 `AUTO_MIGRATE=true|false`（见 `.env.example`）。手动迁移仍可用 `make migrate`。
 
 进程就绪自检：
 
@@ -91,7 +94,7 @@ curl -s localhost:8081/readyz    # 依赖就绪后 200（依赖抖动时非 200�
 
 > 端口冲突时改 `.env`：`GATEWAY_HTTP_ADDR`、`CONTROL_HTTP_ADDR`、`GATEWAY_METRICS_ADDR` 等（见 `docs/dev-setup.md`）。
 
-`controld` 启动时会幂等创建内置超级管理员：用 `admin` / `ADMIN_BOOTSTRAP_PASSWORD`（默认 `12345678`，见 `.env.example`）登录 `/admin`，**登录后必须立即改密**（`POST /api/v1/auth/password`）。已存在时不会被覆盖，也不会重置口令；要跳过这一步设 `ADMIN_BOOTSTRAP_DISABLED=true`。
+`controld` 启动时会幂等创建内置超级管理员：用 `admin` / `ADMIN_BOOTSTRAP_PASSWORD`（默认 `12345678`，见 `.env.example`）登录 `/admin`。登录后运营后台顶部会显示「仍在使用初始密码」的提醒条（只提醒、不拦截），改密后自动消失；已存在时不会被覆盖，也不会重置口令。要跳过引导设 `ADMIN_BOOTSTRAP_DISABLED=true`。
 
 ### 2. 全栈容器化部署（一条命令起完整站点）
 

@@ -308,3 +308,20 @@ VALUES
 | `admin bootstrap failed: ...` | 其它运行时 DB 错误（连接、只读、死锁、审计表不可写） | 进程**继续运行**但可能没有超管。先修 DB/权限，再重启一次让引导重跑；期间可按 9.3 手工建号。这些 ERROR 是唯一信号，请配置告警抓 `stage=startup.bootstrap` |
 | `admin bootstrap: username=admin 已存在（role=OPS status=DISABLED），未做任何修改`（INFO） | 库里已有同名活账号且**不是**预期的超管 | **设计如此**：引导不会修复。读一次 `t_user` 核对是人为降级还是历史遗留，按 R3 用另一个超管手工恢复。绝不要用“再启一次”去指望它自动提权 |
 | `admin bootstrap: username=admin 被软删除账号占用，唯一键 uk_user_username 仍被占，需人工处理`（WARN） | 软删行仍占 `uk_user_username`（唯一键不含 `deleted_at`），而登录查询带 `deleted_at IS NULL` 永远查不到它 → 用户名被“幽灵占用” | **不要复活该行**（启动路径恢复已注销账号等于无授权提权）。按业务确认后二选一：把该行 `username` 置 NULL 释放唯一键，或换一个 `ADMIN_BOOTSTRAP_USERNAME` 再重启。处置后补一条审计说明 |
+
+### 9.6 迁移时机与 `AUTO_MIGRATE`
+
+「先迁移再启动」是硬要求：新二进制会查 `t_user.username` / `t_user.password_is_initial`，schema 落后一版时**所有登录**（不只用户名登录）都会 1054 → 500。差别只在“谁去跑迁移”。
+
+| 场景 | 谁跑迁移 | 说明 |
+| :--- | :--- | :--- |
+| 本地 `ENV=dev` / `ENV=local` | `controld` 启动时自动跑 | 默认行为，`make run-ctl` 一条命令即可；待应用迁移会在启动日志留一行 `auto migrate: applied N pending migration(s)` |
+| compose 全栈（`deploy/docker-compose.stack.yml`） | 独立 `migrate` 服务 | `gatewayd` / `controld` 都声明 `depends_on: migrate: service_completed_successfully`，不用人工介入 |
+| k8s / 其它编排 | 独立 Job 或 initContainer | 应用账号通常没有 DDL 权限；`AUTO_MIGRATE` 默认 false 即为此 |
+| 单机裸跑（无编排） | 可设 `AUTO_MIGRATE=true` | 让 `controld` 自己迁移，省掉独立步骤；需给应用账号 DDL 权限 |
+
+- 多副本同时启动是安全的：启动迁移先取 MySQL 咨询锁 `yunshu_auto_migrate`（`GET_LOCK`，等待上限 300s）；没拿到锁的实例等前者跑完，随后发现无待应用迁移，不会重复执行 DDL。拿锁超时会**拒绝启动**并打 `auto migrate: 等待迁移锁超时`。
+- 显式值永远覆盖默认：`AUTO_MIGRATE=true|false`（也接受 `1/0/yes/no/on/off`）。写成其它值会让 `controld` **拒绝启动**（`auto migrate config: ...`）——写错的布尔不能悄悄决定谁跑 DDL。
+- 启动迁移失败即**拒绝启动**（与引导的两档处置不同）：引导失败只影响“有没有超管”，而 schema 落后会让每个登录 500，带着它对外服务只会放大故障。
+- 手动兜底仍然是 `make migrate` / `go run ./cmd/migrate up`；`migrate status` 看末行是否为 `0028 APPLIED`。回滚顺序：先回滚二进制，再 `down 1`。
+- 大表提醒：`0027` 的 `ADD UNIQUE KEY uk_user_username` 会重建索引，结束瞬间需短暂元数据锁（MDL）。生产建议低峰执行，并先确认没有长事务占着 `t_user`，否则迁移会排队等 MDL、表现为写入短暂卡住。

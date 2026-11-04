@@ -24,7 +24,7 @@
 
 | # | 检查 | 怎么验 | 不通过怎么办 |
 | :--- | :--- | :--- | :--- |
-| 7 | 迁移已到最新（RB-6） | `go run ./cmd/migrate status` → 末行版本为 `0027`，且全部 `APPLIED` / `CHECKSUM MATCH` | 有 `PENDING` 先 `migrate up`；有 `CHECKSUM_MISMATCH` **停手**，按第 8 项处理 |
+| 7 | 迁移已到最新（RB-6） | `go run ./cmd/migrate status` → 末行版本为 `0028`，且全部 `APPLIED` / `CHECKSUM MATCH` | 有 `PENDING` 先 `migrate up`；有 `CHECKSUM_MISMATCH` **停手**，按第 8 项处理。生产保持 `AUTO_MIGRATE=false`（默认），由编排的 migrate 服务/Job 先完成——新二进制会查 `t_user.username` / `password_is_initial`，schema 落后会让登录直接 500 |
 | 8 | 源码树迁移字节未被改动 | `go run ./cmd/migrate checksum --verify` → `checksum OK: N 个迁移与 checksums.golden 一致` | 有人改过已应用的迁移。按 `bash scripts/gen-migration-checksums.sh` 的说明新增迁移，**不要**改历史文件；已提交的改动要回退 |
 | 9 | **镜像内**迁移字节一致（G1 守卫） | `docker run --rm --entrypoint /usr/local/bin/migrate "yunshu-app:${TAG}" checksum --verify` → 退出 0 | **本机踩坑**：Windows 的 Git Bash 会把 `/usr/local/bin/migrate` 改写成 `D:/…/usr/local/bin/migrate`，表现为 `exec: "...": no such file or directory` / 退出 127——加上 `MSYS_NO_PATHCONV=1` 前缀即可（CI 的 ubuntu runner 无此问题，`release.yml` 里不需要该变量）。若命令能跑但退出 1，说明构建上下文（行尾/平台）改了 embed 的 SQL 字节：重建镜像并查 `git config core.autocrlf`；**不得**跳过本项上线 |
 | 10 | 行尾没有被工具批量改写（RB-6） | `bash scripts/check-eol.sh` → 退出 0 | 说明 `.gitattributes` 被改或某工具整文件换行：恢复文件后再提交，不要「顺手格式化」 |

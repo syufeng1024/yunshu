@@ -32,6 +32,7 @@ import (
 	"yunshu.dev/core/internal/platform/db"
 	"yunshu.dev/core/internal/platform/env"
 	"yunshu.dev/core/internal/platform/httpsrv"
+	"yunshu.dev/core/internal/platform/migrate"
 	"yunshu.dev/core/internal/redisx"
 )
 
@@ -62,6 +63,41 @@ func main() {
 		os.Exit(1)
 	}
 	defer mainDB.Close()
+
+	// Startup migration. The binary queries columns (t_user.username,
+	// password_is_initial) that a database from the previous release does not
+	// have, so "migrate before start" is mandatory — the only question is who
+	// runs it. AUTO_MIGRATE answers that:
+	//
+	//   - unset: on for ENV=dev/local, off otherwise. Local development becomes
+	//     one command instead of two, while production keeps its dedicated
+	//     migrate job (compose `migrate` service / k8s Job) and an application
+	//     account without DDL rights.
+	//   - true: explicit opt-in for single-node deployments that would rather
+	//     not run a separate job.
+	//   - false: explicit opt-out.
+	//
+	// Concurrency is handled inside AutoUp with a MySQL advisory lock, so two
+	// replicas starting together do not race on DDL. A failure here is fatal:
+	// serving with an older schema means every login answers 500.
+	autoMigrate, autoErr := migrate.AutoMigrateEnabled(cfg.Env, os.Getenv("AUTO_MIGRATE"))
+	if autoErr != nil {
+		logger.Error(rootCtx, "auto migrate config: "+autoErr.Error(),
+			obslog.Fields{Stage: "startup", Status: 1})
+		os.Exit(1)
+	}
+	if autoMigrate {
+		results, migrateErr := migrate.AutoUp(rootCtx, cfg.DBDSN, cfg.Env, clock.Real{}.Now)
+		if migrateErr != nil {
+			logger.Error(rootCtx, "auto migrate failed: "+migrateErr.Error(),
+				obslog.Fields{Stage: "startup", Status: 1})
+			os.Exit(1)
+		}
+		if n := migrate.AppliedCount(results); n > 0 {
+			logger.Info(rootCtx, fmt.Sprintf("auto migrate: applied %d pending migration(s)", n),
+				obslog.Fields{Stage: "startup"})
+		}
+	}
 
 	// The log tables may live in their own instance. A configured DSN opens a
 	// second pool; an empty one is announced and the control service falls

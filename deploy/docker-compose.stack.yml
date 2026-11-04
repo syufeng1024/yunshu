@@ -46,6 +46,9 @@ x-app-env: &app-env
   ADMIN_BOOTSTRAP_USERNAME: ${ADMIN_BOOTSTRAP_USERNAME:-admin}
   ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-12345678}
   ADMIN_BOOTSTRAP_DISABLED: ${ADMIN_BOOTSTRAP_DISABLED:-false}
+  # 启动时自动迁移。默认 false：本编排用独立的 migrate 服务先跑完（depends_on
+  # service_completed_successfully），应用账号不需要 DDL 权限。单机部署可设 true。
+  AUTO_MIGRATE: ${AUTO_MIGRATE:-false}
 
 x-app-image: &app-image
   image: yunshu-app:${IMAGE_TAG:-local}
