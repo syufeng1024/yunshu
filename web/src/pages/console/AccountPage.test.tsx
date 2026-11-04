@@ -201,6 +201,85 @@ describe('AccountPage', () => {
     expect(post).not.toHaveBeenCalled()
   })
 
+  it('lists the three consequences of cancellation', () => {
+    renderPage()
+    expect(screen.getByText(/该手机号会被立即释放，可被他人重新注册/)).toBeInTheDocument()
+    expect(screen.getByText(/90 天内该号码不能再领取体验版积分/)).toBeInTheDocument()
+    expect(screen.getByText(/账号立即停用、无法登录/)).toBeInTheDocument()
+  })
+
+  // 手机号账号的 email 为空：旧实现在这里恒成立地比对空串，输入框空着就通过。
+  // 现在 mode 由服务端下发，label / placeholder / 校验都按后 4 位走。
+  it('asks a phone account for the last four digits and sends them', async () => {
+    const user = userEvent.setup()
+    const post = vi.mocked(api.post)
+    post.mockResolvedValue(undefined as never)
+    useAuthStore.setState({
+      status: 'authenticated',
+      user: {
+        id: '8',
+        email: '',
+        display_name: '138****8000',
+        role: 'PERSONAL',
+        status: 'NORMAL',
+        username: '',
+        login_kind: 'phone_suffix',
+        password_warning: false,
+        csrf_token: 'csrf',
+      },
+      error: null,
+      hint: null,
+    })
+
+    renderPage()
+    await user.click(screen.getByRole('button', { name: '我要注销账号' }))
+
+    const input = screen.getByLabelText('输入手机号后 4 位以确认')
+    expect(input).toHaveAttribute('placeholder', '手机号后 4 位')
+
+    // 非 4 位数字：本地拦下，不发请求。
+    await user.type(input, '12')
+    await user.click(screen.getByRole('button', { name: '确认注销' }))
+    expect(screen.getByText('请输入手机号后 4 位（4 个数字）以确认。')).toBeInTheDocument()
+    expect(post).not.toHaveBeenCalled()
+
+    await user.clear(input)
+    await user.type(input, '8000')
+    await user.click(screen.getByRole('button', { name: '确认注销' }))
+
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith('/api/v1/auth/cancel', { confirm: '8000' }),
+    )
+  })
+
+  it('does not accept an empty confirmation for a phone account', async () => {
+    const user = userEvent.setup()
+    const post = vi.mocked(api.post)
+    useAuthStore.setState({
+      status: 'authenticated',
+      user: {
+        id: '9',
+        email: '',
+        display_name: '139****1234',
+        role: 'PERSONAL',
+        status: 'NORMAL',
+        username: '',
+        login_kind: 'phone_suffix',
+        password_warning: false,
+        csrf_token: 'csrf',
+      },
+      error: null,
+      hint: null,
+    })
+
+    renderPage()
+    await user.click(screen.getByRole('button', { name: '我要注销账号' }))
+    await user.click(screen.getByRole('button', { name: '确认注销' }))
+
+    expect(screen.getByText('请输入手机号后 4 位以确认。')).toBeInTheDocument()
+    expect(post).not.toHaveBeenCalled()
+  })
+
   it('binds a login mailbox for an account that has none', async () => {
     const user = userEvent.setup()
     const mockedSend = vi.mocked(sendBindEmailCode)

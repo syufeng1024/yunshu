@@ -6,7 +6,7 @@ LOAD_ENV = set -e; set -a; if [ -f .env ]; then . ./.env; fi; set +a;
 
 .PHONY: build test vet lint up down migrate run-gw run-ctl run-jobs check \
         stack-env stack-up stack-build stack-down stack-ps stack-logs stack-smoke \
-        backfill-phone-hmac
+        backfill-phone-hmac backfill-phone-claim
 
 build:
 	$(GO) build ./...
@@ -40,6 +40,18 @@ migrate:
 ARGS ?= detect
 backfill-phone-hmac:
 	@$(LOAD_ENV) $(GO) run ./cmd/backfill-phone-hmac $(ARGS)
+
+# 号码台账（t_phone_claim）回填与释放。两个动词互不隐含，顺序是硬约束：
+#   make backfill-phone-claim                       # detect（只读）
+#   make backfill-phone-claim ARGS="backfill"        # dry-run
+#   make backfill-phone-claim ARGS="backfill --commit"
+#   make backfill-phone-claim ARGS="release --commit"
+#   make backfill-phone-claim ARGS="verify"
+#   make backfill-phone-claim ARGS="lookup --phone=13800138000"
+# 先 backfill 再 release：顺序反了会给老注销号白送一次体验版（release 会以退出码 3
+# 拒绝执行）。需要 .env 里的 DB_DSN；只有 lookup 需要 PHONE_HMAC_KEY。
+backfill-phone-claim:
+	@$(LOAD_ENV) $(GO) run ./cmd/backfill-phone-claim $(ARGS)
 
 run-gw:
 	@$(LOAD_ENV) $(GO) run ./cmd/gatewayd

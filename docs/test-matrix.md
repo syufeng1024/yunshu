@@ -59,14 +59,40 @@
 | 🔴 T10 缺 key：手机号注册 503 且**验证码未被消费** | `TestRegisterPhoneWithoutKeyAnswers503AndKeepsCode` | `go test ./internal/control/auth/` |
 | 🔴 T10 缺 key：邮箱注册 201、手机号登录 200 不受影响 | `TestMissingPhoneKeyLeavesEmailAndLoginWorking` | `go test ./internal/control/auth/` |
 | T16 `insertUserRow` 自检：手机号标识 + 空 hmac → `ErrPhoneHMACRequired` | `TestInsertUserRowRequiresPhoneHMAC` | `go test ./internal/control/auth/` |
-| 🔴 T11 注销保留 `phone`/`phone_hmac`；注销号不可再注册（D1 占号） | `TestCancelKeepsPhoneAndHMAC` | `go test ./internal/control/auth/` |
-| T12 置空 `phone` 后 hmac 仍在（仍是占号状态） | `TestPhoneHMACSurvivesPhoneClearing` | `go test ./internal/control/auth/` |
-| 注销 PII 收敛点今天是 no-op（`cancelPhonePII`） | `TestCancelPhonePIIIsANoOpToday` | `go test ./internal/control/auth/` |
-| 🔴 T13 判重走 `phone_hmac`（唯一键挡住同号第二行 + 源码不再比明文） | `TestTrialPhoneFactorUsesHMAC` | `go test ./internal/control/fund/` |
-| T13 跨注销判重（`trial_claimed_at` 与 hmac 都保留） | `TestTrialSurvivesCancel` | `go test ./internal/control/fund/` |
+| 🔴 ~~T11 注销保留 `phone`/`phone_hmac`；注销号不可再注册（D1 占号）~~ **语义已反转，见下节 AC-1/AC-2** | `TestCancelReleasesPhoneAndHMAC` | `go test ./internal/control/auth/` |
+| T12 置空 `phone` 后 hmac 仍在（仍是占号状态；0011 时代的形态，0029 起仅人工改库可达） | `TestPhoneHMACSurvivesPhoneClearing` | `go test ./internal/control/auth/` |
+| 🔴 注销 PII 收敛点：释放号码并写台账（第三态不动两列） | `TestCancelPhonePIIReleasesNumber` / `TestCancelPhonePIISkipsRowWithoutHMAC` | `go test ./internal/control/auth/` |
+| 🔴 T13 判重走号码台账（唯一键挡住同号第二行 + 源码不再比明文 + 台账读写存在） | `TestTrialPhoneFactorUsesHMAC` | `go test ./internal/control/fund/` |
+| T13 跨注销判重（台账 `trial_granted_at` 保留，换账号仍受限） | `TestTrialWindowSurvivesCancel` | `go test ./internal/control/fund/` |
 | T14 有手机号无 hmac → 500 `internal_error`（fail closed，不发券） | `TestA7TrialAntiAbuse` | `go test ./internal/control/fund/` |
+| T14 有 hmac 无台账行 → 500 + `trial_phone_claim_missing`（fail closed） | `TestTrialPhoneClaimMissingFailsClosed` | `go test ./internal/control/fund/` |
 
 > **T13 的形态变更**：设计里写的是「A、B 两行同 `phone_hmac`（模拟历史重复未清）→ 409」。`uk_user_phone_hmac` 生效后这个状态**不可构造**（唯一键禁止两行同值），所以用例改成断言三件事：唯一键确实挡住第二行（1062）、`trial.go` 不再比对明文 `u.phone`、无 hmac 时 fail closed。同号第二行的拦截由此前移到**注册**（T8 的 409），不变量是同一个。
+
+## 手机号注销释放 + 体验版 90 天窗口（INC-phone-claim，PRD 16 条 AC）
+
+| AC | 用例名 | 运行方式 |
+| :--- | :--- | :--- |
+| AC-1 注销即释放（两列 NULL + 台账 `cancel_count=1`、`trial_granted_at` 自愈） | 🔴 `TestCancelReleasesPhoneAndHMAC` | `go test ./internal/control/auth/` |
+| AC-2 同号可立即重注册（新 uid，`findUser` 按号只命中 1 行） | 🔴 同上（用例尾段） | `go test ./internal/control/auth/` |
+| AC-3 90 天窗口生效（换账号仍 409 + hint 含「90 天」，无账本/设备行） | 🔴 `TestTrialWindowSurvivesCancel` | `go test ./internal/control/fund/` |
+| AC-4/AC-5 窗口到期放行 + 边界左开（恰 90 天放行、90 天−1ms 拒） | `TestTrialPhoneWindowBoundary`（冻结时钟） | `go test ./internal/control/fund/` |
+| AC-6 从未领过的号码注销后立即能领 | `TestTrialFreshNumberAfterCancelIsAllowed` | `go test ./internal/control/fund/` |
+| AC-7 唯一性未削弱 | `TestRegisterPhoneWritesHMACAndRejectsDuplicate`（已有的 409 断言） | `go test ./internal/control/auth/` |
+| AC-9 锁序（注销 + 领体验版对打无 1213/5xx） | `TestCancelTwiceIsConflictAndKeepsCount` + `TestTrialPhoneWindowBoundary` 并发口径 | 同上两包 |
+| AC-10 邮箱账号零影响（台账无行） | `TestCancelEmailAccountLeavesLedgerEmpty` | `go test ./internal/control/auth/` |
+| AC-11 存量释放（两列 NULL，台账有窗口） | 🔴 `TestReleaseRecordsHistoryAndIsIdempotent` / `TestReleaseGateBackfillThenRelease` | `go test ./internal/platform/phoneclaim/ ./cmd/backfill-phone-claim/` |
+| AC-12 释放边界（`OPS_MANUAL`/`RISK_AUTO`/`FROZEN_OVERDRAFT` 不释放） | 🔴 `TestReleaseLeavesNonSelfCancelRowsOccupied` | `go test ./internal/platform/phoneclaim/` |
+| AC-12 反向：纯邮箱封禁账号**不得**被报成「过度释放」（both-NULL 不可判定） | 🔴 `TestBannedAccountWithoutPhoneIsNotOverReleased` | `go test ./internal/platform/phoneclaim/` |
+| AC-13 幂等（连跑两次 `changed=0`） | `TestBackfillCopiesHistoryAndIsIdempotent` / `TestReleaseRecordsHistoryAndIsIdempotent` | 同上 |
+| AC-14 设备因子独立（同 `fp_hash` 换新号仍拒） | `TestTrialDeviceFactorIsIndependentOfPhoneWindow` | `go test ./internal/control/fund/` |
+| AC-15 审计（`phone_released` + `claim_cancel_count`，不含号码/hmac） | 🔴 `TestCancelReleasesPhoneAndHMAC`（审计段） | `go test ./internal/control/auth/` |
+| AC-16 找回不被撞 | 同上（`findUser` 只命中 1 行 + 旧行不占号） | `go test ./internal/control/auth/` |
+| 确认框护栏（G1：无 body / 空值 / 错值 → **同一个** 400 `message="请求体参数有误：confirm"`，只差 hint；后四位 204 / 用户名 204；无「多义 409」分支） | 🔴 `TestCancelConfirmGuard`（表驱动另有 `TestCancelConfirmMatching`） | `go test ./internal/control/auth/` |
+| 重复注销 409 且 `cancel_count` 不增 | `TestCancelTwiceIsConflictAndKeepsCount` | `go test ./internal/control/auth/` |
+| 台账包自身（first-wins / 窗口边界 / `COALESCE` 语义 / 缺行） | `TestWindowHitBoundaries` 等 | `go test ./internal/platform/phoneclaim/` |
+| 命令 gate（未回填跑 release → 退出码 3） | `TestReleaseGateBackfillThenRelease` | `go test ./cmd/backfill-phone-claim/` |
+| 前端确认框按 mode 渲染（手机号账号不再空过） | `AccountPage > asks a phone account for the last four digits…` | `cd web && npx vitest run src/pages/console/AccountPage.test.tsx` |
 
 ## Playwright e2e（浏览器层）
 

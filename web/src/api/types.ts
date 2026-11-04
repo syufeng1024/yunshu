@@ -265,10 +265,18 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * 注销当前账号（禁用账号并删除全部会话）
+         * 注销当前账号（禁用账号、释放手机号并删除全部会话）
          * @description 先调用 ticket.CheckAccountCancellable：存在 OPEN / RESPONDED 工单时返回
-         *     409，并在 message 中列出全部未结工单号。成功后 status 置为 DISABLED、
-         *     disable_source=SELF_CANCEL、cancel_apply_at=now，并删除该 uid 的全部
+         *     409，并在 message 中列出全部未结工单号。请求体必填，`confirm` 必须与账号的
+         *     登录标识一致（有邮箱 → 完整邮箱，归一化为去空格 + 小写；否则有手机号 → 后
+         *     4 位；否则 → 用户名）。**三种失败统一同一个 400**：完全没传 body、`confirm`
+         *     为空、`confirm` 与标识不一致，均为 `invalid_request_body`，
+         *     `message = "请求体参数有误：confirm"`，只有 `hint` 按账号形态分档。
+         *     成功后 status 置为 DISABLED、disable_source=SELF_CANCEL、
+         *     cancel_apply_at=now；同一事务内把号码写入 `t_phone_claim`（cancel_count+1，
+         *     trial_granted_at 取台账既有值或本行 trial_claimed_at）并把
+         *     `t_user.phone` / `t_user.phone_hmac` 置 NULL —— 该手机号随即可以被任何账号
+         *     重新注册，且同一号码 90 天内不能再领体验版。随后删除该 uid 的全部
          *     K20 / K30 会话键；旧 sid 立即失效。不新增 t_user.status 枚举值。
          */
         post: operations["cancelAccount"];
@@ -1273,6 +1281,22 @@ export interface components {
              *     这只是提示，不拦截任何接口；改密成功后即变回 false。
              */
             password_warning?: boolean;
+            /**
+             * @description 注销确认框要比对的登录标识：有邮箱 → `email`（完整邮箱）；否则有手机号
+             *     → `phone_suffix`（后 4 位）；否则 → `username`。判定在服务端，前端只按
+             *     它渲染 label / placeholder，并把它对应的值放进
+             *     `POST /api/v1/auth/cancel` 的 `confirm`。
+             * @enum {string}
+             */
+            login_kind?: "email" | "phone_suffix" | "username" | "none";
+        };
+        CancelAccountRequest: {
+            /**
+             * @description 与账号登录标识一致的确认值：`login_kind=email` 时是完整邮箱（去空格、
+             *     忽略大小写），`phone_suffix` 时是手机号后 4 位，`username` 时是用户名。
+             *     见 `CurrentUser.login_kind`。
+             */
+            confirm: string;
         };
         AuthUser: {
             id: string;
@@ -1285,6 +1309,11 @@ export interface components {
             username?: string;
             /** @description 仍在使用初始口令时为 true；仅提示，不拦截 */
             password_warning?: boolean;
+            /**
+             * @description 注销确认框要比对的登录标识，见 CurrentUser.login_kind
+             * @enum {string}
+             */
+            login_kind?: "email" | "phone_suffix" | "username" | "none";
         };
         LoginRequest: {
             /** @description 邮箱、手机号或运营账号用户名；含 @ 判为邮箱，去分隔符后全为数字且 6..20 位判为手机号，其余按用户名（3..32 字节、字母开头、小写归一） */
@@ -3807,14 +3836,31 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CancelAccountRequest"];
+            };
+        };
         responses: {
-            /** @description 账号已禁用，全部会话已吊销，cookie 已清除 */
+            /** @description 账号已禁用，手机号已释放，全部会话已吊销，cookie 已清除 */
             204: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /**
+             * @description 请求体缺失，或 confirm 为空 / 与登录标识不一致。三者返回同一个
+             *     invalid_request_body，message 恒为「请求体参数有误：confirm」，
+             *     只有 hint 按账号形态分档。
+             */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
             };
             /** @description 未登录或会话失效 */
             401: {
@@ -3834,7 +3880,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description 存在未结工单（resource_state_conflict，message 含工单号） */
+            /** @description 存在未结工单，或账号已注销（resource_state_conflict；与本端点的 confirm 判定无关） */
             409: {
                 headers: {
                     [name: string]: unknown;

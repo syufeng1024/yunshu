@@ -19,6 +19,7 @@ import (
 	"yunshu.dev/core/internal/control/audit"
 	"yunshu.dev/core/internal/control/mw"
 	"yunshu.dev/core/internal/jsonx"
+	"yunshu.dev/core/internal/platform/phoneclaim"
 )
 
 // bcryptCost is the TDS-mandated cost. 12 is ~100ms on current hardware; the
@@ -331,7 +332,22 @@ func insertUserRow(ctx context.Context, tx *sql.Tx, ident Identifier, phoneMAC, 
 		res, err := tx.ExecContext(ctx, q,
 			userNo, username, email, phone, phoneHMAC, hash, now, nickname, role, agreement, agreedAt, now, now)
 		if err == nil {
-			return res.LastInsertId()
+			uid, idErr := res.LastInsertId()
+			if idErr != nil {
+				return 0, idErr
+			}
+			// The phone ledger (t_phone_claim) is written here, inside the one
+			// INSERT funnel, so public registration, operator provisioning
+			// (ops.CreateOperatorUser) and the startup bootstrap all record it
+			// without a second call site to forget. An account with a phone and
+			// no ledger row is the state the trial check fails closed on, so a
+			// failure must roll the whole registration back.
+			if ident.Kind == KindPhone {
+				if claimErr := phoneclaim.UpsertOnRegisterTx(ctx, tx, phoneMAC, uid, now); claimErr != nil {
+					return 0, claimErr
+				}
+			}
+			return uid, nil
 		}
 		lastErr = err
 		if !isDuplicate(err) {

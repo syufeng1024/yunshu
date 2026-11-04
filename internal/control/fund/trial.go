@@ -16,12 +16,22 @@ import (
 	"yunshu.dev/core/internal/control/audit"
 	"yunshu.dev/core/internal/control/mw"
 	"yunshu.dev/core/internal/ledger"
+	"yunshu.dev/core/internal/platform/phoneclaim"
 )
 
 // Trial anti-abuse lookups are bounded to this window. A device that claimed
 // two years ago should not block a legitimate household forever, and an
 // unbounded scan on t_admin_audit_log would only get slower.
 const trialClaimLookbackDays = 30
+
+// trialPhoneWindowDays is the phone-number window: a number may collect a trial
+// once per gift-credit lifetime (90 days), counted from the last grant to that
+// number, across accounts and unaffected by cancellation.
+//
+// It is an alias, not a second literal: phoneclaim.WindowDays is the boundary
+// the ledger's Claim.WindowHit compares against, and a copy here would let the
+// pre-flight check and the in-transaction check disagree by a day.
+const trialPhoneWindowDays = phoneclaim.WindowDays
 
 type trialClaimRequest struct {
 	Fingerprint string `json:"fingerprint"`
@@ -71,6 +81,11 @@ func (s *Service) ClaimTrial(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	fpHash := fingerprintHash(s.FingerprintKey, fp)
+	// One clock reading for the whole request: the window boundary, the grant
+	// timestamps and the expiry dates must all be computed from the same
+	// instant, or a claim that straddles a tick could write a window it has
+	// already left.
+	now := s.now()
 
 	// Device: any account that already claimed with this fingerprint blocks.
 	var deviceClaimed int64
@@ -86,24 +101,26 @@ func (s *Service) ClaimTrial(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Phone: a different account on the same number blocks.
+	// Phone: the number's ledger decides, not the account.
 	//
-	// The comparison is on phone_hmac, not the plaintext phone column, for two
-	// reasons: t_user.phone carries no unique key since migration 0011 (so a
-	// plaintext join could match several rows), and a cancelled or PII-cleared
-	// account keeps its hmac — which is the whole point of the column — while
-	// its phone may one day be NULL. No key is needed here: the stored hash is
-	// compared, never recomputed (see Service.FingerprintKey for the one key
-	// this handler does require).
+	// The ledger (t_phone_claim) is addressed by the number's HMAC and survives
+	// cancellation, which is what makes the window cross-account: A claims the
+	// trial, cancels (releasing the number), B registers the same number and is
+	// still refused for 90 days.
 	//
-	// Three states come back, and they are not interchangeable:
-	//   phone == ""               no handset on the account; skip the check
-	//   phone != "" && hmac != "" normal: compare hashes
-	//   phone != "" && hmac == "" the number is known but its hash is not —
-	//                             a manual DB edit or a backfill that has not
-	//                             run. Refuse (500) rather than grant: paying
-	//                             out with an unknown de-duplication key is
-	//                             exactly what an abuser wants.
+	// Three states, and only the middle one is normal:
+	//   phone == ""                no handset on the account; skip the check
+	//   phone != "" && hmac != ""  read the ledger
+	//   phone != "" && hmac == ""  the number is known, its hash is not —
+	//                              a manual DB edit or a backfill that has not
+	//                              run. Refuse (500) rather than grant: paying
+	//                              out with an unknown de-duplication key is
+	//                              exactly what an abuser wants.
+	//
+	// A missing ledger row is refused the same way (fail closed). Every write
+	// path creates the row, so "missing" can only mean the backfill has not
+	// run; granting on it would silently hand out a second trial, while
+	// refusing costs one 500 and one clear log token.
 	var phone, phoneHMAC string
 	var claimedAt sql.NullTime
 	err := s.DB.QueryRowContext(ctx, `
@@ -126,17 +143,20 @@ func (s *Service) ClaimTrial(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if phoneHMAC != "" {
-		var phoneClaimed int64
-		if err := s.DB.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM t_device_fingerprint d
-			  JOIN t_user u ON u.id = d.granted_user_id
-			 WHERE d.trial_granted = 1 AND u.phone_hmac = ? AND u.id <> ?`,
-			phoneHMAC, uid).Scan(&phoneClaimed); err != nil {
-			s.logError(ctx, "fund_trial_phone_read_failed: "+err.Error())
+		claim, claimErr := phoneclaim.Get(ctx, s.DB, phoneHMAC)
+		switch {
+		case errors.Is(claimErr, phoneclaim.ErrNotFound):
+			// Runback step: `make backfill-phone-claim ARGS="backfill --commit"`.
+			s.logError(ctx, fmt.Sprintf("trial_phone_claim_missing uid=%d; refusing trial claim", uid))
+			mw.WriteError(w, r, apierr.New(apierr.CodeInternalError))
+			return
+		case claimErr != nil:
+			s.logError(ctx, "fund_trial_claim_read_failed: "+claimErr.Error())
 			mw.WriteError(w, r, apierr.New(apierr.CodeInternalError))
 			return
 		}
-		if phoneClaimed > 0 {
+		if claim.WindowHit(now) {
+			s.logWarn(ctx, fmt.Sprintf("trial_phone_window_hit window_days=%d", trialPhoneWindowDays))
 			mw.WriteError(w, r, trialRefusal())
 			return
 		}
@@ -158,7 +178,6 @@ func (s *Service) ClaimTrial(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := s.now()
 	var planID, bonusMicro, bonusDays, trialDays int64
 	err = s.DB.QueryRowContext(ctx, `
 		SELECT id, grant_bonus_micro, bonus_valid_days
@@ -190,12 +209,15 @@ func (s *Service) ClaimTrial(w http.ResponseWriter, r *http.Request) {
 		}()
 
 		// Re-read under the row lock: two concurrent claims must not both
-		// pass the checks above.
+		// pass the checks above. The phone hash is read here too, so the
+		// ledger check below sees the value that is protected by this lock
+		// rather than the one read before it.
 		var lockedClaimed sql.NullTime
+		var lockedHMAC string
 		if err := tx.QueryRowContext(ctx, `
-			SELECT trial_claimed_at FROM t_user
+			SELECT trial_claimed_at, COALESCE(phone_hmac, '') FROM t_user
 			 WHERE id = ? AND deleted_at IS NULL FOR UPDATE`, uid).
-			Scan(&lockedClaimed); err != nil {
+			Scan(&lockedClaimed, &lockedHMAC); err != nil {
 			return err
 		}
 		if lockedClaimed.Valid {
@@ -217,6 +239,21 @@ func (s *Service) ClaimTrial(w http.ResponseWriter, r *http.Request) {
 		}
 		if stillClaimed > 0 {
 			return errTrialDeviceClaimed
+		}
+		// Last ring of the lock order: t_user → t_device_fingerprint →
+		// t_phone_claim. Re-checking the window here is what makes the
+		// pre-flight check advisory: two claims on the same number both pass
+		// the unlocked read, and only this row lock serialises them.
+		if lockedHMAC != "" {
+			_, hit, claimErr := phoneclaim.TrialWindowTx(ctx, tx, lockedHMAC, now)
+			switch {
+			case errors.Is(claimErr, phoneclaim.ErrNotFound):
+				return errTrialPhoneClaimMissing
+			case claimErr != nil:
+				return claimErr
+			case hit:
+				return errTrialPhoneWindow
+			}
 		}
 
 		if _, err := s.applyPlanTx(ctx, tx, uid, planID, now); err != nil {
@@ -240,6 +277,15 @@ func (s *Service) ClaimTrial(w http.ResponseWriter, r *http.Request) {
 			fpHash, uid, now, now, uid, now); err != nil {
 			return err
 		}
+		// The window and the grant commit together. Writing it after the
+		// device row (still inside the transaction) keeps the order the
+		// ledger's lock discipline expects and lets the "row vanished"
+		// failure roll everything back.
+		if lockedHMAC != "" {
+			if err := phoneclaim.MarkTrialGrantedTx(ctx, tx, lockedHMAC, uid, now); err != nil {
+				return err
+			}
+		}
 		reason := "体验版赠送积分"
 		res, err := s.Ledger.GrantTx(ctx, tx, ledger.GrantParams{
 			UserID:         uid,
@@ -253,6 +299,13 @@ func (s *Service) ClaimTrial(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		trialAfter := map[string]any{"fp_hash": fpHash, "granted_micro": bonusMicro}
+		if lockedHMAC != "" {
+			// Which source the phone factor was judged on. Deliberately not the
+			// ledger's timestamp or the number: the audit row is read by
+			// operators, and "claim" is the only fact they need here.
+			trialAfter["phone_window"] = "claim"
+		}
 		if err := s.Audit.Insert(ctx, tx, audit.Entry{
 			OperatorID:   uid,
 			OperatorRole: "PERSONAL",
@@ -261,7 +314,7 @@ func (s *Service) ClaimTrial(w http.ResponseWriter, r *http.Request) {
 			Action:       "TRIAL_CLAIM",
 			TargetType:   "t_user",
 			TargetID:     itoa(uid),
-			After:        mustMarshal(map[string]any{"fp_hash": fpHash, "granted_micro": bonusMicro}),
+			After:        mustMarshal(trialAfter),
 			Result:       "OK",
 		}); err != nil {
 			s.logWarn(ctx, "fund_trial_audit_failed: "+err.Error())
@@ -274,8 +327,16 @@ func (s *Service) ClaimTrial(w http.ResponseWriter, r *http.Request) {
 		return nil
 	}()
 	switch {
-	case errors.Is(err, errTrialAlreadyClaimed), errors.Is(err, errTrialDeviceClaimed):
+	case errors.Is(err, errTrialAlreadyClaimed), errors.Is(err, errTrialDeviceClaimed),
+		errors.Is(err, errTrialPhoneWindow):
 		mw.WriteError(w, r, trialRefusal())
+		return
+	case errors.Is(err, errTrialPhoneClaimMissing):
+		// Inside the transaction: the ledger row disappeared between the
+		// pre-flight read and the locked re-read. Same token as the pre-flight
+		// path so one grep finds both.
+		s.logError(ctx, fmt.Sprintf("trial_phone_claim_missing uid=%d; refusing trial claim", uid))
+		mw.WriteError(w, r, apierr.New(apierr.CodeInternalError))
 		return
 	case err != nil:
 		s.logError(ctx, "fund_trial_claim_failed: "+err.Error())
@@ -304,6 +365,13 @@ func (s *Service) ClaimTrial(w http.ResponseWriter, r *http.Request) {
 var (
 	errTrialAlreadyClaimed = errors.New("fund: trial already claimed by this account")
 	errTrialDeviceClaimed  = errors.New("fund: trial already granted to this device")
+	// errTrialPhoneWindow is the number-level anti-arbitrage hit: the phone
+	// collected a trial less than phoneclaim.WindowDays ago, possibly on a
+	// different account.
+	errTrialPhoneWindow = errors.New("fund: trial already granted to this phone number")
+	// errTrialPhoneClaimMissing means the account has a phone hash but the
+	// ledger has no row for it. Fail closed (design §6.3).
+	errTrialPhoneClaimMissing = errors.New("fund: phone claim ledger row missing")
 )
 
 // trialRefusal answers every anti-abuse hit (device, phone, IP segment and the

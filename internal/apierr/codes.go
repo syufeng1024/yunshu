@@ -703,11 +703,13 @@ var specs = []Spec{
 	{
 		Code: CodeTrialAlreadyClaimed, Type: TypeConflict, HTTPStatus: 409,
 		RetryAfterSeconds: 0, Retry: RetryNo, Owner: OwnerBusiness, Stage: "控制台接口",
-		// The four anti-abuse factors (device fingerprint, phone, IP segment,
-		// account) are deliberately not told apart: naming the matched factor
-		// would help an abuser probe which one to change.
+		// The four anti-abuse factors (device fingerprint, phone number, IP
+		// segment, account) are deliberately not told apart: naming the matched
+		// factor would help an abuser probe which one to change. The phone
+		// factor is judged on the number's ledger (t_phone_claim), so it also
+		// covers "cancelled, then re-registered with the same number".
 		Message: "该账号或设备已领取过体验额度",
-		Hint:    "每个设备、手机号与网络仅可领取一次；如有异议请联系客服",
+		Hint:    "每个设备、手机号与网络仅可领取一次；手机号注销后 90 天内同样不可再次领取；如有异议请联系客服",
 	},
 	{
 		Code: CodeInvoiceAlreadyIssued, Type: TypeConflict, HTTPStatus: 409,

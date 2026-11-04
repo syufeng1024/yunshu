@@ -17,6 +17,86 @@ function maskEmail(email: string): string {
   return (local.length <= 1 ? '*' : `${local.slice(0, 1)}***`) + email.slice(at)
 }
 
+/** 注销确认框要比对的登录标识，与服务端 CurrentUser.login_kind 一一对应。 */
+type CancelMode = 'email' | 'phone_suffix' | 'username' | 'none'
+
+/**
+ * cancelModeOf 读出服务端判定的 mode。
+ *
+ * 判定只有一处（服务端），前端不重写规则：这个值决定确认框的 label、
+ * placeholder 与本地预检，改动它等于把「输入框说了什么」和「服务端比什么」
+ * 重新拆成两套。旧会话没有 login_kind 时按同样的优先级回退，绝不回退成
+ * 「空串即可通过」——那正是这次要修的缺陷（手机号账号的 email 为空）。
+ */
+function cancelModeOf(user: CurrentUser | null): CancelMode {
+  const kind = user?.login_kind
+  if (kind === 'email' || kind === 'phone_suffix' || kind === 'username' || kind === 'none') {
+    return kind
+  }
+  if (user?.email) return 'email'
+  if (user?.username) return 'username'
+  return 'none'
+}
+
+/** 确认框的文案：按 mode 派生，与服务端 hint 保持一致。 */
+function cancelCopyOf(user: CurrentUser | null, mode: CancelMode) {
+  switch (mode) {
+    case 'email':
+      return { label: '输入登录邮箱以确认', placeholder: user?.email ?? '' }
+    case 'phone_suffix':
+      return { label: '输入手机号后 4 位以确认', placeholder: '手机号后 4 位' }
+    case 'username':
+      return { label: '输入登录用户名以确认', placeholder: user?.username ?? '' }
+    default:
+      return { label: '输入登录标识以确认', placeholder: '' }
+  }
+}
+
+/**
+ * cancelConfirmCheck 返回本地预检的错误文案，通过则返回 null。
+ *
+ * 它只做「明显不可能通过」的拦截（空值、位数、与已展示标识不一致），真正的
+ * 判定仍在服务端：客户端校验是提示，不是护栏。
+ */
+function cancelConfirmCheck(
+  user: CurrentUser | null,
+  mode: CancelMode,
+  typed: string,
+): string | null {
+  const value = typed.trim()
+  if (value === '') {
+    switch (mode) {
+      case 'email':
+        return '请输入完整的登录邮箱以确认。'
+      case 'phone_suffix':
+        return '请输入手机号后 4 位以确认。'
+      case 'username':
+        return '请输入登录用户名以确认。'
+      default:
+        return '请输入登录标识以确认。'
+    }
+  }
+  switch (mode) {
+    case 'email':
+      if (value.toLowerCase() !== (user?.email ?? '').toLowerCase()) {
+        return '请输入完整的登录邮箱以确认。'
+      }
+      return null
+    case 'phone_suffix':
+      if (!/^\d{4}$/.test(value)) {
+        return '请输入手机号后 4 位（4 个数字）以确认。'
+      }
+      return null
+    case 'username':
+      if (value.toLowerCase() !== (user?.username ?? '').toLowerCase()) {
+        return '请输入登录用户名以确认。'
+      }
+      return null
+    default:
+      return null
+  }
+}
+
 /**
  * 账户设置：账号信息、登录邮箱、修改密码、注销。
  *
@@ -60,6 +140,10 @@ export default function AccountPage() {
   const [cancelError, setCancelError] = useState<string | null>(null)
   const [cancelHint, setCancelHint] = useState<string | null>(null)
   const [cancelSubmitting, setCancelSubmitting] = useState(false)
+
+  // 确认框的形态来自服务端（login_kind），label / placeholder / 预检全部由它派生。
+  const cancelMode = cancelModeOf(user)
+  const cancelCopy = cancelCopyOf(user, cancelMode)
 
   useEffect(() => {
     if (bindCooldown <= 0) return
@@ -175,14 +259,19 @@ export default function AccountPage() {
 
   const handleCancel = async () => {
     setCancelError(null)
-    const typed = cancelConfirm.trim().toLowerCase()
-    if (typed !== (user?.email ?? '').toLowerCase()) {
-      setCancelError('请输入完整的登录邮箱以确认。')
+    const typed = cancelConfirm.trim()
+    const invalid = cancelConfirmCheck(user, cancelMode, typed)
+    if (invalid) {
+      setCancelError(invalid)
       return
     }
     setCancelSubmitting(true)
     try {
-      await api.post<void>('/api/v1/auth/cancel')
+      // The server compares `confirm` against the account's own login
+      // identifier (see CurrentUser.login_kind). It is required: cancellation
+      // disables the account *and* releases the phone number, and neither can be
+      // undone.
+      await api.post<void>('/api/v1/auth/cancel', { confirm: typed })
       await logout()
       navigate(ROUTES.home, { replace: true })
     } catch (error) {
@@ -412,16 +501,31 @@ export default function AccountPage() {
 
       <section className="rounded-xl border border-danger bg-danger-soft/40 p-5">
         <h2 className="text-sm font-semibold text-danger">注销账号</h2>
-        <p className="mt-1 text-xs text-ink-secondary">
-          注销后账号将停用、无法登录，余额与密钥同时失效。存在未结工单时不允许注销。
-        </p>
+        {/* 三条后果必须可见：注销是不可逆的，而"号码会被立即释放"是最容易被
+            误解的一条（用户以为号还是自己的）。 */}
+        <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-ink-secondary">
+          <li>账号立即停用、无法登录，余额与密钥同时失效。</li>
+          <li>
+            <span className="font-medium text-danger">
+              该手机号会被立即释放，可被他人重新注册
+            </span>
+            （如你使用手机号登录）。
+          </li>
+          <li>
+            <span className="font-medium text-danger">
+              90 天内该号码不能再领取体验版积分
+            </span>
+            ；剩余赠送积分不退。
+          </li>
+        </ul>
+        <p className="mt-2 text-xs text-ink-secondary">存在未结工单时不允许注销。</p>
         {cancelOpen ? (
           <div className="mt-4 max-w-md space-y-3">
             <Input
-              label="输入登录邮箱以确认"
+              label={cancelCopy.label}
               value={cancelConfirm}
               onChange={(event) => setCancelConfirm(event.target.value)}
-              placeholder={user?.email ?? ''}
+              placeholder={cancelCopy.placeholder}
               autoComplete="off"
             />
             {cancelError ? (

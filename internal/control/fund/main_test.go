@@ -147,6 +147,9 @@ func newTestUser(t *testing.T, planID *int64) int64 {
 		_, _ = testDB.ExecContext(ctx, `DELETE FROM t_redeem_code WHERE redeemed_by = ?`, uid)
 		_, _ = testDB.ExecContext(ctx, `DELETE FROM t_admin_audit_log WHERE operator_id = ?`, uid)
 		_, _ = testDB.ExecContext(ctx, `DELETE FROM t_credit_account WHERE user_id = ?`, uid)
+		_, _ = testDB.ExecContext(ctx, `DELETE FROM t_phone_claim
+			WHERE first_user_id = ? OR last_claim_user_id = ? OR last_trial_user_id = ?`,
+			uid, uid, uid)
 		_, _ = testDB.ExecContext(ctx, `DELETE FROM t_user WHERE id = ?`, uid)
 	})
 	return uid
@@ -473,6 +476,71 @@ func setUserPhone(t *testing.T, uid int64, phone string) {
 		`UPDATE t_user SET phone = ?, phone_hmac = ? WHERE id = ?`, phone, mac, uid); err != nil {
 		t.Fatalf("set phone: %v", err)
 	}
+	// The ledger row is part of "this account has a number": every write path
+	// creates it (registration through insertUserRow, operator provisioning
+	// through the same funnel, seedctl), and the trial path fails closed without
+	// it. A fixture that only set the two t_user columns would be modelling a
+	// state production cannot reach.
+	upsertClaimForTest(t, mac, uid)
+}
+
+// setUserPhoneWithoutClaim builds the state the trial path must refuse: a phone
+// hash on the account and no ledger row. Only a manual edit or a backfill that
+// has not run can produce it — which is exactly why the code fails closed
+// instead of granting a trial nobody can de-duplicate.
+func setUserPhoneWithoutClaim(t *testing.T, uid int64, phone string) {
+	t.Helper()
+	mac, err := phoneHMACForTest(phone)
+	if err != nil {
+		t.Fatalf("phone hmac for %s: %v", phone, err)
+	}
+	if _, err := testDB.ExecContext(context.Background(),
+		`UPDATE t_user SET phone = ?, phone_hmac = ? WHERE id = ?`, phone, mac, uid); err != nil {
+		t.Fatalf("set phone: %v", err)
+	}
+	if _, err := testDB.ExecContext(context.Background(),
+		`DELETE FROM t_phone_claim WHERE phone_hmac = ?`, mac); err != nil {
+		t.Fatalf("clear claim: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testDB.ExecContext(context.Background(),
+			`DELETE FROM t_phone_claim WHERE phone_hmac = ?`, mac)
+	})
+}
+
+// upsertClaimForTest mirrors what registration writes, and then heals
+// trial_granted_at from the account row the way the backfill does — a fixture
+// that says "this account already claimed" must put that fact where the trial
+// check now looks for it.
+func upsertClaimForTest(t *testing.T, hmac string, uid int64) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if _, err := testDB.ExecContext(ctx, `
+		INSERT INTO t_phone_claim
+		  (phone_hmac, first_user_id, last_claim_user_id, last_claim_at, cancel_count,
+		   created_at, updated_at)
+		VALUES (?,?,?,?,0,?,?)
+		ON DUPLICATE KEY UPDATE
+		  last_claim_user_id = VALUES(last_claim_user_id),
+		  last_claim_at      = VALUES(last_claim_at),
+		  updated_at         = VALUES(updated_at)`,
+		hmac, uid, uid, now, now, now); err != nil {
+		t.Fatalf("upsert claim: %v", err)
+	}
+	if _, err := testDB.ExecContext(ctx, `
+		UPDATE t_phone_claim c JOIN t_user u ON u.phone_hmac = c.phone_hmac
+		   SET c.trial_granted_at = COALESCE(c.trial_granted_at, u.trial_claimed_at),
+		       c.last_trial_user_id = COALESCE(c.last_trial_user_id,
+		           IF(u.trial_claimed_at IS NULL, NULL, u.id)),
+		       c.updated_at = ?
+		 WHERE c.phone_hmac = ?`, now, hmac); err != nil {
+		t.Fatalf("heal claim: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testDB.ExecContext(context.Background(),
+			`DELETE FROM t_phone_claim WHERE phone_hmac = ?`, hmac)
+	})
 }
 
 // setUserPhoneWithoutHMAC reproduces the transitional state the trial path must

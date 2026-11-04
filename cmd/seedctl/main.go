@@ -28,6 +28,7 @@ import (
 	"yunshu.dev/core/internal/ledger"
 	"yunshu.dev/core/internal/platform/clock"
 	"yunshu.dev/core/internal/platform/db"
+	"yunshu.dev/core/internal/platform/phoneclaim"
 	"yunshu.dev/core/internal/redisx"
 )
 
@@ -230,6 +231,17 @@ func createUser(ctx context.Context, conn *sql.DB, ident auth.Identifier, nickna
 	}
 	if uid == 0 {
 		return 0, fmt.Errorf("could not allocate a unique user_no")
+	}
+	// Same ledger row every other write path creates (auth.insertUserRow and
+	// ops.CreateOperatorUser both do this through InsertUserRowTx). Skipping it
+	// would not model "production has one row fewer": the trial claim on a
+	// seeded phone account would answer 500 (fail closed, by design), parking
+	// local development on a failure that cannot happen in production.
+	if ident.Kind == auth.KindPhone {
+		mac, _ := phoneHMAC.(string)
+		if err := phoneclaim.UpsertOnRegisterTx(ctx, tx, mac, uid, now); err != nil {
+			return 0, fmt.Errorf("upsert phone claim: %w", err)
+		}
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO t_credit_account (user_id, created_at, updated_at) VALUES (?,?,?)`,

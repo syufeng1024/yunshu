@@ -409,6 +409,38 @@ make backfill-phone-hmac ARGS="verify"         # ④ 必须 0 差异
 - 发布与回填**不要同一分钟**：先在低峰把代码发布完（新写入开始生效），再回填存量。
 - 每一步的手机号都**已掩码**（`861****00`），输出可以贴进工单。
 
+#### 号码台账（`t_phone_claim`，0029 起）：backfill → release，顺序不可换
+
+注销从 0029 起会**释放手机号**，释放的依据是号码台账 `t_phone_claim`。存量数据要分两步补齐，
+两个动词**互不隐含**：
+
+```bash
+export DB_DSN='...'                                  # 只有 lookup 需要 PHONE_HMAC_KEY
+make backfill-phone-claim                            # ① detect（只读；退出码 2 表示有异常/过度释放，停手）
+make backfill-phone-claim ARGS="backfill"            # ②a dry-run：只报数字，不写库
+make backfill-phone-claim ARGS="backfill --commit"   # ②b 只写 t_phone_claim，不动 t_user 一个字节
+make backfill-phone-claim ARGS="release"             # ③a dry-run：列出待释放的 uid
+make backfill-phone-claim ARGS="release --commit"    # ③b 逐行事务释放（低峰、单实例）
+make backfill-phone-claim ARGS="verify"              # ④ 四条断言必须全 0
+```
+
+- **顺序禁令**：`release` 启动时先查「待回填行数」，>0 直接**退出码 3** 拒绝执行。反了会给老注销号
+  白送一次体验版（号码已释放、台账里却没有 `trial_granted_at`）。`backfill` 可以先跑，无副作用。
+- **发布顺序**：迁移 0029 → `backfill --commit` → `release --commit` → 发布代码。先发代码会有一段
+  「号已释放、台账无窗口」的窗口，同样白送体验版。
+- 只释放 `status='DISABLED' AND disable_source='SELF_CANCEL'`。`OPS_MANUAL` / `RISK_AUTO` /
+  `FROZEN_OVERDRAFT` 的号码**必须保持占用**；`verify` 的 ③ 会报「过度释放」（退出码 2）。③ 的判定是
+  **`phone_hmac` 为空但 `phone` 明文还在**：这两列同时为 NULL 时无法区分「从未有过号码」（每个被运营封禁的
+  邮箱账号都长这样）与「号码被释放过」，对 both-NULL 计数会让本断言在任何有邮箱封禁账号的库上永远不为 0。
+  所以手工清 hmac 时必须**先确认明文**，处置完再按 `release --uid` 或 `verify` 复核。
+- 幂等：连跑第二次 `已释放 0`。单行失败记 uid 继续，末尾 `失败 N` 非 0 时退出码 1，重跑即可。
+- 退出码：`0` 干净 / `1` 运行时错误或单行失败 / `2` 阻塞项 / `3` 顺序违规。
+- 输出全部掩码：手机号 `861****00`，台账行只打 hmac 前 6 位。
+- **第三态**（`phone` 有值、`phone_hmac` 为空）：注销时**两列都不动**。处置顺序是「先修 hmac
+  （§10.3 的 `PHONE_WITHOUT_HMAC`）→ 再 `release --uid=<id>`」，因为明文是 hmac 的唯一重算输入。
+- 已释放号码被他人注册后，**没有**「恢复原账号号码」的产品路径：只能走客服人工（新号主注销/释放后
+  原用户重注册）。
+
 ### 10.3 重复 / 异常的人工处置（playbook）
 
 **重复组**（`DUP phone=… rows=N`）：逐组由 **SUPER_ADMIN** 裁决「保留哪一行」，然后：
@@ -442,27 +474,37 @@ VALUES (<超管 uid>, 'SUPER_ADMIN', 'USER', 'PHONE_DEDUP', 't_user', '<淘汰�
 
 `apply` 会**跳过软删行**（`deleted_at` 非空）：它们的正确值是释放标记 `#del#…`，填一个「live hmac」等于让幽灵行永久占号。这类行由 `detect` 的 `GHOST_HMAC` 拦下，交人工。
 
-### 10.4 受控释放号段（注销用户的号码要复用）
+### 10.4 号码释放：常规路径已自动化，本节只作兜底
 
-产品裁定 **D1：注销即占号**（同一手机号注销后不能再注册）。需要复用时，这不是产品路径，是受控运维操作：
+0029 起，**注销就是放号**：`POST /api/v1/auth/cancel` 在同一事务里把号码写进 `t_phone_claim` 并把
+`phone` / `phone_hmac` 置 NULL，同一号码随后可被任何账号注册。所以本节只剩三种**兜底**场景，常规路径
+不再需要它：
 
-1. 客服/运营确认诉求（原机主回归 / 号码被运营商回收后新机主无法注册）；
-2. **SUPER_ADMIN 审批**，记录工单号；
-3. 执行并同事务写审计：
+| 场景 | 做法 |
+| :--- | :--- |
+| 注销事务成功但号码未释放（第三态：`phone` 有值、`phone_hmac` 为空） | 先按 §10.3 修 hmac，再 `make backfill-phone-claim ARGS="release --uid=<注销行 id> --commit"` |
+| 客服误判 / 需要人工纠正 | `release --uid=<id> --commit`（只放 SELF_CANCEL；其他来源会被跳过） |
+| 需要解释「为什么这个号注册不了 / 为什么领不到体验版」 | `make backfill-phone-claim ARGS="lookup --phone=<客户给的号码>"` |
+
+`lookup` 的输出就是客服话术的原料（号码已掩码、不出现明文与完整 hmac）：
+
+- `台账：无` + `当前持有：无` → 号码空闲，可正常注册；若仍 409，按工单核对具体号码。
+- `台账：无` + `当前持有：uid=…` → 号码被正常占用：请直接登录或找回密码；若近期注销过，该号码可能已被他人注册，需人工核验。
+- `当前持有：无` + `体验版发放=<时间>`（90 天内）→ **号码已释放但仍在 90 天体验窗口内**：注册不受影响，但该号 90 天内不能再领体验版（`trial_already_claimed`）；如有异议，核身（uid/订单号）后经 `t_balance_adjust` 人工发放一次等值积分并留审计，原因写「号码回收误伤」。
+- 「手机号能重新注册、邮箱目前不能」——邮箱侧对称缺口仍是 P1，话术不要含糊。
+
+下面的手工 SQL 只在**没有可用命令行**（例如 DB 连接受限）时使用，且必须由 SUPER_ADMIN 审批、留工单号：
 
 ```sql
-UPDATE t_user SET phone_hmac = NULL, updated_at = NOW(3) WHERE id = <注销行 id>;
+UPDATE t_user SET phone = NULL, phone_hmac = NULL, updated_at = NOW(3) WHERE id = <注销行 id>;
 INSERT INTO t_admin_audit_log
   (operator_id, operator_role, module, action, target_type, target_id, reason, result, created_at)
 VALUES (<超管 uid>, 'SUPER_ADMIN', 'USER', 'PHONE_RELEASE', 't_user', '<注销行 id>',
         '释放号段，工单 <no>', 'OK', NOW(3));
 ```
 
-4. 释放后**必须**接受两件事：① 该注销行不再参与体验判重（`phone_hmac` 已空，若它还能登录会命中 10.3 的 `PHONE_WITHOUT_HMAC` → 500）；② 新注册账号拿得到该号。
-
-> 只置 `phone_hmac = NULL`、不置 `phone`：明文留着不影响唯一性（`phone` 无唯一键），也保留了排障线索。要一并清空时按 F-12 口径只清 `phone`。
->
-> 不做这件事的后果：号码被运营商回收后，新机主永远注册不上（409 `account_exists`，且客服无法解释）。根因方案是新增 `t_phone_claim` 表（设计 §8.3 方案 B），登记为 P1。
+> 手工 SQL **不会**写 `t_phone_claim`：窗口与注销计数会因此缺失，体验版可能被白送一次。手工放号后请
+> 立刻补 `backfill --commit`（补窗口）并跑 `verify`。这就是为什么常规路径必须是注销事务，而不是这条 SQL。
 
 ### 10.5 缺 `PHONE_HMAC_KEY` 时的降级
 
@@ -494,5 +536,9 @@ VALUES (<超管 uid>, 'SUPER_ADMIN', 'USER', 'PHONE_RELEASE', 't_user', '<注销
 | `register_phone_hmac_unavailable …` | 注册 503 | 缺 key，见 10.5 |
 | `ops_create_operator_phone_hmac_unavailable …` | 运营建号 503 | 缺 key，见 10.5 |
 | `fund_trial_phone_hmac_missing uid=…` | 体验版 500 | 有手机号无 hmac，见 10.3（唯一的 ERROR 类） |
+| `trial_phone_claim_missing uid=…` | 体验版 500 | 有 hmac 但 `t_phone_claim` 没有行：**回填没跑**。跑 `make backfill-phone-claim ARGS="backfill --commit"` 后重试（fail-closed，宁可不发） |
+| `trial_phone_window_hit` | 体验版 409 | 该号码 90 天内已领过体验版（可能来自另一个账号，含已注销的）。正常拒绝，不是故障 |
+| `phone_claim_released uid=…` | 注销成功 | 号码已写进台账并释放，可被重新注册 |
+| `cancel_phone_release_skipped reason=phone_without_hmac uid=…` | 注销成功 | 第三态：明文在、hmac 空，两列都没动。按 10.4 修 hmac 后 `release --uid` 补释放 |
 
 判断口径：这些 409/503 记录**不带 `"status":500`**（WARN 行的 `status` 字段恒为 0）。若看到 `"level":"error"` + `"status":500` + `register_insert_user_failed` / `ops_create_operator_insert_user_failed`，那才是真故障（DB 不可写、死锁、缺列）。

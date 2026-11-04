@@ -62,6 +62,7 @@
 | 0026 | `t_integration` 建表 + 5 个工具种子（`enabled=0`、模板 NULL） | 已落盘（T33 段 1） |
 | 0027 | `t_user` 加 `username varchar(32) NULL`（`AFTER user_no`）+ `uk_user_username`；存量行不回填 | 已落盘（INC-admin-bootstrap） |
 | 0028 | `t_user` 加 `password_is_initial tinyint(1) NOT NULL DEFAULT 0`（`AFTER password_updated_at`）：仅引导置 1，改密清零，只驱动前端提醒 | 已落盘（INC-admin-bootstrap） |
+| 0029 | `t_phone_claim` 建表（号码台账：一号码一行，`PRIMARY KEY(phone_hmac)`）：`first_user_id` / `last_claim_*` / `last_cancel_at` / `cancel_count` / `trial_granted_at` / `last_trial_user_id` / `created_at` / `updated_at`；**无 `state` 列** | 已落盘（INC-phone-claim） |
 
 > **需回写 TDS §8.6**：0018 / 0019 / 0020 / 0021 是 TDS §8.6 裁定表之外的新增占用，由交付总监统一改源文档；实现方未改 TDS。
 
@@ -72,6 +73,7 @@
 | 表 | 迁移 | 分层 | 关键唯一键 |
 | :--- | :--- | :--- | :--- |
 | `t_user` | 0001 | 账号 | `uk_user_no`、`uk_user_email`、`uk_user_idno`；`0011` 起手机号唯一性迁到 `uk_user_phone_hmac`（**`phone_hmac` 由写路径维护**，见下节）；`0027` 起登录用户名唯一性由 `uk_user_username` 承担（列可空，NULL 可重复；用户名可由本人在账户设置里设置或清空）；`0028` 起 `password_is_initial` 标记初始口令（只用于提醒） |
+| `t_phone_claim` | 0029 | 手机号台账（一号码一行，无状态机） | `PRIMARY KEY(phone_hmac)`。占用状态的唯一权威仍是「是否存在一行 `t_user.phone_hmac = H`」；本表只记事实：`first_user_id`（首次认领）、`last_claim_user_id`/`last_claim_at`（最近认领）、`last_cancel_at`、`cancel_count`（注销释放次数）、`trial_granted_at`（90 天窗口唯一锚点）、`last_trial_user_id`。不设清理 Job（一行一号码，hmac 不含明文，且它是窗口的唯一数据源） |
 | `t_verify_record` | 0001 | 账号 | — |
 | `t_device_fingerprint` | 0001 | 账号 | `uk_fp_hash_user` |
 | `t_verification_code` | 0001 | 账号 | — |
@@ -176,14 +178,16 @@
 | 内容 | E.164 去 `+`（`8613800138000`） | `lowercase_hex(HMAC-SHA256(phone, PHONE_HMAC_KEY))`，64 字符 |
 | 谁写 | 注册 / 运营建号 /（未来）改号 | 与 `phone` **同一事务**由写路径计算：`auth.insertUserRow`（注册、运营建号、内置超管）、`cmd/seedctl`、回填命令 |
 | 唯一性 | **无**唯一键（0011 已 `DROP uk_user_phone`） | `uk_user_phone_hmac`（全表唯一，NULL 可重复） |
-| 读路径 | 登录、找回密码、绑定邮箱冲突、运营列表/详情**一律按明文 `phone` 查** | 只有体验版（`fund/trial.go`）的等值判重用它 |
-| 注销 | 保留（未来 F-12 的 PII 清空任务只许置 `NULL`） | **保留，永不因注销而清空** |
+| 读路径 | 登录、找回密码、绑定邮箱冲突、运营列表/详情**一律按明文 `phone` 查** | 体验版（`fund/trial.go`）只用它去寻址 `t_phone_claim`（等值 + 唯一键）；判重本身读台账 |
+| 注销 | **置 `NULL`（同一事务内释放，0029 起）** | **置 `NULL`（同一事务内释放，0029 起）**：号码先写进 `t_phone_claim`（`cancel_count+1`、`trial_granted_at` 取台账既有值或本行 `trial_claimed_at`），再清两列 |
 | 软删 | 保留 | **改写为 `#del#{id}{unix_ms}`**，释放号段 |
 
-**注销 = 占号，软删 = 放号**。两者不可混：
+**注销 = 放号（台账承接记忆），软删 = 放号**。两者都释放号段，但记忆落在不同地方：
 
-- 注销（`POST /api/v1/auth/cancel`）只改 `status/disable_source/disable_at/cancel_apply_at`，**不动任何 phone 列**。因此注销行的 `phone_hmac` 仍占着 `uk_user_phone_hmac`，同一手机号**不能再注册**（产品裁定 D1：注销即占号）。要复用号段走 `docs/ops-runbook.md` §10.4 的受控释放操作（SUPER_ADMIN 审批 + 审计行），不是注销的自动化副作用。
+- 注销（`POST /api/v1/auth/cancel`）在同一事务里把号码写进 `t_phone_claim`，然后把 `phone` 与 `phone_hmac` **都置 `NULL`**。同一手机号因此**可以立即被任何账号重新注册**（INC-phone-claim D1）；同一号码 **90 天内至多领一次体验版**由台账的 `trial_granted_at` 判定（跨账号、不受注销影响）。唯一性仍由 `uk_user_phone_hmac` 原子决定，**台账不参与判重**（查台账是 check-then-act）。
+- 只有 `disable_source='SELF_CANCEL'` 释放。运营封禁（`OPS_MANUAL`）与风控封禁（`RISK_AUTO`）**保留占号**，否则被封账号可以用同一台手机重新注册。存量行按同一规则释放：`make backfill-phone-claim ARGS="release --commit"`（顺序：先 `backfill` 再 `release`，见 `docs/ops-runbook.md` §10.2）。
 - 软删（`deleted_at` 非空，今天只有夹具/人工会产生）必须把 `phone_hmac` 改写成 `#del#…`，否则幽灵行永久占用号段，该号码再也注册不了。
 - 明文与 hmac 可能漂移（人工改库、用错 key、半途中断）。SQL 算不了 HMAC，所以「列有值」不等于「值是对的」：唯一发现手段是 `backfill-phone-hmac verify`（重算比对，0 差异），已写进 `docs/go-live-checklist.md` 第 33 项。
+- 注销时若 `phone` 有值而 `phone_hmac` 为空，**两列都不动**（明文是 hmac 的唯一重算输入，置空会让该号码的窗口记忆永久不可重建）：修 hmac 后用 `make backfill-phone-claim ARGS="release --uid=<id> --commit"` 补释放，日志会留 `cancel_phone_release_skipped reason=phone_without_hmac uid=`。
 
 `PHONE_HMAC_KEY` 是**独立于 `FP_HMAC_KEY` 的密钥**（手机号可枚举，泄漏等价于泄漏明文；设备指纹不可反查）。缺失时的行为见 `docs/ops-runbook.md` §10.5。

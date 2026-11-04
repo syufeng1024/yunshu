@@ -127,7 +127,7 @@ OpenAPI 已同步：`/api/admin/overview`、`/api/admin/tickets/{id}`、`/api/ad
 | `POST /api/admin/announcements/{id}/offline` | `notice.write` | `ops/announcement.go:OfflineAnnouncement` | `DRAFT/SCHEDULED/PUBLISHED → OFFLINE` |
 | `PATCH /api/admin/announcements/{id}` | `notice.write` | `ops/announcement.go:UpdateAnnouncement` | 新增 `effective_from` 写入与 `model_ids` 持久化 |
 | `PATCH /api/admin/prices/{id}` | `price.write` | `ops/pricing.go:UpdatePrice` | 新增 `clear_fields` 显式置空 |
-| `POST /api/v1/auth/cancel` | 登录即可 | `auth/cancel.go:Cancel` | 工单预检 → 禁用账号 → 删除全部会话 |
+| `POST /api/v1/auth/cancel` | 登录即可 | `auth/cancel.go:Cancel` | 请求体 `confirm` 必填 → 工单预检 → 禁用账号 → 写 `t_phone_claim` 并释放手机号 → 删除全部会话 |
 
 ### 余额调整
 
@@ -191,9 +191,21 @@ OpenAPI 已同步：`/api/admin/overview`、`/api/admin/tickets/{id}`、`/api/ad
 
 `POST /api/v1/auth/cancel`（登录即可，无额外权限点）：
 
-1. 先调 `ticket.CheckAccountCancellable`。存在 `OPEN` / `RESPONDED` 工单时返回 409 `resource_state_conflict`，message 为「存在未结工单，无法注销：<工单号…>」，`CLOSED` 不阻塞。
-2. 事务内 `t_user.status='DISABLED'`、`disable_source='SELF_CANCEL'`、`disable_reason='用户主动注销'`、`disabled_at=now`、`cancel_apply_at=now`，并写一条 `USER/CANCEL` 审计（before/after 含 status 与 disable_source）。不新增 `t_user.status` 枚举值。
-3. 提交后调用 `SessionManager.RevokeAll`：删除 K30 `sess:admin:uid:{uid}` 中的全部 K20 `sess:admin:{sid}` 与集合本身。旧 sid 再访问返回 401 `session_expired`。吊销失败返回 503 `auth_unavailable`，不谎报成功。
+1. 请求体必填：`{"confirm": "<登录标识>"}`。
+2. `confirm` 与账号的登录标识比对（服务端判定，前端只渲染 label），**只比该账号的主标识，三档互斥**：
+   - 有邮箱 → 完整邮箱，归一化 = `strings.TrimSpace` + 小写（与登录归一一致）；
+   - 邮箱为空、有手机号 → 号码**后 4 位**（`confirm` 里只取数字，必须恰好 4 位）；
+   - 都为空、有用户名（运营/超管）→ 用户名，小写 + trim。
+   
+   **三种失败（完全没传 body / `confirm` 为空 / `confirm` 错值）返回同一个 400**：`invalid_request_body`，`message = "请求体参数有误：confirm"`，HTTP 400；只有 `hint` 按账号形态分档（「请输入完整的登录邮箱 / 手机号后 4 位 / 登录用户名以确认注销」），**不按错误类型分档**。空 body 原先会得到 `message = "…：body"`，cancel 里统一收敛成 `confirm`——否则旧客户端与新客户端看到两种反馈，"统一"就白做了，而且能拼出「这个标识是否存在」。不新增错误码（`confirm_ambiguous` 已裁定不实现：比对对象是会话自己那一行，不存在多义输入）。`/api/v1/auth/me` 的 `login_kind` 给出本账号的 mode。
+3. 先调 `ticket.CheckAccountCancellable`。存在 `OPEN` / `RESPONDED` 工单时返回 409 `resource_state_conflict`，message 为「存在未结工单，无法注销：<工单号…>」，`CLOSED` 不阻塞。
+4. 事务内 `t_user.status='DISABLED'`、`disable_source='SELF_CANCEL'`、`disable_reason='用户主动注销'`、`disabled_at=now`、`cancel_apply_at=now`；并发重复注销（`RowsAffected=0`）返回 409。
+5. 同一事务内**释放手机号**（INC-phone-claim）：先 `INSERT … ON DUPLICATE KEY UPDATE` 写 `t_phone_claim`（`cancel_count+1`、`last_cancel_at=now`、`trial_granted_at = COALESCE(台账既有, 本行 trial_claimed_at)`、`last_trial_user_id` 只在插入分支写），再把 `t_user.phone` 与 `t_user.phone_hmac` 置 NULL。释放后同一手机号**可以被任何账号立即重新注册**，唯一性仍由 `uk_user_phone_hmac` 原子决定（台账不参与判重）。三种形态：
+   - `phone` 空、`phone_hmac` 空 → 邮箱/用户名账号，什么都不做；
+   - 两列都有值 → 记录 + 释放（`phone_released=true`）；
+   - `phone` 有值、`phone_hmac` 为空 → **两列都不动**，只记 WARN `cancel_phone_release_skipped reason=phone_without_hmac uid=`（明文是 hmac 的唯一重算输入，置空会让该号码的窗口记忆永久不可重建；处置见 `ops-runbook` §10.3 后用 `backfill-phone-claim release --uid=<id>` 补释放）。
+6. 写一条 `USER/CANCEL` 审计：before/after 含 status 与 disable_source，`after` 另含 `phone_released`（bool）与 `claim_cancel_count`（int）；**不写明文手机号、不写 hmac**。不新增 action 值。
+7. 提交后调用 `SessionManager.RevokeAll`：删除 K30 `sess:admin:uid:{uid}` 中的全部 K20 `sess:admin:{sid}` 与集合本身。旧 sid 再访问返回 401 `session_expired`。吊销失败返回 503 `auth_unavailable`，不谎报成功。
 
 ## T27：调试台内网扣费链路
 
@@ -513,6 +525,11 @@ UPDATE t_user SET email = ?, updated_at = ?
 - 用户名受 `uk_user_username` 唯一约束，重复返回 `409 resource_state_conflict`（“该用户名已被占用”）。
 - **清空保护**：账号既无邮箱也无手机号时不允许清空用户名（返回 `400`），否则该账号将没有任何登录标识——内置超管正是这种账号。
 - 改用户名不影响当前会话，因为会话只绑 uid。
+
+### 注销确认框的 mode（`login_kind`）
+
+- `GET /api/v1/auth/me`（以及登录/注册/绑定邮箱返回的 `user`）带 `login_kind: "email" | "phone_suffix" | "username" | "none"`：它说明**服务端会拿什么与注销请求的 `confirm` 比对**（有邮箱 → 完整邮箱；否则有手机号 → 后 4 位；否则 → 用户名）。
+- 前端只按它渲染 label / placeholder 并做「非空 + 位数」的本地预检，**不重写判定**。旧实现前端比 `user.email`，而手机号账号的 `email` 为空 → 空输入即通过，确认框形同虚设（本轮修复）。
 
 ### 初始口令提醒（`password_warning`）
 

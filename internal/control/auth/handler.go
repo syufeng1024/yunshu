@@ -88,6 +88,16 @@ type userView struct {
 	// the account logs in with its email/phone only. It is additive, so an old
 	// client that ignores it keeps working.
 	Username string `json:"username"`
+	// LoginKind names which identifier the cancellation confirmation is
+	// compared against: "email" | "phone_suffix" | "username" | "none".
+	//
+	// It exists because the console cannot work that out for itself. The
+	// confirmation dialog used to compare against `email`, which is empty for a
+	// phone-registered account — the field then passed on an empty input, in
+	// exactly the case where cancellation is most destructive. The rule lives on
+	// the server (cancelIdentity.primaryMode); the console only renders the
+	// label, so it needs the answer, not a copy of the rule.
+	LoginKind string `json:"login_kind"`
 	// PasswordWarning tells the client to show a "still using the initial
 	// password" reminder. It is a hint, never a gate: the session is already
 	// issued and every route stays reachable. Only the built-in super admin
@@ -116,6 +126,7 @@ func view(uid int64, email, phone, username, nickname, role, status string, pass
 		Role:            role,
 		Status:          status,
 		Username:        username,
+		LoginKind:       loginKindFor(email, phone, username),
 		PasswordWarning: passwordWarning,
 	}
 }
