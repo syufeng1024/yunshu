@@ -164,6 +164,97 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/password/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 自助找回密码（验证码 + 新密码，匿名）
+         * @description 匿名接口：无会话要求，也**不校验 CSRF**（结构上是 public 路由，不进
+         *     Session → CSRF → Require 链；伪造它拿不到受害者的 6 位验证码，加校验只会
+         *     让「已登录用户在公共设备上重置」出现 403 死路）。
+         *
+         *     校验顺序固定：字段 → 密码规则（8..72 字节、非纯空白）→ 验码 → 写库。
+         *     弱密码或字段错误**不消耗**验证码；验码失败（码错/过期/未申请/尝试超限）与
+         *     「账号不存在 / 已软删 / status≠NORMAL / 手机号歧义」统一返回同一个
+         *     `invalid_credentials`，不区分账号是否存在。
+         *
+         *     成功返回 204 且**不签发任何会话**：重置常发生在公共设备上，且「必须再登一次」
+         *     是唯一能当场证明新密码可用的环节。成功后该 uid 的全部会话被吊销
+         *     （RevokeAll），`password_is_initial` 置 0，登录失败计数 K28 被清空。
+         */
+        post: operations["postPasswordReset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/email/code": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 发送绑定登录邮箱的验证码（已登录，purpose=bind）
+         * @description 单独成接口而不复用匿名的 `/api/v1/auth/verification-code`：后者的限流与
+         *     「零区分 200」是按路径共享的，再加一个 `bind` 用途等于把「匿名向任意邮箱
+         *     发信」的打击面放大一份。
+         *
+         *     当前账号 `email` 非空时 400（本轮只做「为空时绑定」）；目标邮箱已被他人占用
+         *     时 409 且**不发送**。限流四维：同地址 60s 冷却、地址日配额 10、**账号日配额 5**
+         *     （`vc:quota:bind:uid:{uid}`，防止一个登录态变成免费发信器）、同 IP 每小时 10
+         *     （跨用途共享，不因新增用途放大）。
+         */
+        post: operations["postEmailBindCode"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/email": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 绑定登录邮箱（已登录，验码后写入 t_user.email）
+         * @description 验证 purpose=bind 的验证码后写入 `t_user.email`：
+         *
+         *     ```sql
+         *     UPDATE t_user SET email = ?, updated_at = ?
+         *      WHERE id = ? AND deleted_at IS NULL AND (email IS NULL OR email = '')
+         *     ```
+         *
+         *     `RowsAffected = 0`（并发下已被绑定）与唯一键 1062 都映射为 409，**不允许**
+         *     覆盖已有邮箱。写入与审计同事务；审计 `after_json` 只含
+         *     `{"email_changed":true,"email":"a***@x.com"}`（不含明文地址）。
+         *
+         *     成功后**不吊销会话**：绑定不改变 role / status / password_hash，会话绑的是 uid，
+         *     下一次 `GET /auth/me` 自然带出新邮箱。目标账号一律取会话 uid，不接受任何
+         *     `user_id` 参数。
+         */
+        post: operations["postBindEmail"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/cancel": {
         parameters: {
             query?: never;
@@ -1231,6 +1322,55 @@ export interface components {
             user: components["schemas"]["AuthUser"];
             /** @description 与本响应 Set-Cookie 的 `csrf` 同值，见 CurrentUser.csrf_token */
             csrf_token: string;
+        };
+        PasswordResetRequest: {
+            /** @description 邮箱或手机号；用户名会被拒绝（400，用户名不是投递地址） */
+            identifier: string;
+            /** @description purpose=reset 的 6 位数字验证码，一次一用，输错 5 次即作废 */
+            code: string;
+            /**
+             * Format: password
+             * @description 与注册/改密同一规则：8..72 字节，不可为纯空白
+             */
+            new_password: string;
+        };
+        VerificationCodeRequest: {
+            /** @description 邮箱或手机号；用户名一律 400（没有投递地址） */
+            identifier: string;
+            /**
+             * @description 用途即 Redis 命名空间（`vc:code:<purpose>:<hash>`），跨用途不可重放。
+             *     `bind` **不是**该接口的合法值：绑定发码必须已登录，走
+             *     `POST /api/v1/auth/email/code`，传 bind 返回 400。
+             * @enum {string}
+             */
+            purpose: "login" | "register" | "reset";
+        };
+        VerificationCodeResponse: {
+            /**
+             * @description 验证码的投递渠道。手机号在 AUTH_SMS_MODE=off 时直接 400，不会走到这里
+             * @enum {string}
+             */
+            channel: "email" | "sms";
+            /** @description 验证码有效期（秒），当前固定 600 */
+            expires_in: number;
+            /** @description 重发冷却（秒），当前固定 60；前端倒计时以此为准，不写死 */
+            resend_after: number;
+        };
+        EmailBindCodeRequest: {
+            /**
+             * Format: email
+             * @description 待绑定的登录邮箱；当前账号 email 非空时返回 400（不支持更换）
+             */
+            email: string;
+        };
+        EmailBindRequest: {
+            /** Format: email */
+            email: string;
+            /** @description purpose=bind 的 6 位数字验证码 */
+            code: string;
+        };
+        UserResponse: {
+            user: components["schemas"]["AuthUser"];
         };
         PasswordChangeRequest: {
             /** Format: password */
@@ -3455,6 +3595,202 @@ export interface operations {
             };
             /** @description 会话存储不可用，密码可能已更新（auth_unavailable） */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    postPasswordReset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordResetRequest"];
+            };
+        };
+        responses: {
+            /** @description 密码已重置，全部会话已吊销，cookie 已清除；不签发会话 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 字段不合法（invalid_request_body）；含 AUTH_VERIFICATION_MODE=off 的 fail-closed 拒绝 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 验证码不正确、已过期、未申请、尝试超限或账号不可用（invalid_credentials） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话存储不可用或吊销失败（auth_unavailable；密码可能已更新） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    postEmailBindCode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmailBindCodeRequest"];
+            };
+        };
+        responses: {
+            /** @description 验证码已发出（purpose=bind；正文为绑定专用文案） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VerificationCodeResponse"];
+                };
+            };
+            /** @description 邮箱格式非法，或当前账号已绑定登录邮箱，或 AUTH_VERIFICATION_MODE=off（invalid_request_body） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 未登录或会话失效（session_expired） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 缺少角色权限或 CSRF token 不匹配（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 该邮箱已被其他账号使用（account_exists；不发送） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 60s 冷却 / 地址日配额 / 账号日配额 / IP 小时配额（rpm_limit_exceeded） */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 邮件通道未配置或发送失败（auth_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    postBindEmail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmailBindRequest"];
+            };
+        };
+        responses: {
+            /** @description 绑定成功，返回含新 email 的用户视图（不签发新会话） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserResponse"];
+                };
+            };
+            /** @description 字段不合法、当前账号已绑定登录邮箱，或 AUTH_VERIFICATION_MODE=off（invalid_request_body） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 未登录、会话失效或验证码不正确（session_expired / invalid_credentials） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 缺少角色权限或 CSRF token 不匹配（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 该邮箱已被使用（account_exists；含并发下 RowsAffected=0） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 数据库错误（internal_error） */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

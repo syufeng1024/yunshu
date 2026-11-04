@@ -25,6 +25,7 @@ import (
 	"yunshu.dev/core/internal/control/mw"
 	"yunshu.dev/core/internal/cryptobox"
 	"yunshu.dev/core/internal/notify/mail"
+	"yunshu.dev/core/internal/notify/sms"
 	"yunshu.dev/core/internal/obs/health"
 	obslog "yunshu.dev/core/internal/obs/log"
 	obsmetrics "yunshu.dev/core/internal/obs/metrics"
@@ -50,6 +51,32 @@ func main() {
 
 	logger := obslog.New(service, cfg.Env)
 	logger.Info(rootCtx, "starting", obslog.Fields{Stage: "startup"})
+
+	// 短信通道（自助找回密码的手机渠道）。放在打开任何连接**之前**：一个写错的
+	// AUTH_SMS_MODE 是纯配置错误，不该等到数据库、Redis 都连上才被发现——那样运维
+	// 会先怀疑依赖，而且「拒绝启动」的退出原因会被更早的失败掩盖。
+	//
+	// 三种模式（off / log / provider）里，provider 缺凭据同样在这里拒绝启动，与
+	// AUTH_VERIFICATION_MODE=smtp 无 SMTP 通道即拒启一致：把缺凭据拖到首次发送，
+	// 表现是「用户点了没反应」，看起来像产品故障。错误串只含变量名，绝不含凭据值。
+	smsClient, smsErr := sms.FromEnv(logger)
+	if smsErr != nil {
+		logger.Error(rootCtx, "sms configuration is invalid: "+smsErr.Error(),
+			obslog.Fields{Stage: "startup", Status: 1})
+		os.Exit(1)
+	}
+	switch smsClient.Mode {
+	case sms.ModeLog:
+		logger.Warn(rootCtx, "AUTH_SMS_MODE=log: 验证码会打印到本日志，不会真实下发 —— 生产环境请设为 provider",
+			obslog.Fields{Stage: "startup"})
+	case sms.ModeProvider:
+		// 只打印供应商、签名与模板号（都是供应商侧的可公开标识），不打印任何凭据。
+		logger.Info(rootCtx, fmt.Sprintf("sms provider=%s %s", smsClient.Provider, smsClient.String()),
+			obslog.Fields{Stage: "startup"})
+	default:
+		logger.Info(rootCtx, "AUTH_SMS_MODE=off: 手机号找回渠道关闭，找回仅支持邮箱",
+			obslog.Fields{Stage: "startup"})
+	}
 
 	reg := obsmetrics.NewRegistry()
 	// The recorder is passed to control for the log-body read counter
@@ -299,6 +326,8 @@ func main() {
 		GatewayInternalURL: internalURL,
 		InternalCallSecret: internalSecret,
 		VerificationMode:   verificationMode,
+		SMS:                smsClient,
+		SMSMode:            smsClient.Mode,
 	}
 	if mailer != nil {
 		deps.Mailer = mailer

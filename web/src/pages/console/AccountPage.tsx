@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { bindEmail, sendBindEmailCode } from '@/api/auth'
 import { api, errorHint, errorMessage } from '@/api/client'
 import { Badge, Button, Input, PageHeader } from '@/components'
 import { ROUTES, USER_ROLE_LABEL, USER_STATUS_LABEL } from '@/lib/constants'
@@ -8,8 +9,16 @@ import { usePageTitle } from '@/lib/usePageTitle'
 import type { CurrentUser } from '@/stores/auth'
 import { useAuthStore } from '@/stores/auth'
 
+/** 与服务端 maskIdentifier 同一条规则（保留首字符 + 域名），只在本地展示用。 */
+function maskEmail(email: string): string {
+  const at = email.indexOf('@')
+  if (at <= 0) return '***'
+  const local = email.slice(0, at)
+  return (local.length <= 1 ? '*' : `${local.slice(0, 1)}***`) + email.slice(at)
+}
+
 /**
- * 账户设置：账号信息、修改密码、注销。
+ * 账户设置：账号信息、登录邮箱、修改密码、注销。
  *
  * 这三件事以前在控制台里没有任何入口——后端接口（/api/v1/auth/password、
  * /api/v1/auth/cancel）早就有了，只是没有页面，用户改密码只能去翻文档。
@@ -36,11 +45,78 @@ export default function AccountPage() {
   const [pwHint, setPwHint] = useState<string | null>(null)
   const [pwSubmitting, setPwSubmitting] = useState(false)
 
+  // 登录邮箱绑定：未绑定 → 输入 → 验码 → 已绑定。三态在同一个卡片里切换。
+  const [bindEmailValue, setBindEmailValue] = useState('')
+  const [bindCode, setBindCode] = useState('')
+  const [bindStep, setBindStep] = useState<'idle' | 'code'>('idle')
+  const [bindSending, setBindSending] = useState(false)
+  const [bindSubmitting, setBindSubmitting] = useState(false)
+  const [bindError, setBindError] = useState<string | null>(null)
+  const [bindHint, setBindHint] = useState<string | null>(null)
+  const [bindCooldown, setBindCooldown] = useState(0)
+
   const [cancelOpen, setCancelOpen] = useState(false)
   const [cancelConfirm, setCancelConfirm] = useState('')
   const [cancelError, setCancelError] = useState<string | null>(null)
   const [cancelHint, setCancelHint] = useState<string | null>(null)
   const [cancelSubmitting, setCancelSubmitting] = useState(false)
+
+  useEffect(() => {
+    if (bindCooldown <= 0) return
+    const timer = window.setInterval(() => {
+      setBindCooldown((left) => (left <= 1 ? 0 : left - 1))
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [bindCooldown])
+
+  const handleSendBindCode = async () => {
+    setBindError(null)
+    setBindHint(null)
+    const value = bindEmailValue.trim()
+    if (!value.includes('@')) {
+      setBindError('请输入完整的登录邮箱。')
+      return
+    }
+    setBindSending(true)
+    try {
+      const response = await sendBindEmailCode(value)
+      setBindStep('code')
+      setBindCooldown(response.resend_after > 0 ? response.resend_after : 60)
+    } catch (error) {
+      setBindError(errorMessage(error))
+      setBindHint(errorHint(error))
+    } finally {
+      setBindSending(false)
+    }
+  }
+
+  const handleBindEmail = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setBindError(null)
+    setBindHint(null)
+    if (!/^\d{6}$/.test(bindCode.trim())) {
+      setBindError('验证码是 6 位数字，请检查是否输完整。')
+      return
+    }
+    setBindSubmitting(true)
+    try {
+      const data = await bindEmail({ email: bindEmailValue.trim(), code: bindCode.trim() })
+      // 绑定不改变会话，但当前用户视图里的 email 变了：不写回 store 的话，
+      // 侧边栏与注销确认框会继续用旧值（注销要输入完整邮箱）。
+      const previous = useAuthStore.getState().user
+      if (previous) {
+        useAuthStore.setState({ user: { ...previous, ...data.user } })
+      }
+      setBindStep('idle')
+      setBindCode('')
+      setBindCooldown(0)
+    } catch (error) {
+      setBindError(errorMessage(error))
+      setBindHint(errorHint(error))
+    } finally {
+      setBindSubmitting(false)
+    }
+  }
 
   const saveProfile = async () => {
     setProfileSaving(true)
@@ -200,8 +276,94 @@ export default function AccountPage() {
           </div>
         </dl>
         <p className="mt-4 text-xs text-ink-muted">
-          登录邮箱与账号角色不可自助修改；需要变更请提交工单。用户名可随时设置或清空。
+          登录邮箱在未绑定时可自助绑定；已绑定的更换需提交工单。账号角色不可自助修改。
+          用户名可随时设置或清空。
         </p>
+      </section>
+
+      <section className="rounded-xl border border-border bg-surface p-5">
+        <h2 className="text-sm font-semibold text-ink">登录邮箱</h2>
+        {user?.email ? (
+          <div className="mt-3 space-y-1 text-sm">
+            <p className="text-ink">{maskEmail(user.email)}</p>
+            <p className="text-xs text-ink-muted">
+              已绑定。更换登录邮箱请联系客服提交工单——换绑等于更换账号接管主通道，
+              需要额外的身份核验。
+            </p>
+          </div>
+        ) : (
+          <>
+            <p className="mt-1 text-xs text-ink-secondary">
+              当前账号没有登录邮箱。绑一个你自己的邮箱，忘记密码时就能自助重置，
+              不必再联系管理员。
+            </p>
+            {bindStep === 'idle' ? (
+              <div className="mt-4 max-w-md space-y-3">
+                <Input
+                  label="登录邮箱"
+                  type="email"
+                  value={bindEmailValue}
+                  onChange={(event) => setBindEmailValue(event.target.value)}
+                  autoComplete="email"
+                  placeholder="you@example.com"
+                />
+                {bindError ? (
+                  <div role="alert" className="rounded-lg border border-danger bg-danger-soft p-3 text-xs">
+                    <p className="font-medium text-danger">{bindError}</p>
+                    {bindHint ? <p className="mt-1 text-ink-secondary">{bindHint}</p> : null}
+                  </div>
+                ) : null}
+                <Button
+                  type="button"
+                  variant="secondary"
+                  loading={bindSending}
+                  onClick={() => {
+                    void handleSendBindCode()
+                  }}
+                >
+                  发送验证码
+                </Button>
+              </div>
+            ) : (
+              <form className="mt-4 max-w-md space-y-3" onSubmit={handleBindEmail} noValidate>
+                <p role="status" className="rounded-lg border border-info bg-info-soft p-3 text-xs text-ink-secondary">
+                  验证码已发送到 {bindEmailValue.trim()}，10 分钟内有效。
+                </p>
+                <div className="flex items-end gap-2">
+                  <Input
+                    label="验证码"
+                    value={bindCode}
+                    onChange={(event) => setBindCode(event.target.value)}
+                    autoComplete="one-time-code"
+                    inputMode="numeric"
+                  />
+                  <Button
+                    variant="secondary"
+                    size="md"
+                    type="button"
+                    className="shrink-0 whitespace-nowrap"
+                    loading={bindSending}
+                    disabled={bindCooldown > 0}
+                    onClick={() => {
+                      void handleSendBindCode()
+                    }}
+                  >
+                    {bindCooldown > 0 ? `${bindCooldown}s 后重发` : '重新获取'}
+                  </Button>
+                </div>
+                {bindError ? (
+                  <div role="alert" className="rounded-lg border border-danger bg-danger-soft p-3 text-xs">
+                    <p className="font-medium text-danger">{bindError}</p>
+                    {bindHint ? <p className="mt-1 text-ink-secondary">{bindHint}</p> : null}
+                  </div>
+                ) : null}
+                <Button type="submit" loading={bindSubmitting}>
+                  确认绑定
+                </Button>
+              </form>
+            )}
+          </>
+        )}
       </section>
 
       <section className="rounded-xl border border-border bg-surface p-5">

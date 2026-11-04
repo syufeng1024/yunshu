@@ -194,8 +194,8 @@ func IdemHash(scope string, apiKeyID int64, idemKey string) string {
 // Verification-code keys (K-VC series). The identifier is hashed by the caller
 // before it becomes part of a key name: Redis is readable by anyone with access
 // to the instance, and an e-mail address in a key would hand over the user
-// list. Purpose is "login" or "register" so one mailbox can hold both codes
-// without the login code being usable to register (and vice versa).
+// list. Purpose is "login", "register", "reset" or "bind" so one mailbox can
+// hold several codes without any of them being replayable into another flow.
 func VerifyCodeKey(purpose, identHash string) string {
 	return "vc:code:" + purpose + ":" + identHash
 }
@@ -206,6 +206,17 @@ func VerifyCodeCooldownKey(purpose, identHash string) string {
 
 func VerifyCodeQuotaKey(purpose, identHash string) string {
 	return "vc:quota:" + purpose + ":" + identHash
+}
+
+// VerifyCodeUIDQuotaKey 是按账号、按用途的每日配额（vc:quota:{purpose}:uid:{uid}）。
+//
+// 存在的理由只有一个：绑定邮箱的发码接口是**已登录**接口，如果只按目标地址限流，
+// 一个被盗的账号就能被当成「向任意邮箱投递」的免费发信器——每个新地址都是全新的
+// 冷却与地址配额。账号维度这一层把「一个登录态一天最多发 5 条绑定码」钉死。
+//
+// 键仍然落在 vc:quota: 命名空间内，不新增键族；uid 是数字，不含 PII。
+func VerifyCodeUIDQuotaKey(purpose string, userID int64) string {
+	return "vc:quota:" + purpose + ":uid:" + strconv.FormatInt(userID, 10)
 }
 
 // VerifyCodeIPQuotaKey 是按来源 IP 的小时配额。按邮箱的两条限流（冷却 + 每日）

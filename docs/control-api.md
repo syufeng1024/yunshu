@@ -371,20 +371,119 @@ Key 开启 `ip_whitelist_mode=ON` 时，白名单必须包含 controld 所在网
 | 登出 | 删除 K20、从 K30 `SREM`、清除 `sid` 与 `csrf` cookie；旧 token 随旧 sid 一起失效 |
 | 改密 | `POST /api/v1/auth/password`，验证旧密码后更新 bcrypt 哈希，删除该 uid 的全部 K20 与 K30；旧 sid 再请求返回 401 `session_expired` |
 
-### 验证码（邮箱）
+### 验证码（`POST /api/v1/auth/verification-code`）
 
-`POST /api/v1/auth/verification-code`，无会话，body `{identifier, purpose}`，`purpose` 为 `login` 或 `register`。
+无会话，body `{identifier, purpose}`，`purpose ∈ {login, register, reset}`。
+`bind` **不是**该接口的合法值（传 `bind` 返回 `400`，`field=purpose`）：绑定发码必须
+已登录，走 `POST /api/v1/auth/email/code`。
 
 | 行为 | 说明 |
 | :--- | :--- |
 | 发送 | 6 位数字，存 Redis `vc:code:<purpose>:<sha256(identifier)[:32]>`，值只存 SHA-256 摘要，TTL 10 分钟 |
-| 限流 | 同一地址同一 purpose 60 秒一次（`SETNX`）、每天 20 条；超限返回 429 `rpm_limit_exceeded` 并带 `retry_after_seconds` |
-| 消费 | 注册/验证码登录时一次性消费；输错 5 次即作废该码；错误码统一 `invalid_credentials` + hint，不区分“过期/错误/未申请” |
-| 命名空间 | `login` 与 `register` 分开，登录码不能用于注册 |
-| 手机号 | **暂未开放**：返回 400 `invalid_request_body` + hint「短信验证码暂未开放，请使用邮箱」，不写 Redis、不调用任何供应商（按条计费） |
-| 通道 | `AUTH_VERIFICATION_MODE=log`（默认，验证码打到日志，仅开发/CI）或 `smtp`（发邮件）；`smtp` 但未配 `SMTP_*` 时进程启动失败 |
+| 限流 | 同地址同 purpose 60 秒一次（`SETNX`）；地址日配额 `reset` = **10**、其余 20；同 IP 每小时 10（**跨用途共享**，新增用途不放大它）。超限返回 429 `rpm_limit_exceeded` 并带 `retry_after_seconds` |
+| 消费 | 注册/验证码登录/重置时一次性消费；输错 5 次即作废该码；错误码统一 `invalid_credentials` + hint，不区分“过期/错误/未申请” |
+| 命名空间 | `login` / `register` / `reset` / `bind` 互不通用；一个用途的码拿去另一个用途一律 401（防跨用途重放） |
+| 响应 | `{channel, expires_in, resend_after}`，`channel ∈ {email, sms}`；`resend_after` 是前端倒计时的唯一来源 |
+| 手机号 | `AUTH_SMS_MODE=off`（默认）时返回 400 + hint「短信验证码暂未开放，请使用邮箱；若账号未绑定邮箱，请登录后在「账户设置」绑定」 |
+| 通道 | `AUTH_VERIFICATION_MODE=log`（默认，验证码打到日志，仅开发/CI）或 `smtp`（发邮件）；`smtp` 但未配 `SMTP_*` 时进程启动失败。短信由 `AUTH_SMS_MODE` 单独控制（`off`/`log`/`provider`），`provider` 缺 `ALIYUN_SMS_*` 同样拒绝启动 |
+
+**`purpose=reset` 的「静默 200」**（零区分口径，评测红线）：
+
+| 情况 | 状态 | 响应体 | 是否发信 |
+| :--- | :--- | :--- | :--- |
+| 账号可用 | 200 | `{channel, expires_in, resend_after}` | 发 |
+| 账号不存在 / 已软删 / `status<>NORMAL` / 手机号匹配到多行 | 200 | **逐字节相同** | **不发**，且已存的码被丢弃 |
+
+判定顺序固定：`decode → purpose 校验 → 归一化 → 邮箱/手机号校验 → 模式判定 →
+渠道可用性 → （仅 register）已注册 409 → 发码（IP/冷却/日配额）→
+（仅 reset）账号可用性 → 投递 → 200`。限流**先于**账号查询：否则查询耗时差会成为
+存在性信号，且探测可以绕开限流预算。
 
 登录 body 二选一：`{identifier, password}` 或 `{identifier, code}`；两者同时提交返回 400（避免“看起来两项都验过”）。验证码登录与密码登录共用同一套账号/IP 锁定计数。
+
+### 自助找回密码（`POST /api/v1/auth/password/reset`）
+
+匿名接口（无会话，**且不校验 CSRF**，理由见下面的豁免表）。body
+`{identifier, code, new_password}`。
+
+| 情况 | 状态 | code | hint |
+| :--- | :--- | :--- | :--- |
+| JSON 坏 / 空 body | 400 | `invalid_request_body` | — |
+| `identifier` 无法归一化 | 400 | `invalid_request_body`（`field=identifier`） | — |
+| `identifier` 是用户名 | 400 | `invalid_request_body`（`field=identifier`） | 用户名不能用于找回密码，请使用邮箱或手机号 |
+| `new_password` 不合规（8..72 字节 / 纯空白） | 400 | `invalid_request_body`（`field=new_password`） | 与注册/改密同一套文案 |
+| `code` 为空 | 400 | `invalid_request_body`（`field=code`） | — |
+| `AUTH_VERIFICATION_MODE=off` | 400 | `invalid_request_body` | 本部署未启用验证码，无法自助重置，请联系管理员 |
+| 码错 / 过期 / 未申请 / 尝试超限 / 账号不可用 | 401 | `invalid_credentials` | 验证码不正确或已过期 |
+| Redis 不可用 / 吊销失败 | 503 | `auth_unavailable` | — |
+| 成功 | **204** | — | 不签发任何 cookie |
+
+**校验顺序不可调换**：`字段 → 密码规则 → 验码 → 写库`。弱密码不烧码；验码早于写库。
+
+成功路径的三件事都必做：`password_hash`/`password_updated_at` 更新且
+`password_is_initial=0`；`RevokeAll(uid)` 吊销该 uid 全部会话（失败 → 503，不能谎报
+204）；清 K28 账号失败计数（否则「试错 5 次被锁 → 重置成功却登不进去」）。
+审计与更新同事务：`module=USER`、`action=UPDATE`、`target_type=t_user`、
+`target_id=<uid>`、`operator_id=<uid>`、`operator_role=<该账号 role>`、`result=OK`、
+`after_json={password_updated_at, sessions_revoked:"all", via:"reset:email|reset:sms"}`，
+**不含**密码、hash、验证码、明文邮箱/手机号。
+
+### 绑定登录邮箱（`POST /api/v1/auth/email/code` + `POST /api/v1/auth/email`）
+
+两个接口都是 `s.authed(mw.PermAccountWrite, …)`：**会话 + CSRF + `account.write`**，
+与 `PATCH /auth/profile` 同一权限点（这是“改自己的资料”，不是运营侧的 `user.write`）。
+目标账号一律取会话 uid，**不接受** `user_id` 参数。
+
+| 接口 | body | 成功 |
+| :--- | :--- | :--- |
+| `POST /api/v1/auth/email/code` | `{email}` | `200 {channel, expires_in, resend_after}`（`purpose=bind`，绑定专用邮件正文） |
+| `POST /api/v1/auth/email` | `{email, code}` | `200 {user}`（含新 `email`；**不吊销会话**） |
+
+| 情况 | 状态 | code | hint |
+| :--- | :--- | :--- | :--- |
+| 邮箱格式非法（含手机号/用户名形态） | 400 | `invalid_request_body`（`field=email`） | — |
+| 当前账号 `email` 非空 | 400 | `invalid_request_body`（`field=email`） | 当前账号已绑定登录邮箱；更换邮箱请提交工单 |
+| `AUTH_VERIFICATION_MODE=off` | 400 | `invalid_request_body` | 本部署未启用验证码，无法验证邮箱 |
+| 邮箱已被其他账号占用 | 409 | `account_exists` | 该邮箱已被使用（**不发信**） |
+| 60s 冷却 / 地址日配额 10 / **账号日配额 5** / IP 小时 10 | 429 | `rpm_limit_exceeded` | 按命中维度给 hint |
+| 码错 / 过期 / 未申请 / 超限 | 401 | `invalid_credentials` | 验证码不正确或已过期 |
+| 唯一键冲突（`uk_user_email`，1062）或 `RowsAffected=0` | 409 | `account_exists` | 该邮箱已被使用 |
+| 投递失败 | 503 | `auth_unavailable` | 验证码邮件发送失败，请稍后重试 |
+| DB 错误 | 500 | `internal_error` | — |
+
+写入语义（**不允许**覆盖已有邮箱）：
+
+```sql
+UPDATE t_user SET email = ?, updated_at = ?
+ WHERE id = ? AND deleted_at IS NULL AND (email IS NULL OR email = '')
+```
+
+审计同事务：`module=USER`、`action=UPDATE`、`target_type=t_user`、`target_id=<uid>`、
+`after_json={"email_changed":true,"email":"a***@x.com"}`（**不含明文地址**）。
+
+不新增 `email_verified_at`：写入前必须消费 `purpose=bind` 的码，所以「`email` 非空」恒等于
+「已验证」；再加一列只会造出第三种状态与一次回填。
+
+
+### 找回密码与绑定邮箱的 `hint` 口径
+
+本增量**零新增错误码**，只登记新场景下 `message`/`hint` 的取值，让 handler、前端文案与测试断言
+对齐同一句话。（`docs/error-codes.md` 由生成器输出、不得手工编辑，所以口径写在这里。）
+
+| 场景 | `code` / HTTP | `message` | `hint` |
+| :--- | :--- | :--- | :--- |
+| 手机号发码，`AUTH_SMS_MODE=off`（默认） | `invalid_request_body` / 400（`field=identifier`） | 默认 | 短信验证码暂未开放，请使用邮箱；若账号未绑定邮箱，请登录后在「账户设置」绑定 |
+| 重置密码验码失败（码错/过期/未申请/账号不可用） | `invalid_credentials` / 401 | 验证码不正确或已过期 | 请确认 6 位数字是否输完整；已过期就重新获取（尝试超限时改「验证码错误次数过多，请重新获取」） |
+| 重置密码但部署未启用验证码 | `invalid_request_body` / 400 | 默认 | 本部署未启用验证码，无法自助重置，请联系管理员 |
+| 重置密码的 `identifier` 是用户名 | `invalid_request_body` / 400（`field=identifier`） | 默认 | 用户名不能用于找回密码，请使用邮箱或手机号 |
+| 绑定邮箱时目标地址已被占用 | `account_exists` / 409 | 该邮箱已被使用 | 不发信。调用者已登录，且 `purpose=register` 早已匿名披露同一事实，不构成新增枚举面 |
+| 绑定邮箱时当前账号已有邮箱 | `invalid_request_body` / 400（`field=email`） | 默认 | 当前账号已绑定登录邮箱；更换邮箱请提交工单 |
+| 绑定邮箱但部署未启用验证码 | `invalid_request_body` / 400 | 默认 | 本部署未启用验证码，无法验证邮箱 |
+| 短信通道未配置 / 投递失败 | `auth_unavailable` / 503 | 默认 | 短信通道未配置，请联系管理员 ／ 验证码短信发送失败，请稍后重试 |
+| 邮件通道未配置 / 投递失败 | `auth_unavailable` / 503 | 默认 | 邮件通道未配置，请联系管理员 ／ 验证码邮件发送失败，请稍后重试 |
+
+`auth_unavailable` 的 `code`/`type`/可重试性不变，上表只改 hint 文案；`rpm_limit_exceeded`（429）
+沿用既有按维度给 hint 的做法，不新增文案族。
 
 ### 登录标识（identifier）
 
@@ -417,7 +516,7 @@ Key 开启 `ip_whitelist_mode=ON` 时，白名单必须包含 controld 所在网
 
 ### 初始口令提醒（`password_warning`）
 
-- `t_user.password_is_initial = 1` 表示“仍在使用开通时下发的口令”，只有启动引导会置位；`POST /api/v1/auth/password` 成功时在同一事务里清零。
+- `t_user.password_is_initial = 1` 表示“仍在使用开通时下发的口令”。**只有两处会置 1**：启动引导（`internal/control/bootstrap`）与 DBA 直改库（运维手册 §9.3）。用户能自助完成的两条改密路径——`POST /api/v1/auth/password` 与 `POST /api/v1/auth/password/reset`——成功时都在同一事务里清零：用户自己设的口令再弹“仍在使用初始密码”是事实错误。
 - 登录、`GET /api/v1/auth/me`、`PATCH /api/v1/auth/profile` 的 `user` 对象都会带 `password_warning: true|false`。
 - **它只是提醒，不拦截**：账号照常登录、照常访问全部接口；前端在运营后台顶部显示一条“请尽快修改密码”的横幅，改密后自动消失。
 - 存量账号升级后一律为 `0`（不凭空弹提醒）。
@@ -444,6 +543,7 @@ CSRF 校验只作用于**会话鉴权**的状态变更方法：`POST` / `PATCH` 
 | `POST /api/v1/auth/login` | 无会话；token 无从派生 |
 | `POST /api/v1/auth/register` | 无会话；token 无从派生 |
 | `POST /api/v1/auth/verification-code` | 无会话；token 无从派生（注册前、登录前都要能调用） |
+| `POST /api/v1/auth/password/reset` | 无会话（`public()` 路由，结构上不进 CSRF 链）。伪造它能达成什么：伪造**受害者**的重置需要受害者的 6 位验证码（攻击者拿不到）；用受害者浏览器重置**攻击者自己**的账号，结果只是攻击者自己的口令变了。因此 CSRF 在这里不增加任何安全性，而“有会话就校验”的分支会让「已登录用户在公共设备上重置」出现无法解释的 403 |
 | `POST /api/v1/pay/callback/*` | 公开回调，认证靠请求体 HMAC，不依赖浏览器会话 |
 
 CSRF 失败返回 403 `permission_denied`，不是 400 `invalid_request_body`：请求体本身没有错，改 body 也修不好；缺的是“请求来自本站”的证明。客户端处理方式是刷新页面重新获取 `csrf` cookie，并把当前 token 放进 `X-CSRF-Token`。

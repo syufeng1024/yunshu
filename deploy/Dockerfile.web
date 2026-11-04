@@ -25,6 +25,12 @@ RUN npm config set registry "${NPM_REGISTRY}" \
 
 COPY web/ ./
 
+# 短信渠道文案开关。vite 在构建时把 import.meta.env.VITE_* 内联进产物，
+# 所以它**必须**是构建参数（运行时再设没有用）。仅影响页脚/找回页文案与本地拦截，
+# 不是服务端开关：真正的开关是 controld 的 AUTH_SMS_MODE，两者要一起翻。
+ARG VITE_AUTH_SMS_ENABLED=false
+ENV VITE_AUTH_SMS_ENABLED=${VITE_AUTH_SMS_ENABLED}
+
 # npm run build = tsc --noEmit && vite build。
 # vite.config.ts 里两条 closeBundle 断言会在这里生效：产物中一旦出现硬编码
 # 价格/额度字面量或 dev fixture 标记，构建直接失败。

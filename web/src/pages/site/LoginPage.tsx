@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { api, errorHint, errorMessage } from '@/api/client'
@@ -12,6 +12,31 @@ import { useAuthStore } from '@/stores/auth'
 import type { CurrentUser } from '@/stores/auth'
 
 type LoginMode = 'password' | 'code'
+
+// 服务端 AUTH_SMS_MODE 的**部署期镜像**（'true' / 'false'）。SPA 读不到服务端环境
+// 变量，`GET /auth/capabilities`（P2-1）落地后删除。两者必须一起翻，否则页脚会说谎
+// —— 文案说支持短信、提交后却 400。
+const SMS_ENABLED = import.meta.env.VITE_AUTH_SMS_ENABLED === 'true'
+
+/**
+ * 登录页脚的渠道说明。
+ *
+ * 抽成纯函数（与本目录其它页的 `isSelfAudit` / `detectUserSearchField` 同一个理由）：
+ * `import.meta.env` 在模块加载时就被内联，测试无法逐个用例翻转它，而这两句话必须
+ * 两条分支都被断言过——它们是「这个部署能不能用短信」的唯一对外表述。
+ */
+export function loginChannelCopy(smsEnabled: boolean): string {
+  return smsEnabled
+    ? '支持邮箱、手机号或用户名登录。'
+    : '支持邮箱、手机号或用户名登录；短信验证码未开放。'
+}
+
+/** 注册表单上方的渠道说明，与页脚同一份开关。 */
+export function registerChannelCopy(smsEnabled: boolean): string {
+  return smsEnabled
+    ? '注册支持邮箱与手机号；短信验证码已开放'
+    : '注册只支持邮箱；短信验证码暂未开放。'
+}
 
 // The server accepts exactly six digits. Checking here keeps an incomplete code
 // from being sent at all: every rejected attempt counts against the five-try
@@ -91,7 +116,9 @@ export default function LoginPage() {
     : undefined
 
   const [loginMode, setLoginMode] = useState<LoginMode>('password')
-  const [identifier, setIdentifier] = useState('')
+  // 找回密码页成功后会把用户刚才输入的标识带回来（?identifier=），这里直接预填：
+  // 刚重置完密码的人已经证明过自己知道这个标识，再让他敲一次只会增加出错机会。
+  const [identifier, setIdentifier] = useState(searchParams.get('identifier') ?? '')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [code, setCode] = useState('')
@@ -105,10 +132,6 @@ export default function LoginPage() {
   const [sendingCode, setSendingCode] = useState(false)
   const [codeSent, setCodeSent] = useState(false)
   const [cooldown, setCooldown] = useState(0)
-  const [resetOpen, setResetOpen] = useState(false)
-  // 面板展开后把焦点交到真实可用的下一步（开发者文档）上；点击「发送重置链接」
-  // 不会编造「已发送」，只会把用户带到真能继续的地方。
-  const resetDocsRef = useRef<HTMLAnchorElement>(null)
   const [claimNotice, setClaimNotice] = useState(false)
 
   // A signed-in visitor should never sit on the login form. Before this, the
@@ -256,19 +279,6 @@ export default function LoginPage() {
     return () => window.clearInterval(timer)
   }, [cooldown])
 
-  const handleReset = async () => {
-    clearFeedback()
-    const account = identifier.trim()
-    if (!account) {
-      setError('请先填写邮箱或手机号。')
-      return
-    }
-    // 重置链路需要邮件/短信通道，V1.0 没有（面板文案已常显说明）。这里既不
-    // 伪造「已发送」，也不留一个点了毫无反应的按钮：把焦点交到真实可用的
-    // 下一步——开发者文档，键盘与读屏用户也能顺着往下走。
-    resetDocsRef.current?.focus()
-  }
-
   const handleClaim = () => {
     if (authStatus === 'authenticated') {
       navigate(`${ROUTES.consoleRecharge}?claim=trial`)
@@ -353,17 +363,11 @@ export default function LoginPage() {
       )}
 
       {/* 「忘记密码」贴着密码输入：用户是在输入密码的那一刻才想起忘记密码的，
-          放在提交按钮下面要往下找一行。 */}
+          放在提交按钮下面要往下找一行。现在它是真链接，指向 /reset-password。 */}
       <div className="flex justify-end">
-        <button
-          type="button"
-          onClick={() => {
-            setResetOpen((open) => !open)
-          }}
-          className="text-xs text-ink-secondary hover:text-ink"
-        >
+        <Link to={ROUTES.resetPassword} className="text-xs text-ink-secondary hover:text-ink">
           忘记密码
-        </button>
+        </Link>
       </div>
 
       <AgreementCheckbox checked={agreed} onChange={setAgreed} />
@@ -374,41 +378,7 @@ export default function LoginPage() {
         登录
       </Button>
 
-      <p className="text-xs text-ink-muted">支持邮箱、手机号或用户名登录；短信验证码未开放。</p>
-
-      {resetOpen ? (
-        <div className="space-y-3 rounded-lg border border-border bg-surface-muted p-3">
-          {/* 这里只描述状态，不能写成正在发生的动作（「链接会发送到你的邮箱」）：
-              重置链路需要邮件/短信通道，V1.0 没有接入，承诺一个不会发生的动作
-              与「标注清楚」的要求冲突。 */}
-          <p className="text-xs leading-relaxed text-ink-secondary">
-            密码重置功能暂未开放；上线后此处会把重置链接发送到账号绑定的联系方式。
-          </p>
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            onClick={() => {
-              void handleReset()
-            }}
-          >
-            发送重置链接（暂未开放）
-          </Button>
-          {/* 「暂未开放」必须一进面板就能看到，不能藏在点击之后：先承诺
-              「会发送」、点了才告知不可用，等于骗用户填完再拒绝。 */}
-          <p role="status" className="text-xs leading-relaxed text-ink-secondary">
-            当前可先查阅
-            <Link
-              ref={resetDocsRef}
-              to={ROUTES.docs}
-              className="font-medium text-primary hover:text-primary-hover"
-            >
-              文档
-            </Link>
-            ，或联系客服协助处理。
-          </p>
-        </div>
-      ) : null}
+      <p className="text-xs text-ink-muted">{loginChannelCopy(SMS_ENABLED)}</p>
     </form>
   )
 
@@ -429,9 +399,7 @@ export default function LoginPage() {
         required
       />
 
-      <p className="-mt-2 text-xs text-ink-muted">
-        注册只支持邮箱；短信验证码暂未开放。
-      </p>
+      <p className="-mt-2 text-xs text-ink-muted">{registerChannelCopy(SMS_ENABLED)}</p>
 
       <div className="flex items-end gap-2">
         <Input

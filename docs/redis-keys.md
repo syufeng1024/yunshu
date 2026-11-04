@@ -1,6 +1,6 @@
 # Redis 键空间运维手册（T06）
 
-30 个键的唯一构造函数在 `internal/redisx/keys.go`。业务代码不得自行拼接键名；同一键的两种拼写会把一个计数器拆成两个，等于放大限额。
+30 个键（K1–K30）与验证码键族（K-VC，见下文）的唯一构造函数都在 `internal/redisx/keys.go`。业务代码不得自行拼接键名；同一键的两种拼写会把一个计数器拆成两个，等于放大限额。
 
 Redis 版本前提 5.0.9：只用 `EVAL`、`PEXPIRE`、`EXPIRE`、`SET NX PX`、`ZADD`、`ZREMRANGEBYSCORE`、`ZCARD`、`TIME`、`PUBLISH`、`HGET`/`HSET`/`HINCRBY`、`INCR`/`INCRBY`、`DEL`、`EXISTS`、`TTL`/`PTTL`、`MGET`、`SADD`/`SREM`/`SMEMBERS`、`WATCH`、`XADD`/`XREADGROUP`/`XACK`/`XPENDING`/`XCLAIM`。`XAUTOCLAIM`、`ZADD GT/LT`、`FUNCTION`、`GETDEL`、`GETEX`、`COPY` 不可用。
 
@@ -40,6 +40,25 @@ Redis 版本前提 5.0.9：只用 `EVAL`、`PEXPIRE`、`EXPIRE`、`SET NX PX`、
 | K28 | `auth:fail:acct:{sha256(identifier)}` | `LoginAccountFailKey` | STRING（失败次数） | 15m | `auth.recordLoginFailure` `INCR`；首次失败与达到阈值时 `EXPIRE` | 到期；登录成功 `DEL` |
 | K29 | `auth:fail:ip:{sha256(ip)}` | `LoginIPFailKey` | STRING（失败次数） | 10m | `auth.recordLoginFailure` `INCR`；首次失败与达到阈值时 `EXPIRE` | 到期；登录成功不清（IP 预算跨账号，不能被一次正确密码重置） |
 | K30 | `sess:admin:uid:{user_id}` | `AdminUserSessionSetKey` | SET（member=sid） | 2h 滑动，与 K20 同步 | `SessionManager.Issue` `SADD`；`Load` 每次 `SADD` 自愈并续期 | 登出 `SREM`；改密 `DEL`（同时逐个 `DEL` K20） |
+
+## 验证码键族（K-VC）
+
+验证码的键不在 K1–K30 里，它们是独立的一族，构造函数同样在 `internal/redisx/keys.go`。
+**`purpose` 必须进键名**：一个渠道为 A 用途发的码不能被重放到 B 用途（`bind` 与 `reset`
+共用键会直通式账号接管，见 `docs/tasks/INC-password-recovery-design.md` §12 R3）。
+
+| 键名模板 | 构造函数 | 类型 | TTL | 写入方 | 说明 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `vc:code:<purpose>:<sha256(identifier)[:32]>` | `VerifyCodeKey` | STRING（SHA-256 摘要） | 600s | `auth.issueVerificationCode` | 只存摘要，Redis dump 不等于可用凭据；一次一用 |
+| `vc:code:<purpose>:<hash>:n` | 同上 + `":n"` | STRING（错误次数） | 600s | `auth.consumeVerificationCode` `INCR` | ≥ 5 时与码一起 `DEL` |
+| `vc:cool:<purpose>:<hash>` | `VerifyCodeCooldownKey` | STRING（固定 `1`） | 60s | 发码 `SETNX` | 并发双击只有一次能过 |
+| `vc:quota:<purpose>:<hash>` | `VerifyCodeQuotaKey` | STRING（次数） | 24h | 发码 `INCR` | 地址日配额：`login`/`register` 20，`reset` 10，`bind` 10 |
+| `vc:quota:<purpose>:uid:<uid>` | `VerifyCodeUIDQuotaKey` | STRING（次数） | 24h | `auth.consumeUIDQuota` | **账号**日配额，目前只有 `bind` 用（5/天）：一个已登录账号不能变成向任意邮箱投递的免费发信器 |
+| `vc:ipq:<sha256(ip)[:32]>:<YYYYMMDDHH>` | `VerifyCodeIPQuotaKey` | STRING（次数） | 2h | 发码 `INCR` | 单 IP 每小时 10 次。**故意不按 purpose 拆分**：新增用途不得把单 IP 的发信上限从 10 抬到 40 |
+
+`purpose ∈ {login, register, reset, bind}`。查某个用途：`redis-cli --scan --pattern 'vc:code:reset:*'`；
+查某个地址被发过几种码：先算 `sha256(归一化后的地址)[:32]`，再
+`redis-cli --scan --pattern 'vc:*:*:<hash>'`。
 
 ## 时间与日界
 

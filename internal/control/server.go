@@ -84,6 +84,15 @@ type Deps struct {
 	// "log" or "smtp". Empty means "log" (see auth.verificationMode).
 	VerificationMode string
 
+	// SMS is the handset delivery seam (internal/notify/sms). Nil is allowed:
+	// the phone channel then answers 503 instead of pretending, and every
+	// e-mail path keeps working.
+	SMS auth.SMSSender
+	// SMSMode is AUTH_SMS_MODE: "off", "log" or "provider". Empty means "off",
+	// the opposite default from VerificationMode, because a text message is
+	// billed per unit.
+	SMSMode string
+
 	// FingerprintKey is FP_HMAC_KEY from the environment (the YUNSHU_ prefix
 	// is accepted as a fallback). Empty makes the trial claim answer 503
 	// rather than hash device identifiers with no key.
@@ -183,9 +192,13 @@ func New(d Deps) (*Server, error) {
 		Logger:           d.Logger,
 		Now:              d.Now,
 		VerificationMode: d.VerificationMode,
+		SMSMode:          d.SMSMode,
 	}
 	if d.Mailer != nil {
 		authSvc.Mailer = d.Mailer
+	}
+	if d.SMS != nil {
+		authSvc.SMSSender = d.SMS
 	}
 	authSvc.CancellableCheck = tickets.CheckAccountCancellable
 	// Log reads go to LogDB when a separate log database is configured. The
@@ -235,6 +248,12 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("POST /api/v1/auth/register", s.public(s.auth.Register))
 	mux.Handle("POST /api/v1/auth/verification-code", s.public(s.auth.SendVerificationCode))
 	mux.Handle("POST /api/v1/auth/login", s.public(s.auth.Login))
+	// 自助找回密码：匿名，且**故意不校验 CSRF**（public 使其结构豁免）。
+	// 跨站伪造它能达成什么：伪造受害者的重置要拿到受害者 6 位验证码（拿不到）；
+	// 用受害者浏览器重置攻击者自己的账号，结果只是攻击者自己的口令变了。
+	// 加一条「有会话就校验」的分支只会让「已登录用户在公共设备上重置」出现 403 死路。
+	// 口径同时写在 docs/control-api.md 的 CSRF 豁免表里。
+	mux.Handle("POST /api/v1/auth/password/reset", s.public(s.auth.ResetPassword))
 
 	// Website data. Read-only and session-free: the marketing pages are
 	// anonymous, so these routes must never enter the Session → CSRF chain.
@@ -255,6 +274,13 @@ func (s *Server) Register(mux *http.ServeMux) {
 	// 昵称自助修改。用 account.write 而不是空权限：它是「改自己的资料」，与
 	// 运营侧 user.write（可改任意账号状态）严格分开。
 	mux.Handle("PATCH /api/v1/auth/profile", s.authed(mw.PermAccountWrite, s.auth.UpdateProfile))
+	// 绑定登录邮箱。两个接口都挂 account.write + CSRF：这是「改自己的资料」，
+	// 与运营侧的 user.write（可改任意账号）严格分开。不塞进 PATCH /auth/profile：
+	// nickname 是必填的未验证字段，混进「已验码的登录标识写入」会让一次请求同时
+	// 有未验证与已验证两种语义，失败时（昵称已存、邮箱 409）无法定义整体结果。
+	// 目标账号一律取会话 uid，不接受任何 user_id 参数。
+	mux.Handle("POST /api/v1/auth/email/code", s.authed(mw.PermAccountWrite, s.auth.SendEmailBindCode))
+	mux.Handle("POST /api/v1/auth/email", s.authed(mw.PermAccountWrite, s.auth.BindEmail))
 	// Self-service cancellation: open tickets block it, then status=DISABLED
 	// and every session key are cleared. No capability beyond being signed in.
 	mux.Handle("POST /api/v1/auth/cancel", s.authed("", s.auth.Cancel))

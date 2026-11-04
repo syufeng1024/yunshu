@@ -188,14 +188,57 @@ UPDATE t_reconcile_diff
 2. 启动后检查 `controld` 日志：首次创建会出现**一条 WARN**「已创建内置超级管理员 username=admin（role=SUPER_ADMIN）；初始密码取 ADMIN_BOOTSTRAP_PASSWORD，请立即修改初始密码」。日志里不会出现口令本身、不会出现 bcrypt hash、不会出现 DSN。
 3. 用该账号登录 `/admin`。**登录页要勾选用户协议**（对所有账号一致，不是超管特例）。
 4. **尽快改密**（见 9.2）。系统**不强制**：登录后运营后台顶部会出现一条「当前账号仍在使用初始密码，请尽快修改」的提醒横幅（`password_warning=true`，只提示、不拦截任何接口），改密成功后自动消失。`docs/go-live-checklist.md` 仍把"已改密"作为上线自查项——那是流程要求，不是程序拦截。
+5. **绑定登录邮箱**（`/console/account` 的「登录邮箱」卡片）。内置 `admin` 建号时 `email`/`phone` 均为 NULL，**这是超管唯一的 Web 侧自救入口**：绑定之后忘记口令可以自己走 `/reset-password` 重置，不必再落到「改环境变量重启」甚至改库。绑定入口只在 `email` 为空时开放；已绑定的更换需要提交工单（换绑等于更换账号接管主通道，需要额外身份核验）。上线检查单里这一项是**硬性**的（未绑定即视为未完成上线）。
 
-### 9.2 改密（正常路径）
+### 9.2 改密与自助找回（正常路径）
 
-用会话调用 `POST /api/v1/auth/password`，body `{old_password, new_password}`，需带 `X-CSRF-Token`（值取 `csrf` cookie）。成功后会吊销该 uid 的**全部**会话与 CSRF token，需要重新登录。
+**首选：自助找回（不需要任何人工介入）。** 已登录时先在 `/console/account` 绑定登录邮箱；
+忘记口令时走登录页的「忘记密码」→ `/reset-password`：输入邮箱或手机号 → 收 6 位验证码 →
+设新密码 → 回登录页用新密码登录。重置成功会吊销该 uid 的全部会话（含发起重置的那一个），
+所以「必须再登一次」是正常的，不是故障。
 
-### 9.3 忘记密码的人工兜底
+| 前提 | 说明 |
+| :--- | :--- |
+| `AUTH_VERIFICATION_MODE=smtp`（或 `log`，仅开发） | `off` 的部署**没有任何**自助找回路径（缺验证码 = 缺身份证明），只能走 9.3 |
+| 账号有可用渠道 | 邮箱（默认可用）；手机号需要 `AUTH_SMS_MODE=log|provider`，`off` 时接口返回 400 + 建议先绑定邮箱 |
+| 账号 `status=NORMAL` | 已冻结/已禁用的账号**不会**收到重置码（冻结本身就是访问收回，不能靠找回绕过），接口仍返回 200 但什么都不发 |
 
-> **当前没有任何重置口令的接口。** 唯一能写 `password_hash` 的入口是自助的 `POST /api/v1/auth/password`（要旧口令）。登录页的「忘记密码」也只描述“暂未开放”。因此在「唯一超管忘记口令」这一种情况下，唯一手段是 DBA 直接改库，且**四步都必须做**，少一步就是留后门。
+**改密（知道旧口令时）。** 用会话调用 `POST /api/v1/auth/password`，body `{old_password, new_password}`，
+需带 `X-CSRF-Token`（值取 `csrf` cookie）。成功后会吊销该 uid 的**全部**会话与 CSRF token，需要重新登录。
+
+**兜底：9.3。** 只有在「渠道全丢且无法登录绑定邮箱」时才需要人工介入。
+
+### 9.3 忘记密码：处置顺序（自助 → A 方案 → DBA 直改库）
+
+「唯一超管忘记口令」按代价从低到高处置，**不要跳步**：
+
+| 顺序 | 手段 | 可用条件 | 代价 |
+| :--- | :--- | :--- | :--- |
+| 1 | **自助找回**（`/reset-password`，见 9.2） | 该账号已绑定邮箱/手机号，且 `AUTH_VERIFICATION_MODE` 不是 `off` | 零人工 |
+| 2 | **A 方案**：把 `ADMIN_BOOTSTRAP_USERNAME` 换成未占用的新用户名 → 重启 `controld` → 用新超管登录 → 自救 | 能改环境变量并重启 | 一次重启（引导幂等，会建出第二个 `SUPER_ADMIN`） |
+| 3 | **DBA 直改库**（本节下半部分） | 上面两条都不可用，例如 `uk_user_username` 被软删行幽灵占用且又改不了环境变量 | 两人复核 + 手工清会话 + 手工补审计，**最后手段** |
+
+> 本轮之后，Web 侧的自救路径已经闭环：超管在 `/console/account` 绑定登录邮箱，之后忘口令就走
+> `/reset-password` 自助重置。**仍然没有**「渠道全丢（email/phone 均 NULL）且无法登录绑定」的 Web 侧
+> 路径——那正是 A 方案要覆盖的场景。超管代重置接口（`POST /api/admin/users/{id}/password/reset`）
+> 是下一轮的 P1-1，落地后第 3 行可以整段删除。
+
+#### A 方案（首选的人工手段）
+
+1. 选一个**未被占用**的用户名（`SELECT COUNT(*) FROM t_user WHERE username = '<新名>'` 必须为 0；
+   注意软删行仍然占着 `uk_user_username`）。
+2. 改 `ADMIN_BOOTSTRAP_USERNAME=<新名>`，同时确认 `ADMIN_BOOTSTRAP_PASSWORD` 是本次要用的口令、
+   `ADMIN_BOOTSTRAP_DISABLED≠true`，然后重启 `controld`。
+3. 启动日志出现 `admin bootstrap: outcome=created uid=<新 uid> username=<新名>`，说明第二个超管已建出。
+   用新口令登录 `/admin`，立刻改密并**绑定登录邮箱**（9.1 第 5 步）。
+4. 旧账号的处置：旧账号仍需旧口令才能改密，所以实际做法是由新超管在运营后台**新建**一个带邮箱的超管账号，
+   把旧账号 `status=DISABLED`，走人员变更流程；或按业务需要保留旧账号并按第 3 行改库。
+
+#### DBA 直改库（最后手段）
+
+> 只有 A 方案也不可用时才走到这里。**四步都必须做**，少一步就是留后门。直改库写的口令是「别人给的」，
+> 所以 `password_is_initial` **必须置 1**：否则「仍在使用初始密码」的横幅永远不会出现，接手的人不会知道
+> 该立刻改密。
 
 **执行前置条件（缺一不可）**
 
@@ -252,6 +295,9 @@ UPDATE t_user
    SET password_hash = '<上一步的 hash>',
        password_algo = 'bcrypt',
        password_updated_at = UTC_TIMESTAMP(3),
+       -- 别人给的口令，语义上就是「初始口令」：置 1 才会出现「请尽快修改」的横幅。
+       -- 用户自助重置/改密走接口，接口会把这一列置 0（见 docs/control-api.md）。
+       password_is_initial = 1,
        updated_at = UTC_TIMESTAMP(3)
  WHERE username = 'admin' AND deleted_at IS NULL;
 ```

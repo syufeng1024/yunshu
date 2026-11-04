@@ -1,12 +1,12 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api } from '@/api/client'
 import { usePublicPlans } from '@/api/public'
 import { fixtureResponses } from '@/fixtures/public'
 import { useAuthStore } from '@/stores/auth'
-import LoginPage from './LoginPage'
+import LoginPage, { loginChannelCopy, registerChannelCopy } from './LoginPage'
 
 vi.mock('@/api/public', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/public')>()
@@ -17,6 +17,12 @@ vi.mock('@/api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/client')>()
   return { ...actual, api: { ...actual.api, post: vi.fn() } }
 })
+
+/** Reports the current location, so a redirect assertion can read it. */
+function LocationProbe() {
+  const location = useLocation()
+  return <div data-testid="location">{`${location.pathname}${location.search}`}</div>
+}
 
 const plans = fixtureResponses['/api/public/plans'].data
 const mockedPlans = vi.mocked(usePublicPlans)
@@ -175,5 +181,65 @@ describe('LoginPage', () => {
 
     expect(screen.getByText('两次输入的密码不一致。')).toBeInTheDocument()
     expect(post).not.toHaveBeenCalled()
+  })
+
+  // P0-5③/F2: 登录页脚与注册表单的渠道说明都由 VITE_AUTH_SMS_ENABLED 决定。
+  // 渲染断言只覆盖当前构建（默认 false）；两条分支由下面的纯函数断言补齐，
+  // 因为 import.meta.env 在模块加载时就被内联，无法逐用例翻转。
+  it('states the real channel availability on both forms', () => {
+    render(
+      <MemoryRouter initialEntries={['/login?tab=register']}>
+        <LoginPage />
+      </MemoryRouter>,
+    )
+    const smsEnabled = import.meta.env.VITE_AUTH_SMS_ENABLED === 'true'
+    // 注册页签的渠道说明与登录页脚必须同源，不能一处改了另一处还写着「未开放」。
+    expect(screen.getByText(registerChannelCopy(smsEnabled))).toBeInTheDocument()
+    if (!smsEnabled) {
+      expect(screen.getByText('注册只支持邮箱；短信验证码暂未开放。')).toBeInTheDocument()
+    }
+  })
+
+  it('has one source of truth for the SMS availability copy', () => {
+    // false：off 部署（默认）——承诺「注册只支持邮箱」，与实际 400 一致。
+    expect(registerChannelCopy(false)).toBe('注册只支持邮箱；短信验证码暂未开放。')
+    expect(loginChannelCopy(false)).toBe('支持邮箱、手机号或用户名登录；短信验证码未开放。')
+    // true：provider 部署——页脚与注册页都必须翻过来，否则前端会说谎。
+    expect(registerChannelCopy(true)).toBe('注册支持邮箱与手机号；短信验证码已开放')
+    expect(loginChannelCopy(true)).toBe('支持邮箱、手机号或用户名登录。')
+    // 两个开关只能有两态：不允许出现「注册说已开放、页脚说未开放」的组合。
+    expect(registerChannelCopy(true)).not.toBe(registerChannelCopy(false))
+    expect(loginChannelCopy(true)).not.toBe(loginChannelCopy(false))
+  })
+
+  // P0-5②: 「忘记密码」不再是占位面板的开关，而是一个真链接。
+  it('links the "forgot password" entry to the recovery page', async () => {
+    const user = userEvent.setup()
+    render(
+      <MemoryRouter initialEntries={['/login']}>
+        <LoginPage />
+        <LocationProbe />
+      </MemoryRouter>,
+    )
+
+    const link = screen.getByRole('link', { name: '忘记密码' })
+    expect(link).toHaveAttribute('href', '/reset-password')
+    // 占位面板整块删除：页面上不该再有任何「暂未开放」的重置按钮。
+    expect(screen.queryByText(/发送重置链接/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/密码重置功能暂未开放/)).not.toBeInTheDocument()
+
+    await user.click(link)
+    expect(screen.getByTestId('location')).toHaveTextContent('/reset-password')
+  })
+
+  // P0-4⑤: 找回密码成功后跳回登录页并预填 identifier。
+  it('prefills the account field from the identifier query parameter', () => {
+    render(
+      <MemoryRouter initialEntries={['/login?identifier=someone%40example.com']}>
+        <LoginPage />
+      </MemoryRouter>,
+    )
+    // label 里带一个 aria-hidden 的必填星号，所以按正则取。
+    expect(screen.getByLabelText(/账号/)).toHaveValue('someone@example.com')
   })
 })

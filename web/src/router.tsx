@@ -12,6 +12,7 @@ const PricingPage = lazy(() => import('@/pages/site/PricingPage'))
 const ModelPricePage = lazy(() => import('@/pages/site/ModelPricePage'))
 const DocsPage = lazy(() => import('@/pages/site/DocsPage'))
 const LoginPage = lazy(() => import('@/pages/site/LoginPage'))
+const ResetPasswordPage = lazy(() => import('@/pages/site/ResetPasswordPage'))
 const IntegrationsPage = lazy(() => import('@/pages/site/IntegrationsPage'))
 const TermsPage = lazy(() => import('@/pages/site/TermsPage'))
 const PrivacyPage = lazy(() => import('@/pages/site/PrivacyPage'))
@@ -49,6 +50,8 @@ export const router = createBrowserRouter([
       { path: 'models', element: <ModelPricePage /> },
       { path: 'docs', element: <DocsPage /> },
       { path: 'login', element: <LoginPage /> },
+      // 找回密码：放在 login 之后，且**不**加 RequireAuth（见 ROUTES.resetPassword）。
+      { path: 'reset-password', element: <ResetPasswordPage /> },
       { path: 'integrations', element: <IntegrationsPage /> },
       // 法律条款占位页：挂在 SiteLayout 之下，自动获得页头页脚。
       { path: 'terms', element: <TermsPage /> },

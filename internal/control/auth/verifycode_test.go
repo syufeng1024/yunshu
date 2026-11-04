@@ -412,3 +412,54 @@ func TestVerificationCodeHasPerIPCeiling(t *testing.T) {
 		t.Fatalf("other ip status=%d body=%s, want 200", other.Code, other.Body.String())
 	}
 }
+
+// TestPurposeMatrix 是本轮最该写的测试：4×4 的用途矩阵，只有同用途的码能用，
+// 跨用途一律 invalid_credentials。
+//
+// 具体攻击链（设计 §12 R3）：若 bind 与 reset 共用键，攻击者可以给自己的账号绑
+// 目标邮箱 → 拿到该地址的 bind 码 → 绑定成功后账号已有该邮箱 → 再用未消费的同一个
+// 码去 reset，直通式账号接管。purpose 进 key 之后这条链在第一步就断了。
+func TestPurposeMatrix(t *testing.T) {
+	svc, mailer, _, _, _ := recoveryService(t)
+	purposes := []string{PurposeLogin, PurposeRegister, PurposeReset}
+
+	for _, sent := range purposes {
+		t.Run("issued for "+sent, func(t *testing.T) {
+			// 每个用途用它自己的地址条件：register 需要「未注册」，其余需要
+			// 「已注册且可用」，否则发码阶段就不会真的写下这个码。
+			var identifier string
+			if sent == PurposeRegister {
+				identifier = uniqueVerifyEmail(t, "mx-register")
+			} else {
+				identifier = uniqueVerifyEmail(t, "mx-"+sent)
+				newRecoveryUser(t, identifier, "", "NORMAL")
+			}
+			if rec := callSendCode(t, svc, identifier, sent); rec.Code != http.StatusOK {
+				t.Fatalf("send status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			code := mailer.lastCode(t)
+			ident, err := NormalizeIdentifier(identifier)
+			if err != nil {
+				t.Fatalf("normalize: %v", err)
+			}
+
+			// 先打错用途（它们不会成功，也不会消费这个码），再打对的那个，
+			// 否则「同用途成功」会把码烧掉、后面的断言就没有意义了。
+			for _, wrong := range purposes {
+				if wrong == sent {
+					continue
+				}
+				apiErr := svc.consumeVerificationCode(context.Background(), ident, wrong, code)
+				if apiErr == nil {
+					t.Fatalf("a %s code was accepted for %s", sent, wrong)
+				}
+				if apiErr.Code != "invalid_credentials" {
+					t.Fatalf("%s -> %s answered code=%q, want invalid_credentials", sent, wrong, apiErr.Code)
+				}
+			}
+			if apiErr := svc.consumeVerificationCode(context.Background(), ident, sent, code); apiErr != nil {
+				t.Fatalf("the %s code was rejected by its own purpose: %v", sent, apiErr)
+			}
+		})
+	}
+}

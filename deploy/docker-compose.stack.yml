@@ -189,6 +189,15 @@ services:
       SMTP_QQ_USERNAME: ${SMTP_QQ_USERNAME:-}
       SMTP_QQ_PASSWORD: ${SMTP_QQ_PASSWORD:-}
       SMTP_QQ_FROM: ${SMTP_QQ_FROM:-}
+      # 短信通道（自助找回密码的手机渠道）。同样必须逐个透传：`docker compose
+      # --env-file` 只做插值、不注入容器，漏掉这里容器里的 AUTH_SMS_MODE 永远是
+      # off —— 而且**不会有任何报错**，只是手机号找回一直 400。
+      AUTH_SMS_MODE: ${AUTH_SMS_MODE:-off}
+      ALIYUN_SMS_ACCESS_KEY_ID: ${ALIYUN_SMS_ACCESS_KEY_ID:-}
+      ALIYUN_SMS_ACCESS_KEY_SECRET: ${ALIYUN_SMS_ACCESS_KEY_SECRET:-}
+      ALIYUN_SMS_SIGN_NAME: ${ALIYUN_SMS_SIGN_NAME:-}
+      ALIYUN_SMS_TEMPLATE_CODE: ${ALIYUN_SMS_TEMPLATE_CODE:-}
+      ALIYUN_SMS_ENDPOINT: ${ALIYUN_SMS_ENDPOINT:-}
     ports:
       - "${CONTROL_PORT:-18081}:8081"
     depends_on:
@@ -245,6 +254,9 @@ services:
       dockerfile: deploy/Dockerfile.web
       args:
         NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+        # 前端只用来改文案（登录页页脚、找回页提示），**不是**服务端开关；
+        # 必须与 controld 的 AUTH_SMS_MODE 一起翻，否则页脚会说谎。
+        VITE_AUTH_SMS_ENABLED: ${VITE_AUTH_SMS_ENABLED:-false}
     ports:
       - "${WEB_PORT:-8088}:80"
     depends_on:

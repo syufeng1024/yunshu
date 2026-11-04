@@ -39,6 +39,17 @@ type Service struct {
 	// Empty means "log" — see verificationMode for why that is the default.
 	VerificationMode string
 
+	// SMSSender delivers verification codes to a handset. It is a separate
+	// field, and a separate interface (declared in verifycode.go next to Sender),
+	// because SMS has no subject and a different supplier.
+	// Nil is allowed; the phone channel then answers 503 instead of pretending.
+	SMSSender SMSSender
+	// SMSMode is AUTH_SMS_MODE: "off", "log" or "provider". Empty means "off" —
+	// the opposite default from VerificationMode, because a text message is
+	// billed per unit and must never start flowing because a variable was
+	// forgotten.
+	SMSMode string
+
 	// CancellableCheck is ticket.CheckAccountCancellable. It is a function seam
 	// rather than a *ticket.Service field so the auth package does not import
 	// the ticket console; the error's OutstandingTicketNos method is the only

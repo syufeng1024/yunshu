@@ -2,9 +2,17 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { bindEmail, sendBindEmailCode } from '@/api/auth'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import AccountPage from './AccountPage'
+
+vi.mock('@/api/auth', () => ({
+  sendResetCode: vi.fn(),
+  resetPassword: vi.fn(),
+  sendBindEmailCode: vi.fn(),
+  bindEmail: vi.fn(),
+}))
 
 vi.mock('@/api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/client')>()
@@ -191,5 +199,91 @@ describe('AccountPage', () => {
 
     expect(screen.getByText('请输入完整的登录邮箱以确认。')).toBeInTheDocument()
     expect(post).not.toHaveBeenCalled()
+  })
+
+  it('binds a login mailbox for an account that has none', async () => {
+    const user = userEvent.setup()
+    const mockedSend = vi.mocked(sendBindEmailCode)
+    const mockedBind = vi.mocked(bindEmail)
+    mockedSend.mockResolvedValue({ channel: 'email', expires_in: 600, resend_after: 60 })
+    mockedBind.mockResolvedValue({
+      user: {
+        id: '7',
+        email: 'me@example.com',
+        display_name: '演示账号',
+        role: 'PERSONAL',
+        status: 'NORMAL',
+        username: '',
+        password_warning: false,
+      },
+    })
+    // 账号没有邮箱：内置超管与纯手机号账号就是这个形态。
+    useAuthStore.setState({
+      status: 'authenticated',
+      user: {
+        id: '7',
+        email: '',
+        display_name: '演示账号',
+        role: 'SUPER_ADMIN',
+        status: 'NORMAL',
+        username: 'admin',
+        password_warning: true,
+        csrf_token: 'csrf',
+      },
+      error: null,
+      hint: null,
+    })
+
+    renderPage()
+    expect(screen.getByText(/当前账号没有登录邮箱/)).toBeInTheDocument()
+
+    await user.type(screen.getByLabelText(/登录邮箱/), 'me@example.com')
+    await user.click(screen.getByRole('button', { name: '发送验证码' }))
+    await waitFor(() => expect(mockedSend).toHaveBeenCalledWith('me@example.com'))
+    expect(await screen.findByText(/验证码已发送到 me@example.com/)).toBeInTheDocument()
+
+    await user.type(screen.getByLabelText(/验证码/), '123456')
+    await user.click(screen.getByRole('button', { name: '确认绑定' }))
+
+    await waitFor(() =>
+      expect(mockedBind).toHaveBeenCalledWith({ email: 'me@example.com', code: '123456' }),
+    )
+    // 绑定成功后：store 已更新，卡片改为脱敏展示（不新增接口）。
+    await waitFor(() => expect(useAuthStore.getState().user?.email).toBe('me@example.com'))
+    expect(await screen.findByText('m***@example.com')).toBeInTheDocument()
+    expect(screen.getByText(/更换登录邮箱请联系客服提交工单/)).toBeInTheDocument()
+    // 会话不该被吊销：状态仍是已登录，csrf_token 也还在。
+    expect(useAuthStore.getState().status).toBe('authenticated')
+    expect(useAuthStore.getState().user?.csrf_token).toBe('csrf')
+  })
+
+  it('stops a malformed bind code before it reaches the server', async () => {
+    const user = userEvent.setup()
+    const mockedSend = vi.mocked(sendBindEmailCode)
+    const mockedBind = vi.mocked(bindEmail)
+    mockedSend.mockResolvedValue({ channel: 'email', expires_in: 600, resend_after: 60 })
+    useAuthStore.setState({
+      status: 'authenticated',
+      user: {
+        id: '7',
+        email: '',
+        display_name: '演示账号',
+        role: 'PERSONAL',
+        status: 'NORMAL',
+        csrf_token: 'csrf',
+      },
+      error: null,
+      hint: null,
+    })
+
+    renderPage()
+    await user.type(screen.getByLabelText(/登录邮箱/), 'me@example.com')
+    await user.click(screen.getByRole('button', { name: '发送验证码' }))
+    await screen.findByLabelText(/验证码/)
+
+    await user.type(screen.getByLabelText(/验证码/), '1234')
+    await user.click(screen.getByRole('button', { name: '确认绑定' }))
+    expect(screen.getByText('验证码是 6 位数字，请检查是否输完整。')).toBeInTheDocument()
+    expect(mockedBind).not.toHaveBeenCalled()
   })
 })

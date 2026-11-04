@@ -1,4 +1,4 @@
-# 上线前检查单（31 项，T22 交付物 16）
+# 上线前检查单（32 项，T22 交付物 16）
 
 > **本文件是什么**：发版当天逐项打勾的**操作清单**。每项都给出可执行命令或可观察点，以及「不通过怎么办」。
 > **本文件不是什么**：不是 Go/No-Go 判定依据。八条门槛的判定与证据在 `docs/tasks/delivery/go-live.md`（那张表回答「能不能上」，这张表回答「这一次按步骤做了没有」）。两者互不抄写：判定引用用例与演练报告，清单只给命令与勾。
@@ -52,7 +52,7 @@
 | 22 | 限流拒绝率告警在真实计数器上可求值 | 网关有流量后：`curl -s :9090/metrics \| grep -E '^gw_ratelimit_rejected_total\{dim='` → 至少一个 dim 有值；再用 `internal/obs/alert/rules.yaml` 里 `RatelimitRejectRatioHigh` 的 expr 在 Prometheus 上点一次 **Query**，返回数值（0 也算通过） | 序列不存在说明该维度从未拒绝过（正常）；expr 报 `many-to-many` / 空向量说明规则写错或指标名改过——**不要**把这条改成"看到某条序列就通过"，那种验收会在没有流量时假过（本项上一版就踩过这个坑，见 errata E-37） |
 | 23 | 工单 SLA 巡检有出口 | `curl -s -H "Authorization: Bearer $OPS_TOKEN" localhost:8080/api/admin/overview \| jq .alerts.sla_overdue` → 返回数字（无埋点项，靠巡检） | 接口 403 说明 token 缺 `admin.read`；数字持续 > 0 按 §8 的巡检项排班处理 |
 
-## E 安全与合规（24–28）
+## E 安全与合规（24–29）
 
 | # | 检查 | 怎么验 | 不通过怎么办 |
 | :--- | :--- | :--- | :--- |
@@ -60,15 +60,16 @@
 | 25 | 对外接口无内部指标字段 | `grep -rnE '"?(slo\|rto\|rpo\|p99)"?' internal/control/publicapi/` → 无输出 | 同上：公开接口不得回传内部目标值 |
 | 26 | 密钥只展示一次、上游 Key 全掩码 | 控制台创建 Key 后刷新页面：明文不可再读；上游渠道详情里 `upstream_key_enc` 显示为掩码 | 明文可二次读取是 P0 安全缺陷：停发该版本，查 `internal/control/key` 与 `internal/control/ops/channel.go` 的展示逻辑 |
 | 27 | 内置超管初始口令已修改 | 用 `admin` + `ADMIN_BOOTSTRAP_PASSWORD` 登录 → `POST /api/v1/auth/password` 改密 → 重新登录成功；`SELECT COUNT(*) FROM t_admin_audit_log WHERE module='USER' AND action='UPDATE' AND result='OK' AND target_id=(SELECT CAST(id AS CHAR) FROM t_user WHERE username='admin') AND after_json->>'$.sessions_revoked'='all'` ≥ 1（自助改密的审计 `action` 是 **`UPDATE`**，不是另一个自造的动作名；用 `after_json` 里的 `sessions_revoked=all` 与角色变更区分开。`target_id` 是 `varchar(64)`，与 `bigint` 的 `id` 比较必须 `CAST`） | 未改密即视为未完成上线：初始口令是公开弱口令，改密是唯一 mitigating control |
-| 28 | 日志无正文、无明文密钥 | 抽查 `t_request_body`：`body_mode` 非 `opt_in` 时应为空；`grep -rF "sk-" <(docker logs --tail 2000 <gatewayd>)` → 无命中 | 出现明文：立刻关闭 `log.body_mode`，轮换受影响的 Key，并按 §8 记录事故 |
+| 28 | **内置超管已绑定登录邮箱** | 用 `admin`（或其它超管）登录 `/console/account`，在「登录邮箱」卡片填一个真实邮箱 → 收验证码 → 确认绑定；然后 `SELECT COUNT(*) FROM t_user WHERE role='SUPER_ADMIN' AND status='NORMAL' AND deleted_at IS NULL AND (email IS NULL OR email = '');` → 必须为 **0**（等于 `... AND email IS NOT NULL` 才等于超管总数）。绑定成功后卡片显示 `a***@x.com`，`GET /api/v1/auth/me` 的 `user.email` 是新地址 | 未绑定即视为**未完成上线**：内置超管建号时 `email`/`phone` 均为 NULL，不绑定就没有任何 Web 侧自救路径，「唯一超管忘记密码」仍会落回改库。邮箱已被占用时接口返回 409，换一个即可；当前账号已有邮箱时返回 400（本轮不支持更换，需提交工单） |
+| 29 | 日志无正文、无明文密钥 | 抽查 `t_request_body`：`body_mode` 非 `opt_in` 时应为空；`grep -rF "sk-" <(docker logs --tail 2000 <gatewayd>)` → 无命中 | 出现明文：立刻关闭 `log.body_mode`，轮换受影响的 Key，并按 §8 记录事故 |
 
-## F 灰度与回滚（29–31）
+## F 灰度与回滚（30–32）
 
 | # | 检查 | 怎么验 | 不通过怎么办 |
 | :--- | :--- | :--- | :--- |
-| 29 | 放量台阶就位 | 发布单写明台阶 10% → 30% → 100%（紧急修复至少 10% → 100%），每档**观察 ≥ 30 分钟且样本 ≥ 1,000 次** | 少一项即不许晋级：补观察时间或等样本，不得用「看起来没问题」代替 |
-| 30 | 回滚脚本可用 | `bash scripts/rollback.sh --dry-run`（或按脚本 usage）→ 退出 0；镜像 `ghcr.io/<owner>/gatewayd:<上一版 tag>` 仍在 registry | 上一版镜像被清理 = 无回滚路径：先重新拉/重打上一版镜像并推到 registry，再发布 |
-| 31 | 灰度记录留痕 | 发布结束后在发布单补：版本号、经过台阶、每档样本数与观察时长、三条判据（平台 5xx 比例 / 对账非零差异 / 平台白名单码是否从 0 变正）实测值、结论 | 没记等于没做灰度：本次发布视为未完成，下次发布前补记；判据命中却晋级按事故处理 |
+| 30 | 放量台阶就位 | 发布单写明台阶 10% → 30% → 100%（紧急修复至少 10% → 100%），每档**观察 ≥ 30 分钟且样本 ≥ 1,000 次** | 少一项即不许晋级：补观察时间或等样本，不得用「看起来没问题」代替 |
+| 31 | 回滚脚本可用 | `bash scripts/rollback.sh --dry-run`（或按脚本 usage）→ 退出 0；镜像 `ghcr.io/<owner>/gatewayd:<上一版 tag>` 仍在 registry | 上一版镜像被清理 = 无回滚路径：先重新拉/重打上一版镜像并推到 registry，再发布 |
+| 32 | 灰度记录留痕 | 发布结束后在发布单补：版本号、经过台阶、每档样本数与观察时长、三条判据（平台 5xx 比例 / 对账非零差异 / 平台白名单码是否从 0 变正）实测值、结论 | 没记等于没做灰度：本次发布视为未完成，下次发布前补记；判据命中却晋级按事故处理 |
 
 ---
 
@@ -89,7 +90,7 @@
 
 | 文档 | 回答的问题 |
 | :--- | :--- |
-| **本文件** | 这一次发版，逐项做了没有？（操作清单，31 项，含命令） |
+| **本文件** | 这一次发版，逐项做了没有？（操作清单，32 项，含命令） |
 | `docs/tasks/delivery/go-live.md` | 这款产品现在能不能上？（八条门槛的判定与证据） |
 | `docs/tasks/BACKLOG.md` RB-1…RB-6 | 还有哪些**已知未做**的发布项（本清单 A/B 两节把其中 RB-1、RB-2、RB-3、RB-4、RB-5、RB-6 逐条落到可执行命令） |
 | `docs/ops-runbook.md` | 上线后出事，谁按什么步骤处置 |

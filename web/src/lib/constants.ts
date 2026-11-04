@@ -18,6 +18,9 @@ export const ROUTES = {
   models: '/models',
   docs: '/docs',
   login: '/login',
+  // 自助找回密码。挂在站点布局下、不加 RequireAuth：「已登录但忘了旧密码」是
+  // 真实场景，重置成功后当前会话也会一起失效。
+  resetPassword: '/reset-password',
   integrations: '/integrations',
   // 法律条款占位页（正文待法务定稿）；页脚与登录页的协议名都指向这里。
   terms: '/terms',
@@ -58,6 +61,7 @@ export const ROUTE_TITLES = {
   [ROUTES.pricing]: '定价',
   [ROUTES.docs]: '开发者文档',
   [ROUTES.login]: '登录 / 注册',
+  [ROUTES.resetPassword]: '找回密码',
   [ROUTES.integrations]: '工具集成',
   [ROUTES.terms]: '用户协议',
   [ROUTES.privacy]: '隐私政策',
