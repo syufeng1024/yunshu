@@ -2160,6 +2160,292 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/routes:
+    get:
+      operationId: listAdminRoutes
+      tags: [admin]
+      summary: 路由分页列表（模型 ↔ 渠道绑定，t_route）
+      description: 读操作不重发 cfg:snap:ROUTING 快照。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: model_id
+          in: query
+          schema: {type: integer, format: int64, minimum: 1}
+        - name: channel_id
+          in: query
+          schema: {type: integer, format: int64, minimum: 1}
+        - name: enabled
+          in: query
+          schema: {type: string, enum: ['0', '1']}
+        - name: region
+          in: query
+          schema: {type: string, enum: [DOMESTIC, OVERSEAS]}
+        - name: page
+          in: query
+          schema: {type: integer, minimum: 1, default: 1}
+        - name: page_size
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+        - name: sort
+          in: query
+          schema: {type: string, enum: [created_at, updated_at, id, priority, weight]}
+        - name: order
+          in: query
+          schema: {type: string, enum: [asc, desc]}
+      responses:
+        '200':
+          description: 路由分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRouteList'
+        '400':
+          description: 过滤参数非法（invalid_query_parameter）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 model.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+    post:
+      operationId: createAdminRoute
+      tags: [admin]
+      summary: 新建一条路由
+      description: |
+        region 不接受入参，恒取 t_channel.region；protocol_id 缺省取渠道
+        protocol_id。唯一键
+        uk_route_model_channel_proto_upstream 重复时返回 409，不静默成功。
+        写入提交后重发 cfg:snap:ROUTING。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminRouteCreateRequest'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRouteDetail'
+        '400':
+          description: 字段非法或 model_id / channel_id / protocol_id 不存在（invalid_request_body）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 model.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: 唯一键已存在（resource_state_conflict）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          description: 快照发布失败（config_unavailable），行已提交但网关尚未看到
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/routes/{id}:
+    patch:
+      operationId: updateAdminRoute
+      tags: [admin]
+      summary: 修改路由的调参字段
+      description: |
+        只接受 upstream_model_name / weight / priority / stream_supported /
+        max_tokens_ceiling / enabled；model_id、channel_id、protocol_id 与
+        region 不可改（region 恒随渠道）。提交后重发快照。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64}
+          description: t_route.id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminRoutePatchRequest'
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRouteDetail'
+        '400':
+          description: 字段非法（invalid_request_body）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 model.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 路由不存在（resource_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: 修改后的唯一键与既有路由冲突（resource_state_conflict）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          description: 快照发布失败（config_unavailable）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+    delete:
+      operationId: deleteAdminRoute
+      tags: [admin]
+      summary: 物理删除一条路由
+      description: |
+        模型当前为 LISTED 且这是它最后一条 enabled=1 的路由时返回 409；
+        先把模型改为 CATALOG_ONLY / DELISTED，或先创建替代路由。提交后重发快照。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64}
+          description: t_route.id
+      responses:
+        '200':
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted, id]
+                properties:
+                  deleted: {type: boolean, enum: [true]}
+                  id: {type: integer, format: int64}
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 model.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 路由不存在（resource_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: LISTED 模型的最后一条启用路由（resource_state_conflict）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          description: 快照发布失败（config_unavailable）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/models:
+    post:
+      operationId: createAdminModel
+      tags: [admin]
+      summary: 新建平台模型（可同时建默认路由）
+      description: |
+        同时给出 upstream_model_name 与 primary_channel_id 时，在同一事务内
+        建一条默认 t_route（weight=100 / priority=100 / max_tokens_ceiling=0 /
+        enabled=1，region 取渠道 region）。只给 upstream_model_name 不给
+        primary_channel_id 返回 400 invalid_request_body。建了路由或
+        listing_state=LISTED 时提交后重发快照。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminModelCreateRequest'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  model:
+                    type: object
+                    additionalProperties: true
+        '400':
+          description: 字段非法（invalid_request_body）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 model.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
   /api/admin/tickets:
     get:
       operationId: listAdminTickets
@@ -4233,6 +4519,100 @@ components:
         page: {type: integer}
         page_size: {type: integer}
         total: {type: integer, format: int64}
+    AdminRoute:
+      type: object
+      required: [id, model_id, model_name, channel_id, channel_name, protocol_id, protocol, upstream_model_name, region, weight, priority, stream_supported, max_tokens_ceiling, enabled, created_at, updated_at]
+      properties:
+        id: {type: integer, format: int64}
+        model_id: {type: integer, format: int64}
+        model_name: {type: string, description: t_model.model_name；模型行不存在时为空串}
+        channel_id: {type: integer, format: int64}
+        channel_name: {type: string, description: t_channel.name；渠道行不存在时为空串}
+        protocol_id: {type: integer, format: int64}
+        protocol: {type: string}
+        upstream_model_name: {type: string, maxLength: 128, description: 真实上游模型名，对客户端不可见}
+        region: {type: string, enum: [DOMESTIC, OVERSEAS], description: 冗余自 t_channel.region，不接受客户端写入}
+        weight: {type: integer, format: int64, minimum: 0, maximum: 10000}
+        priority: {type: integer, format: int64, minimum: 0, maximum: 32767}
+        stream_supported: {type: boolean, description: false 时流式请求跳过该路由}
+        max_tokens_ceiling: {type: integer, format: int64, minimum: 0, description: 0 = 不限}
+        enabled: {type: boolean}
+        probe_at: {type: string, format: date-time, nullable: true}
+        probe_result: {type: string, nullable: true, enum: [OK, AUTH_FAIL, TIMEOUT, HTTP_5XX, DNS_FAIL]}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    AdminRouteList:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AdminRoute'}
+        page: {type: integer}
+        page_size: {type: integer}
+        total: {type: integer, format: int64}
+    AdminRouteDetail:
+      type: object
+      required: [route]
+      properties:
+        route: {$ref: '#/components/schemas/AdminRoute'}
+    AdminRouteCreateRequest:
+      type: object
+      required: [model_id, channel_id, upstream_model_name]
+      properties:
+        model_id: {type: integer, format: int64, minimum: 1}
+        channel_id: {type: integer, format: int64, minimum: 1}
+        protocol_id: {type: integer, format: int64, minimum: 1, description: 缺省取渠道 protocol_id；给出时必须存在于 t_protocol 且 enabled=1}
+        upstream_model_name: {type: string, minLength: 1, maxLength: 128, description: 去首尾空白后 1..128 字节}
+        weight: {type: integer, format: int64, minimum: 0, maximum: 10000, default: 100}
+        priority: {type: integer, format: int64, minimum: 0, maximum: 32767, default: 100}
+        stream_supported: {type: boolean, default: true}
+        max_tokens_ceiling: {type: integer, format: int64, minimum: 0, default: 0}
+        enabled: {type: boolean, default: true}
+    AdminRoutePatchRequest:
+      type: object
+      minProperties: 1
+      properties:
+        upstream_model_name: {type: string, minLength: 1, maxLength: 128}
+        weight: {type: integer, format: int64, minimum: 0, maximum: 10000}
+        priority: {type: integer, format: int64, minimum: 0, maximum: 32767}
+        stream_supported: {type: boolean}
+        max_tokens_ceiling: {type: integer, format: int64, minimum: 0}
+        enabled: {type: boolean}
+    AdminModelCreateRequest:
+      type: object
+      required: [model_name, display_name, region, model_type, protocol_id]
+      properties:
+        model_name: {type: string, minLength: 1, maxLength: 128}
+        display_name: {type: string, minLength: 1, maxLength: 128}
+        region: {type: string, enum: [DOMESTIC, OVERSEAS]}
+        model_type: {type: string, enum: [TEXT, IMAGE, EMBEDDING]}
+        protocol_id: {type: integer, format: int64, minimum: 1}
+        primary_channel_id: {type: integer, format: int64, minimum: 1, description: 给出 upstream_model_name 时必填，否则 400 invalid_request_body}
+        context_length: {type: integer, format: int64, minimum: 0, maximum: 100000000}
+        listing_state: {type: string, enum: [LISTED, CATALOG_ONLY, DELISTED], default: CATALOG_ONLY}
+        recommend_weight: {type: integer, format: int64, minimum: 0, maximum: 1000}
+        aliases:
+          type: array
+          maxItems: 20
+          items: {type: string, maxLength: 128}
+        capabilities:
+          type: object
+          additionalProperties: {type: boolean}
+          properties:
+            stream: {type: boolean}
+            tool_call: {type: boolean}
+            vision: {type: boolean}
+            json_mode: {type: boolean}
+        upstream_model_name:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: T45。上游真实模型名；与 primary_channel_id 同时给出时同事务建一条默认路由
+        stream_supported:
+          type: boolean
+          default: true
+          description: T45。默认路由是否支持流式；仅在创建默认路由时生效
     AdminOverviewToday:
       type: object
       required: [requests, consumed_micro, success_rate_bp]

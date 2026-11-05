@@ -379,6 +379,16 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("POST /api/admin/channels/{id}/disable", s.authed(mw.PermChannelWrite, s.ops.DisableChannel))
 	mux.Handle("DELETE /api/admin/channels/{id}", s.authed(mw.PermChannelWrite, s.ops.DeleteChannel))
 
+	// T45: route management. Routes are "which channel serves which model", a
+	// model listing decision rather than a channel property, so all four use
+	// model.write — same as RegisterUpstreamModels. Reads stay gated too: route
+	// rows expose the upstream model name, which is not part of the customer
+	// catalogue.
+	mux.Handle("GET /api/admin/routes", s.authed(mw.PermModelWrite, s.ops.ListRoutes))
+	mux.Handle("POST /api/admin/routes", s.authed(mw.PermModelWrite, s.ops.CreateRoute))
+	mux.Handle("PATCH /api/admin/routes/{id}", s.authed(mw.PermModelWrite, s.ops.UpdateRoute))
+	mux.Handle("DELETE /api/admin/routes/{id}", s.authed(mw.PermModelWrite, s.ops.DeleteRoute))
+
 	// T40-c: manual upstream bill import (OI-15, MANUAL_UPLOAD). channel.write is
 	// the narrowest existing capability that covers writing a channel's billing
 	// data; FINANCE holds audit.read but not channel.write, and no read-only

@@ -105,6 +105,11 @@ type modelCreateRequest struct {
 	RecommendWeight  *int64           `json:"recommend_weight"`
 	Aliases          *[]string        `json:"aliases"`
 	Capabilities     *map[string]bool `json:"capabilities"`
+	// T45: when both are set, a default t_route row is created in the same
+	// transaction. upstream_model_name alone (without primary_channel_id) is a
+	// 400 — guessing a channel would bind the model to the wrong upstream.
+	UpstreamModelName *string `json:"upstream_model_name"`
+	StreamSupported   *bool   `json:"stream_supported"`
 }
 
 type modelPatchRequest struct {
@@ -350,6 +355,27 @@ func (s *Service) CreateModel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// T45: bind the new model to its primary channel so it can actually be
+	// called after listing. region is copied from the channel, never from the
+	// request: the gateway selects routes by region and a mismatched copy would
+	// make this route invisible. insertRoute defaults weight/priority to 100,
+	// max_tokens_ceiling to 0 and enabled to 1.
+	routeCreated := false
+	if in.upstreamModelName != "" {
+		region, protocolID, apiErr := loadChannelRegionProtocol(ctx, tx, *in.primaryChannelID, "primary_channel_id")
+		if apiErr != nil {
+			mw.WriteError(w, r, apiErr)
+			return
+		}
+		created, err := insertRoute(ctx, tx, id, *in.primaryChannelID, protocolID,
+			in.upstreamModelName, region, in.streamSupported, now)
+		if err != nil {
+			s.logError(ctx, "ops_model_route_insert_failed: "+err.Error())
+			mw.WriteError(w, r, apierr.New(apierr.CodeInternalError))
+			return
+		}
+		routeCreated = created
+	}
 	if apiErr := replaceAliases(ctx, tx, id, in.aliases, now); apiErr != nil {
 		mw.WriteError(w, r, apiErr)
 		return
@@ -364,8 +390,14 @@ func (s *Service) CreateModel(w http.ResponseWriter, r *http.Request) {
 		mw.WriteError(w, r, apiErr)
 		return
 	}
+	afterAudit := modelAuditView(view)
+	if routeCreated {
+		afterAudit["route_created"] = true
+		afterAudit["upstream_model_name"] = in.upstreamModelName
+		afterAudit["stream_supported"] = in.streamSupported
+	}
 	if err := s.insertAudit(ctx, tx, r, "MODEL", "CREATE", "t_model", id, nil,
-		modelAuditView(view), ""); err != nil {
+		afterAudit, ""); err != nil {
 		s.logError(ctx, "ops_model_audit_failed: "+err.Error())
 		mw.WriteError(w, r, apierr.New(apierr.CodeInternalError))
 		return
@@ -377,7 +409,9 @@ func (s *Service) CreateModel(w http.ResponseWriter, r *http.Request) {
 	}
 	committed = true
 
-	if in.listingState == listingListed {
+	// A new route is invisible to the gateway until the snapshot is republished,
+	// exactly like a listing-state change.
+	if routeCreated || in.listingState == listingListed {
 		if apiErr := s.publish(ctx); apiErr != nil {
 			mw.WriteError(w, r, apiErr)
 			return
@@ -778,6 +812,9 @@ type modelInput struct {
 	aliases          []string
 	capabilities     map[string]bool
 	capabilityMask   int64
+	// upstreamModelName is empty when no default route was requested.
+	upstreamModelName string
+	streamSupported   bool
 }
 
 func (s *Service) validateCreateModel(r *http.Request, req *modelCreateRequest) (modelInput, *apierr.APIError) {
@@ -857,19 +894,38 @@ func (s *Service) validateCreateModel(r *http.Request, req *modelCreateRequest) 
 		}
 		capabilities = *req.Capabilities
 	}
+	// T45: a default route needs a target channel. Refusing here (instead of
+	// creating the model without a route) keeps "created but uncallable" — the
+	// exact bug this card fixes — impossible to reach through the console.
+	upstreamModelName := ""
+	if req.UpstreamModelName != nil {
+		upstreamModelName = strings.TrimSpace(*req.UpstreamModelName)
+		if upstreamModelName == "" || len(upstreamModelName) > 128 {
+			return in, mw.InvalidField("upstream_model_name")
+		}
+		if req.PrimaryChannelID == nil {
+			return in, mw.InvalidField("primary_channel_id")
+		}
+	}
+	streamSupported := true
+	if req.StreamSupported != nil {
+		streamSupported = *req.StreamSupported
+	}
 	in = modelInput{
-		modelName:        name,
-		displayName:      display,
-		region:           region,
-		modelType:        mt,
-		protocolID:       *req.ProtocolID,
-		primaryChannelID: req.PrimaryChannelID,
-		contextLength:    contextLength,
-		listingState:     state,
-		recommendWeight:  weight,
-		aliases:          aliases,
-		capabilities:     capabilities,
-		capabilityMask:   mask,
+		modelName:         name,
+		displayName:       display,
+		region:            region,
+		modelType:         mt,
+		protocolID:        *req.ProtocolID,
+		primaryChannelID:  req.PrimaryChannelID,
+		contextLength:     contextLength,
+		listingState:      state,
+		recommendWeight:   weight,
+		aliases:           aliases,
+		capabilities:      capabilities,
+		capabilityMask:    mask,
+		upstreamModelName: upstreamModelName,
+		streamSupported:   streamSupported,
 	}
 	if !protocolExists(r.Context(), s.DB, in.protocolID) {
 		return in, mw.InvalidField("protocol_id")
