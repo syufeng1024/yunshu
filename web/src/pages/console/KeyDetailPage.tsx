@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useAuthStore } from '@/stores/auth'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { errorHint, errorMessage } from '@/api/client'
 import {
@@ -29,7 +30,12 @@ import {
 } from '@/components/console'
 import type { QuotaDimension, RevealedKey } from '@/components/console'
 import { writeClipboard } from '@/lib/clipboard'
-import { auditActionLabel, auditFieldLabel, groupLabel } from '@/lib/consoleLabels'
+import {
+  auditActionLabel,
+  auditFieldLabel,
+  auditFieldValueLabel,
+  groupLabel,
+} from '@/lib/consoleLabels'
 import { ROUTES, consoleKeyDetailPath } from '@/lib/constants'
 import {
   creditsFromMicro,
@@ -41,30 +47,44 @@ import {
 import { useRealtimeMetric } from '@/hooks/useRealtimeMetric'
 import { usePageTitle } from '@/lib/usePageTitle'
 
-function auditValue(value: unknown): string {
-  if (value === null || value === undefined || value === '') return '—'
-  if (Array.isArray(value)) return value.length === 0 ? '（空）' : value.join(', ')
+/**
+ * 操作日志里存的是机器值（ENABLED / ALL / OFF / 带 T 和 Z 的时间）。
+ * 直接抛给用户就是一堆英文技术词，所以按字段翻译成人话再渲染：
+ * 字段决定译法，未登记的字段退回原值（总比吞掉信息好）。
+ */
+const HIDDEN_AUDIT_FIELDS = new Set(['ip_allowlist', 'ip_whitelist_mode'])
+
+function auditValue(field: string, value: unknown): string {
+  if (value === null || value === undefined || value === '') {
+    return field === 'expire_at' ? '永不过期' : '—'
+  }
+  if (Array.isArray(value)) return value.length === 0 ? '（未指定）' : value.join('、')
   if (typeof value === 'boolean') return value ? '是' : '否'
-  if (typeof value === 'object') return JSON.stringify(value)
-  return String(value)
+  if (typeof value === 'object') return '（已变更）'
+  if (field === 'expire_at') return formatDateTime(String(value))
+  return auditFieldValueLabel(field, String(value))
 }
 
 function AuditDiff({ value }: { value: Record<string, unknown> | null }) {
   if (!value) return <span className="text-ink-muted">—</span>
   if (Array.isArray(value) || typeof value !== 'object') {
-    return <span className="text-xs text-ink-secondary">{auditValue(value)}</span>
+    return <span className="text-xs text-ink-secondary">{auditValue('', value)}</span>
   }
   if (Object.keys(value).length === 0) {
     return <span className="text-ink-muted">—</span>
   }
   return (
     <dl className="space-y-0.5 text-xs">
-      {Object.entries(value).map(([field, fieldValue]) => (
+      {Object.entries(value)
+        // 来源地址限制已从界面下线，历史记录里的这两个字段不再展示：
+        // 留在页面上只会让人以为还有这个功能。
+        .filter(([field]) => !HIDDEN_AUDIT_FIELDS.has(field))
+        .map(([field, fieldValue]) => (
         <div key={field} className="flex gap-1">
           <dt className="shrink-0 text-ink-muted">{auditFieldLabel(field)}：</dt>
-          <dd className="min-w-0 break-all text-ink-secondary">{auditValue(fieldValue)}</dd>
+          <dd className="min-w-0 break-all text-ink-secondary">{auditValue(field, fieldValue)}</dd>
         </div>
-      ))}
+        ))}
     </dl>
   )
 }
@@ -93,6 +113,8 @@ function RealtimeCell({
 }
 
 export default function KeyDetailPage() {
+  // 审计里的 operator_id 与当前登录账号比对：自己做的操作显示「本人」，不暴露编号格式。
+  const currentUserId = useAuthStore((state) => state.user?.id ?? null)
   usePageTitle('密钥详情')
   const { id } = useParams<{ id: string }>()
 
@@ -248,7 +270,11 @@ export default function KeyDetailPage() {
     {
       key: 'operator',
       header: '操作人',
-      render: (row) => <span className="font-mono text-xs text-ink-secondary">#{row.operator_id}</span>,
+      render: (row) => (
+        <span className="text-xs text-ink-secondary">
+          {row.operator_id === currentUserId ? '本人' : `账号 ${row.operator_id}`}
+        </span>
+      ),
     },
     { key: 'before', header: '变更前', render: (row) => <AuditDiff value={row.before} /> },
     { key: 'after', header: '变更后', render: (row) => <AuditDiff value={row.after} /> },
@@ -435,7 +461,7 @@ export default function KeyDetailPage() {
         ) : null}
         <dl className="mt-4 grid gap-3 sm:grid-cols-3">
           <div className="rounded-lg border border-border px-4 py-3">
-            <dt className="text-xs text-ink-secondary">RPM</dt>
+            <dt className="text-xs text-ink-secondary">每分钟请求上限</dt>
             <dd className="mt-1 text-lg font-medium">
               <RealtimeCell
                 used={realtime?.rpm_used ?? null}
@@ -445,7 +471,7 @@ export default function KeyDetailPage() {
             </dd>
           </div>
           <div className="rounded-lg border border-border px-4 py-3">
-            <dt className="text-xs text-ink-secondary">TPM</dt>
+            <dt className="text-xs text-ink-secondary">每分钟用量上限</dt>
             <dd className="mt-1 text-lg font-medium">
               <RealtimeCell
                 used={realtime?.tpm_used ?? null}
@@ -455,7 +481,7 @@ export default function KeyDetailPage() {
             </dd>
           </div>
           <div className="rounded-lg border border-border px-4 py-3">
-            <dt className="text-xs text-ink-secondary">并发</dt>
+            <dt className="text-xs text-ink-secondary">同时处理请求数</dt>
             <dd className="mt-1 text-lg font-medium">
               <RealtimeCell
                 used={realtime?.concurrency_used ?? null}
@@ -584,25 +610,6 @@ export default function KeyDetailPage() {
         )}
       </section>
 
-      <section className="rounded-xl border border-border bg-surface p-5 shadow-card">
-        <h2 className="text-sm font-semibold text-ink">IP 白名单</h2>
-        <p className="mt-1 text-xs text-ink-secondary">
-          {data.ip_whitelist_mode === 'OFF' || data.ip_allowlist.length === 0
-            ? '未限制来源 IP。'
-            : '仅下列来源可调用本密钥。'}
-        </p>
-        {data.ip_allowlist.length > 0 ? (
-          <ul className="mt-3 flex flex-wrap gap-1.5">
-            {data.ip_allowlist.map((rule) => (
-              <li key={rule.cidr}>
-                <code className="rounded bg-surface-muted px-2 py-1 font-mono text-xs text-ink">
-                  {rule.cidr}
-                </code>
-              </li>
-            ))}
-          </ul>
-        ) : null}
-      </section>
 
       <section className="space-y-2">
         <div className="flex items-center justify-between gap-2">

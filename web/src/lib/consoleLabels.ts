@@ -35,14 +35,14 @@ const AUDIT_FIELD_LABEL: Record<string, string> = {
   key_prefix: '前缀',
   key_last4: '后四位',
   status: '状态',
-  model_scope_mode: '模型范围',
-  model_ids: '模型 ID',
+  model_scope_mode: '可调用模型',
+  model_ids: '模型编号',
   group_code: '分组',
   expire_at: '到期时间',
-  ip_whitelist_mode: 'IP 模式',
-  ip_allowlist: 'IP 白名单',
+  ip_whitelist_mode: '来源地址限制',
+  ip_allowlist: '允许的来源',
   revoked_at: '失效时间',
-  new_key_id: '新密钥 ID',
+  new_key_id: '新密钥编号',
   new_key_prefix: '新密钥前缀',
   new_key_last4: '新密钥后四位',
   deleted_at: '删除时间',
@@ -242,4 +242,22 @@ const REPLY_AUTHOR_LABEL: Record<string, string> = {
 
 export function replyAuthorLabel(author: string): string {
   return REPLY_AUTHOR_LABEL[author] ?? author
+}
+
+/**
+ * 操作日志里的枚举值翻译。后端存的是机器值，界面上不该出现 ENABLED / ALL / OFF
+ * 这类词（需求方 2026-11-05 明确要求去英文技术词）。
+ */
+const AUDIT_VALUE_LABEL: Record<string, Record<string, string>> = {
+  status: { ENABLED: '启用中', DISABLED: '已停用', REVOKED: '已失效' },
+  model_scope_mode: { ALL: '全部已上架模型', SELECTED: '仅指定模型' },
+  ip_whitelist_mode: { OFF: '不限制', ON: '仅允许名单内', ALLOWLIST: '仅允许名单内' },
+}
+
+export function auditFieldValueLabel(field: string, value: string): string {
+  if (field === 'group_code') {
+    // 分组是运营口径（标准/合约），直接复用同一份译文，避免日志里冒出 standard。
+    return groupLabel(value) ?? value
+  }
+  return AUDIT_VALUE_LABEL[field]?.[value] ?? value
 }
