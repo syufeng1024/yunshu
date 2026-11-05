@@ -564,15 +564,17 @@ func (d *Dispatcher) decryptKey(ch *gw.ChannelEntry) (string, error) {
 
 func (d *Dispatcher) buildBody(c *gw.Ctx, t target) ([]byte, string, error) {
 	upstreamModel := strings.TrimSpace(t.route.UpstreamModelName)
-	// 映射按「平台模型名」索引，因此这里用 P07 解析出的规范名，而不是客户端原始
-	// 请求名：别名调用和规范名调用必须命中同一条映射。RequestModel 仍保留客户端
-	// 原始写法，用于日志与用量归因。
-	mapKey := c.IR.Model
-	if c.Model != nil && strings.TrimSpace(c.Model.ModelName) != "" {
-		mapKey = c.Model.ModelName
-	}
-	if mapped := strings.TrimSpace(t.ch.UpstreamModelNameMap[mapKey]); mapped != "" {
+	// 映射两级查找，优先级从具体到一般：
+	//   1. 客户端请求名（可能是别名）—— 允许为某个别名单独指定专用上游；
+	//   2. P07 解析出的规范模型名 —— 别名未单独配置时继承规范名的映射。
+	// 两条都查不到才用路由默认名。注意 RequestModel 始终保留客户端原始写法，
+	// 用于日志与用量归因；只有「发什么名字给上游」走这里。
+	if mapped := strings.TrimSpace(t.ch.UpstreamModelNameMap[c.IR.Model]); mapped != "" {
 		upstreamModel = mapped
+	} else if c.Model != nil {
+		if mapped := strings.TrimSpace(t.ch.UpstreamModelNameMap[c.Model.ModelName]); mapped != "" {
+			upstreamModel = mapped
+		}
 	}
 	if upstreamModel == "" {
 		return nil, "", errors.New("upstream model name is empty")

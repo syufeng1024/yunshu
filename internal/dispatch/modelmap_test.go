@@ -119,3 +119,43 @@ func TestChannelMapMatchesCanonicalNameWhenClientUsesAlias(t *testing.T) {
 		t.Fatalf("upstream model = %q, want mapped-model (alias call must hit the canonical key)", payload.Model)
 	}
 }
+
+// 别名的「专用上游」优先于规范名映射，规范名调用仍然拿规范名那条：
+// 运营可以只给某个别名挂特殊路由，而不影响其他人用规范名调用。
+func TestAliasSpecificMappingWinsOverCanonical(t *testing.T) {
+	ch := &gw.ChannelEntry{
+		ID: 10, ProtocolID: 2, StreamUsageMode: "UNKNOWN",
+		UpstreamModelNameMap: map[string]string{
+			"canonical-model": "canonical-upstream",
+			"client-alias":    "alias-upstream",
+		},
+	}
+	route := gw.RouteCandidate{RouteID: 1, ChannelID: 10, ProtocolID: 2, UpstreamModelName: "route-default-model"}
+
+	d := &Dispatcher{}
+	cases := []struct {
+		requested string
+		want      string
+	}{
+		{"client-alias", "alias-upstream"},
+		{"canonical-model", "canonical-upstream"},
+	}
+	for _, tc := range cases {
+		ctx := testCtx(false)
+		ctx.IR.Model = tc.requested
+		ctx.Model = &gw.ModelEntry{ModelName: "canonical-model"}
+		body, _, err := d.buildBody(ctx, target{route: route, ch: ch})
+		if err != nil {
+			t.Fatalf("%s: buildBody: %v", tc.requested, err)
+		}
+		var payload struct {
+			Model string `json:"model"`
+		}
+		if err := jsonx.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("%s: decode: %v", tc.requested, err)
+		}
+		if payload.Model != tc.want {
+			t.Fatalf("%s: upstream model = %q, want %q", tc.requested, payload.Model, tc.want)
+		}
+	}
+}
