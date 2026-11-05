@@ -140,8 +140,10 @@ export interface CreateKeysInput {
   model_scope_mode: ModelScopeMode
   /** Omitted entirely for ALL: the backend rejects ALL + model_ids. */
   model_ids?: number[]
-  expire_at: string
-  ip_allowlist: string[]
+  /** 不传表示永不过期（需求方 2026-11-05 裁定：有效期改为可选）。 */
+  expire_at?: string
+  /** 来源地址白名单已从界面撤下，保留字段仅为兼容旧调用。 */
+  ip_allowlist?: string[]
 }
 
 /** PRD F6-5: one batch is 1–10 keys. The backend rejects anything outside. */

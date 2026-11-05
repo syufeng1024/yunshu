@@ -250,7 +250,7 @@ describe('KeysPage', () => {
     expect(screen.getByText(/已达免费档活跃 Key 上限/)).toBeInTheDocument()
   })
 
-  it('F6-5: the wizard rejects a batch count outside the 1–10 backend range', async () => {
+  it('F6-5: 创建密钥拒绝 1–10 之外的数量，且不发出请求', async () => {
     installMock()
     const user = userEvent.setup()
     renderWithProviders(<KeysPage />)
@@ -261,12 +261,10 @@ describe('KeysPage', () => {
     const count = screen.getByLabelText(/创建数量/)
     await user.clear(count)
     await user.type(count, '11')
-    await user.click(screen.getByRole('button', { name: '下一步' }))
+    await user.click(screen.getByRole('button', { name: '生成密钥' }))
 
-    expect(await screen.findByText(/批量数量需为 1–10 的整数/)).toBeInTheDocument()
-    // Still on step 1: the name field is visible and step 2 is not.
-    expect(screen.getByLabelText(/创建数量/)).toBeInTheDocument()
-    expect(screen.queryByLabelText('模型范围')).not.toBeInTheDocument()
+    expect(await screen.findByText(/创建数量需为 1–10 的整数/)).toBeInTheDocument()
+    expect(mockedPost).not.toHaveBeenCalled()
   })
 
   it('A5 / F6-3: the plaintext is shown once, and only the masked prefix remains after closing', async () => {
@@ -297,12 +295,9 @@ describe('KeysPage', () => {
 
     await user.click(screen.getByRole('button', { name: '新建密钥' }))
     await user.type(screen.getByLabelText(/密钥名称/), 'prod-key')
-    await user.click(screen.getByRole('button', { name: '下一步' }))
-    await user.click(screen.getByRole('button', { name: '下一步' }))
     fireEvent.change(screen.getByLabelText(/到期时间/), {
       target: { value: '2030-01-01T10:00' },
     })
-    await user.click(screen.getByRole('button', { name: '下一步' }))
     await user.click(screen.getByRole('button', { name: '生成密钥' }))
 
     expect(await screen.findByTestId('revealed-key-99')).toHaveTextContent('sk-plain-secret-123456')
