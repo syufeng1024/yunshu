@@ -297,6 +297,36 @@ export function fetchChannelUpstreamModels(
   )
 }
 
+/** 一键登记的结果：created 是新建的模型，skipped 是已经存在的（含原因）。 */
+export interface RegisterUpstreamModelsResponse {
+  created: { model_id: number; model_name: string; route_created: boolean }[]
+  skipped: { model_name: string; reason: string }[]
+}
+
+export function registerUpstreamModels(
+  id: number | string,
+  modelIds: string[],
+): Promise<RegisterUpstreamModelsResponse> {
+  return api.post<RegisterUpstreamModelsResponse>(
+    `/api/admin/channels/${encodeURIComponent(String(id))}/register-upstream-models`,
+    { model_ids: modelIds },
+  )
+}
+
+export function useRegisterUpstreamModels() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, modelIds }: { id: number | string; modelIds: string[] }) =>
+      registerUpstreamModels(id, modelIds),
+    onSuccess: () => {
+      // 模型列表与上游清单都要重取：新模型的徽章会从「未登记」变成「已登记」，
+      // 渠道列表里主渠道关联也变了。
+      void client.invalidateQueries({ queryKey: ['admin', 'models'] })
+      void client.invalidateQueries({ queryKey: ['admin', 'channels'] })
+    },
+  })
+}
+
 export function useChannelUpstreamModels(
   id: number | string | null | undefined,
   enabled = true,
