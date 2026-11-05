@@ -29,7 +29,6 @@ import {
   QuotaBar,
 } from '@/components/console'
 import type { QuotaDimension, RevealedKey } from '@/components/console'
-import { writeClipboard } from '@/lib/clipboard'
 import {
   auditActionLabel,
   auditFieldLabel,
@@ -52,7 +51,18 @@ import { usePageTitle } from '@/lib/usePageTitle'
  * 直接抛给用户就是一堆英文技术词，所以按字段翻译成人话再渲染：
  * 字段决定译法，未登记的字段退回原值（总比吞掉信息好）。
  */
-const HIDDEN_AUDIT_FIELDS = new Set(['ip_allowlist', 'ip_whitelist_mode'])
+/**
+ * 日志里不展示的字段。两类：
+ * - ip_allowlist / ip_whitelist_mode：来源地址限制已下线，留着会让人以为还有这功能。
+ * - key_prefix / key_last4：密钥的存储实现细节（sk-TJ38V / VJW1 两段），
+ *   对用户没有任何动作价值——掩码已经在「密钥信息」里，这里再拆两行只是噪声。
+ */
+const HIDDEN_AUDIT_FIELDS = new Set([
+  'ip_allowlist',
+  'ip_whitelist_mode',
+  'key_prefix',
+  'key_last4',
+])
 
 function auditValue(field: string, value: unknown): string {
   if (value === null || value === undefined || value === '') {
@@ -79,6 +89,12 @@ function AuditDiff({ value }: { value: Record<string, unknown> | null }) {
         // 来源地址限制已从界面下线，历史记录里的这两个字段不再展示：
         // 留在页面上只会让人以为还有这个功能。
         .filter(([field]) => !HIDDEN_AUDIT_FIELDS.has(field))
+        // 模型范围选「全部」时 model_ids 必然是空数组，写成「模型编号：（未指定）」
+        // 会让人以为漏配了；范围本身已由「可调用模型：全部已上架模型」表达。
+        .filter(
+          ([field, fieldValue]) =>
+            !(field === 'model_ids' && Array.isArray(fieldValue) && fieldValue.length === 0),
+        )
         .map(([field, fieldValue]) => (
         <div key={field} className="flex gap-1">
           <dt className="shrink-0 text-ink-muted">{auditFieldLabel(field)}：</dt>
@@ -134,6 +150,25 @@ export default function KeyDetailPage() {
       })),
     [usage.data, usageRange],
   )
+
+  /**
+   * 后端会为区间内每个小时补 0，所以「没调用」时也会拿到 24/168 个全 0 点。
+   * 直接喂给折线图画出来就是一条压在 0 上的直线——看起来像图坏了，其实是没数据。
+   * 这里判定「整段都是 0」后交给空状态，只有真有过调用才画线。
+   */
+  const usageTotals = useMemo(
+    () =>
+      usageData.reduce(
+        (acc, point) => ({
+          requests: acc.requests + point.requests,
+          credits: acc.credits + point.credits,
+        }),
+        { requests: 0, credits: 0 },
+      ),
+    [usageData],
+  )
+  const usageHasData = usageTotals.requests > 0 || usageTotals.credits > 0
+  const usageRangeLabel = usageRange === '24h' ? '近 24 小时' : '近 7 天'
   const usageError = usage.isError ? errorMessage(usage.error) : null
   const navigate = useNavigate()
   const toast = useToast()
@@ -228,16 +263,6 @@ export default function KeyDetailPage() {
     }
   }
 
-  const copyPrefix = async () => {
-    if (!data) return
-    try {
-      await writeClipboard(data.key_prefix)
-      toast.success('已复制密钥前缀')
-    } catch {
-      toast.error('复制失败', '浏览器未授予剪贴板权限，请手动选择文本复制。')
-    }
-  }
-
   const quotaDimension: QuotaDimension[] = useMemo(() => {
     const quota = data?.account_quota
     if (!quota) return []
@@ -250,8 +275,10 @@ export default function KeyDetailPage() {
         format: (value) => `${formatCreditAmount(value)} 积分`,
         note:
           quota.remaining_micro === null
-            ? `${quota.plan_name}；无日额度上限`
-            : `${quota.plan_name}；剩余 ${formatCreditAmount(quota.remaining_micro)} 积分`,
+            ? // 上一版这里写「套餐名；无日额度上限」，而上面的数值已经是「无上限」，
+              // 同一句话说了两遍。改成讲清楚「没有上限意味着什么」。
+              '本账户没有设置每日额度上限，调用只受账户余额与限流约束。'
+            : `今日还剩 ${formatCreditAmount(quota.remaining_micro)} 积分可用。`,
       },
     ]
   }, [data?.account_quota])
@@ -311,39 +338,42 @@ export default function KeyDetailPage() {
   const groupName = groupLabel(data.group_code)
   const modelList: KeyModelRef[] = data.models
   const editingModels = modelsQuery.data ?? []
-  const renderedScopeLabel = data.model_scope_mode === 'ALL' ? '全部已上架模型' : `${modelList.length} 个指定模型`
 
   return (
     <div className="space-y-5">
       <PageHeader
-        title={data.key_name}
-        description="密钥详情、模型权限与操作日志。"
+        title="密钥详情"
+        description="这是一把调用密钥，名称由创建者填写，用于区分同一账户下的多把密钥。"
         actions={
           <>
-            <Button variant="secondary" onClick={() => void copyPrefix()}>
-              复制前缀
-            </Button>
-            <Button variant="secondary" onClick={() => setRotateOpen(true)}>
-              轮换
+            <Button
+              variant="secondary"
+              onClick={() => setRotateOpen(true)}
+              title="生成一把新密钥并让当前这把立即失效，用于泄露后止损"
+            >
+              轮换密钥
             </Button>
           </>
         }
       />
 
-      <div className="flex flex-wrap items-center gap-2">
+      {/* 状态徽章已并入「密钥信息」卡，这里只留返回入口，避免同一状态出现两次。 */}
+      <div>
         <Link to={ROUTES.consoleKeys} className="text-xs text-primary hover:underline">
           ← 返回密钥列表
         </Link>
-        <Badge variant={data.status === 'ENABLED' ? 'success' : 'neutral'} dot>
-          {data.status === 'ENABLED' ? '启用' : '已停用'}
-        </Badge>
-        {data.expired ? <Badge variant="danger">已过期</Badge> : null}
       </div>
 
       <section className="grid gap-4 lg:grid-cols-2">
         <div className="rounded-xl border border-border bg-surface p-5 shadow-card">
-          <h2 className="text-sm font-semibold text-ink">基础信息</h2>
+          <h2 className="text-sm font-semibold text-ink">密钥信息</h2>
           <dl className="mt-3 space-y-2 text-sm">
+            {/* 名称放第一行并单独占一栏：它是用户自己起的标识，不是系统编号。
+                原先只在页头当大标题，用户看到「ui-permanent」会以为是内部代号。 */}
+            <div className="flex items-start justify-between gap-3">
+              <dt className="text-ink-secondary">名称</dt>
+              <dd className="text-ink">{data.key_name || '（未命名）'}</dd>
+            </div>
             <div className="flex items-start justify-between gap-3">
               <dt className="text-ink-secondary">密钥</dt>
               <dd>
@@ -353,20 +383,26 @@ export default function KeyDetailPage() {
               </dd>
             </div>
             <div className="flex items-center justify-between gap-3">
+              <dt className="text-ink-secondary">状态</dt>
+              <dd>
+                <Badge variant={data.status === 'ENABLED' ? 'success' : 'neutral'} dot>
+                  {data.status === 'ENABLED' ? '启用' : '已停用'}
+                </Badge>
+                {data.expired ? (
+                  <Badge variant="danger" className="ml-1.5">
+                    已过期
+                  </Badge>
+                ) : null}
+              </dd>
+            </div>
+            <div className="flex items-center justify-between gap-3">
               <dt className="text-ink-secondary">创建时间</dt>
               <dd className="text-ink">{formatDateTime(data.created_at)}</dd>
             </div>
             <div className="flex items-center justify-between gap-3">
               <dt className="text-ink-secondary">最近使用</dt>
-              <dd className="text-ink">{data.last_used_at ? formatDateTime(data.last_used_at) : '—'}</dd>
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <dt className="text-ink-secondary">到期时间</dt>
               <dd className="text-ink">
-                {data.expire_at ? formatDateTime(data.expire_at) : '永不过期'}
-                {data.remaining_days !== null ? (
-                  <span className="ml-2 text-xs text-ink-muted">剩余 {data.remaining_days} 天</span>
-                ) : null}
+                {data.last_used_at ? formatDateTime(data.last_used_at) : '还没调用过'}
               </dd>
             </div>
           </dl>
@@ -374,9 +410,11 @@ export default function KeyDetailPage() {
 
         <div className="rounded-xl border border-border bg-surface p-5 shadow-card">
           <div className="flex items-center justify-between gap-3">
-            <h2 className="text-sm font-semibold text-ink">分组与有效期</h2>
+            <h2 className="text-sm font-semibold text-ink">分组与到期</h2>
             <Badge variant="neutral">只读</Badge>
           </div>
+          {/* 到期时间原在左卡，而右卡标题却叫「分组与有效期」却没有有效期——
+              同一事实拆两处、标题还对不上。现在到期归右卡，标题改名「分组与到期」。 */}
           <dl className="mt-3 space-y-2 text-sm">
             <div className="flex items-center justify-between gap-3">
               <dt className="text-ink-secondary">当前分组</dt>
@@ -386,6 +424,15 @@ export default function KeyDetailPage() {
               <dt className="text-ink-secondary">分组倍率</dt>
               <dd className="text-ink">
                 {data.group_ratio_bp === null ? '—' : `×${formatRatioBp(data.group_ratio_bp)}`}
+              </dd>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-ink-secondary">到期时间</dt>
+              <dd className="text-ink">
+                {data.expire_at ? formatDateTime(data.expire_at) : '永不过期'}
+                {data.remaining_days !== null ? (
+                  <span className="ml-2 text-xs text-ink-muted">剩余 {data.remaining_days} 天</span>
+                ) : null}
               </dd>
             </div>
           </dl>
@@ -399,9 +446,11 @@ export default function KeyDetailPage() {
       <section className="rounded-xl border border-border bg-surface p-5 shadow-card">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="space-y-1">
-            <h2 className="text-sm font-semibold text-ink">用量趋势</h2>
+            <h2 className="text-sm font-semibold text-ink">调用趋势</h2>
             <p className="text-xs text-ink-secondary">
-              按东八区自然小时统计；空小时补 0，曲线不会跨过没有调用的空档。
+              {usageHasData
+                ? `${usageRangeLabel}共 ${usageTotals.requests} 次调用，消耗 ${usageTotals.credits.toFixed(2)} 积分。`
+                : `按小时统计这把密钥的调用次数。${usageRangeLabel}还没有调用记录。`}
             </p>
           </div>
           <div className="flex gap-1">
@@ -424,27 +473,29 @@ export default function KeyDetailPage() {
         </div>
         <LineChart
           className="mt-4"
-          data={usageData}
+          // 没有调用时传空数组，让组件走空状态；后端补的 24/168 个 0 点画出来
+          // 是一条压在 0 上的直线，看着像图坏了。
+          data={usageHasData ? usageData : []}
           xKey="label"
-          series={[
-            { key: 'requests', name: '请求数' },
-            { key: 'credits', name: '消耗积分' },
-          ]}
-          height={240}
+          // 只画请求数。消耗积分和请求数量纲差几个数量级，同轴画会被压成贴地线，
+          // 读图时容易误判「消耗为 0」；积分改用上方那句汇总文字表达。
+          series={[{ key: 'requests', name: '调用次数' }]}
+          // 空态不需要 220px 的画布，留一块空白反而显得页面没加载完。
+          height={usageHasData ? 220 : 132}
           loading={usage.isLoading}
           error={usageError}
           onRetry={() => void usage.refetch()}
-          ariaLabel="密钥用量趋势图"
+          ariaLabel="密钥调用趋势图"
           emptyTitle="这段时间没有调用"
-          emptyDescription="换一个区间试试，或确认这把密钥是否仍在使用。"
+          emptyDescription="这把密钥还没有产生调用；发起一次请求后，这里会按小时显示曲线。"
         />
       </section>
       <section className="rounded-xl border border-border bg-surface p-5 shadow-card">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="space-y-1">
-            <h2 className="text-sm font-semibold text-ink">实时指标</h2>
+            <h2 className="text-sm font-semibold text-ink">当前这一分钟</h2>
             <p className="text-xs text-ink-secondary">
-              每 8 秒刷新；获取失败时显示「--」，不会以 0 代替。
+              数值为「已用 / 上限」，用来判断这把密钥是不是快被限流了。
             </p>
           </div>
           {live.loading ? <span className="text-xs text-ink-muted">刷新中…</span> : null}
@@ -503,7 +554,9 @@ export default function KeyDetailPage() {
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="space-y-1">
             <h2 className="text-sm font-semibold text-ink">模型权限</h2>
-            <p className="text-xs text-ink-secondary">{renderedScopeLabel}</p>
+            {/* 这里原本又写了一遍「全部已上架模型」，和下面的徽章一字不差地重复。
+                说明位改成讲「这栏是干什么的」，具体范围交给下面的徽章。 */}
+            <p className="text-xs text-ink-secondary">决定这把密钥能调用哪些模型。</p>
           </div>
           {!editing ? (
             <Button variant="secondary" size="sm" onClick={startEditing}>

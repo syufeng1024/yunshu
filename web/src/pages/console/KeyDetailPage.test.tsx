@@ -149,7 +149,8 @@ describe('KeyDetailPage', () => {
     renderDetail()
 
     await screen.findByText('prod-key')
-    expect(screen.getByText(/每 8 秒刷新/)).toBeInTheDocument()
+    // 说明文案讲的是「数值怎么读」，不再是实现细节（每 8 秒刷新一次）。
+    expect(screen.getByText(/已用 \/ 上限/)).toBeInTheDocument()
     expect(screen.getByText('sk-abc123****wxyz')).toBeInTheDocument()
     // 12/60 is the initial detail payload; the poll replaces it with the same
     // numbers in this mock. No "--" appears because the data is available.
