@@ -975,7 +975,7 @@ export default function ChannelsPage() {
                   className="block text-sm font-medium text-ink"
                   htmlFor="channel-model-map"
                 >
-                  上游模型名覆盖（高级）
+                  模型名映射（平台名 → 上游名）
                 </label>
                 {/* 上游模型名不要手打：厂商改目录时手打的名字不会报错，只会在调用时 502。 */}
                 <Button
@@ -994,35 +994,26 @@ export default function ChannelsPage() {
                 </Button>
               </div>
               {/*
-                这一栏不是必填项，也不该是默认步骤：模型名与厂商官方名称一致时，
-                真正决定发什么名字的是路由上的 upstream_model_name（每条模型 × 渠道
-                一份），这里只是「同一个平台名要发成别的上游名」时的覆盖层。
-                折叠起来是为了别让运营以为「不填就跑不起来」。
+                这是渠道级「逻辑映射」，不是必填项：按平台模型名覆盖路由上的默认上游名。
+                一个平台名在不同渠道发成不同的上游名（官方直连 deepseek-flash、某云
+                deepseek-v3），以及厂商改名后保住对外名字，都靠这一层。名称与上游一致
+                时留空即可，此时用的是路由里的 upstream_model_name。
               */}
-              <details
-                className="rounded-lg border border-border px-3 py-2"
-                open={errors.modelMapText ? true : undefined}
-              >
-                <summary className="cursor-pointer text-xs text-ink-secondary">
-                  名称与上游官方一致时无需填写；确需覆盖时点开（留空即用官方名）
-                </summary>
-                <div className="mt-2 space-y-1.5">
-                  <textarea
-                    id="channel-model-map"
-                    className="min-h-20 w-full rounded-lg border border-border-strong bg-surface px-3 py-2 font-mono text-xs text-ink placeholder:text-ink-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                    placeholder={'每行一条，例如：\nqwen-max=qwen-max-latest'}
-                    value={form.modelMapText}
-                    onChange={(event) => updateField('modelMapText', event.target.value)}
-                  />
-                  {errors.modelMapText ? (
-                    <p className="text-xs text-danger">{errors.modelMapText}</p>
-                  ) : (
-                    <p className="text-xs text-ink-muted">
-                      每行「平台模型名=上游模型名」，作用于本渠道全部模型；支持全角「＝」，空行忽略。
-                    </p>
-                  )}
-                </div>
-              </details>
+              <textarea
+                id="channel-model-map"
+                className="min-h-24 w-full rounded-lg border border-border-strong bg-surface px-3 py-2 font-mono text-xs text-ink placeholder:text-ink-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                placeholder={'每行一条，例如：\nqwen-max=qwen-max-latest'}
+                value={form.modelMapText}
+                onChange={(event) => updateField('modelMapText', event.target.value)}
+              />
+              {errors.modelMapText ? (
+                <p className="text-xs text-danger">{errors.modelMapText}</p>
+              ) : (
+                <p className="text-xs text-ink-muted">
+                  每行「平台模型名=上游模型名」，对本渠道全部模型生效，优先于路由里的默认上游名；
+                  名称与上游官方一致时留空即可。支持全角「＝」，空行忽略。
+                </p>
+              )}
             </div>
           </div>
         )}
