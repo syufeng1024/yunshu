@@ -96,6 +96,16 @@ curl -s localhost:8081/readyz    # 依赖就绪后 200（依赖抖动时非 200�
 
 `controld` 启动时会幂等创建内置超级管理员：用 `admin` / `ADMIN_BOOTSTRAP_PASSWORD`（默认 `12345678`，见 `.env.example`）登录 `/admin`。登录后运营后台顶部会显示「仍在使用初始密码」的提醒条（只提醒、不拦截），改密后自动消失；已存在时不会被覆盖，也不会重置口令。要跳过引导设 `ADMIN_BOOTSTRAP_DISABLED=true`。
 
+### 本地联调最小闭环
+
+1. 起依赖与建表：`scripts/dev.sh up && scripts/dev.sh env && scripts/dev.sh migrate up`
+2. 要真实转发需补本地种子：`ENV=local scripts/dev.sh migrate up`（只补渠道/模型/别名/路由/价目；0019 在 `ENV=dev` 下被 skip 且不写 `schema_migrations`，可重复执行）
+3. 种子里的渠道 Key 不可用（占位裸字节，网关判 `upstream_key_enc_not_v1` 回 503），用运营接口重写：`PATCH /api/admin/channels/1`，body `{"upstream_key":"local-dev-key"}`（`CHANNEL_KEY_KEK` 留空时该接口回 503，先按 `.env.example` 用 `openssl rand -base64 32` 生成；写请求还要带 `csrf` cookie 与同名 `X-CSRF-Token` 头），然后等路由快照重发（最多 4 分钟），或在 Redis 确认 `cfg:snap:ROUTING` 里的 `upstream_key_enc` 已以 `v1:` 开头
+4. 假上游：`go run ./cmd/fakeupstream -addr :18090`（18080 被全栈栈的 gatewayd 占用），渠道 `base_url` 指 `http://127.0.0.1:18090/v1`
+5. 注册要验证码：`AUTH_VERIFICATION_MODE=log` 下验证码打在 controld 日志，搜 `verification_code_log_mode`
+6. 充值分两段：`POST /api/admin/users/{id}/balance-adjust` 提交后需**另一个人**审批（审批人不得等于申请人）；`fund.approve` 只有 `FINANCE` / `SUPER_ADMIN` 有，`OPS` 没有
+7. 模型建议配 `max_output_tokens`：留 0 时按 `min(context_length, 32768)` 兜底（32768 是平台对 `max_tokens` 的硬上限）；该值同时决定 TPM 预扣的估算量，配得过大容易撞 `tpm_limit_exceeded`
+
 ### 2. 全栈容器化部署（一条命令起完整站点）
 
 ```bash
