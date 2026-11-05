@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -782,7 +783,7 @@ func (s *Service) validateCreateChannel(r *http.Request, req *channelCreateReque
 		in.streamUsageMode = mode
 	}
 	if req.UpstreamModelNameMap != nil {
-		if apiErr := validateModelNameMap(*req.UpstreamModelNameMap); apiErr != nil {
+		if apiErr := s.validateModelNameMap(r.Context(), s.DB, *req.UpstreamModelNameMap); apiErr != nil {
 			return in, "", "", apiErr
 		}
 		// database/sql cannot bind a map to a JSON column; bind the encoded
@@ -966,7 +967,7 @@ func (s *Service) validatePatchChannel(r *http.Request, tx *sql.Tx, req *channel
 		in.streamUsageMode = mode
 	}
 	if req.UpstreamModelNameMap != nil {
-		if apiErr := validateModelNameMap(*req.UpstreamModelNameMap); apiErr != nil {
+		if apiErr := s.validateModelNameMap(r.Context(), tx, *req.UpstreamModelNameMap); apiErr != nil {
 			return in, "", "", false, apiErr
 		}
 		if len(*req.UpstreamModelNameMap) > 0 {
@@ -1045,7 +1046,22 @@ func normalizeUserIDs(ids []int64) ([]int64, *apierr.APIError) {
 	return out, nil
 }
 
-func validateModelNameMap(m map[string]string) *apierr.APIError {
+// modelNameQueryer is satisfied by both *sql.DB and *sql.Tx, so the same
+// validation runs inside the patch transaction and before the create one.
+type modelNameQueryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// validateModelNameMap checks shape and, more importantly, that every key is a
+// platform model that actually exists.
+//
+// Why existence matters: the map is keyed by the platform model name and
+// consulted at send time (dispatch.buildBody). A typo like
+// "qwen-maxx=qwen-max" is a perfectly well-formed entry that never matches, so
+// the channel keeps sending the route default and nothing anywhere reports a
+// problem. Rejecting the save turns that silent no-op into a 400 that names the
+// key.
+func (s *Service) validateModelNameMap(ctx context.Context, q modelNameQueryer, m map[string]string) *apierr.APIError {
 	if len(m) > 200 {
 		return mw.InvalidField("upstream_model_name_map")
 	}
@@ -1053,6 +1069,51 @@ func validateModelNameMap(m map[string]string) *apierr.APIError {
 		if strings.TrimSpace(k) == "" || len([]rune(k)) > 128 || len([]rune(v)) > 128 {
 			return mw.InvalidField("upstream_model_name_map")
 		}
+	}
+	if len(m) == 0 {
+		return nil
+	}
+
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, strings.TrimSpace(k))
+	}
+	sort.Strings(keys)
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",")
+	args := make([]any, len(keys))
+	for i, k := range keys {
+		args[i] = k
+	}
+	rows, err := q.QueryContext(ctx, `
+		SELECT model_name FROM t_model
+		WHERE deleted_at IS NULL AND model_name IN (`+placeholders+`)`, args...)
+	if err != nil {
+		s.logError(ctx, "ops_channel_model_map_check_failed: "+err.Error())
+		return apierr.New(apierr.CodeInternalError)
+	}
+	defer rows.Close()
+	known := make(map[string]struct{}, len(keys))
+	for rows.Next() {
+		var name string
+		if scanErr := rows.Scan(&name); scanErr == nil {
+			known[name] = struct{}{}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		s.logError(ctx, "ops_channel_model_map_iterate_failed: "+err.Error())
+		return apierr.New(apierr.CodeInternalError)
+	}
+
+	var unknown []string
+	for _, k := range keys {
+		if _, ok := known[k]; !ok {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) > 0 {
+		return apierr.Newf(apierr.CodeInvalidRequestBody,
+			"模型名映射的左侧必须是已登记的平台模型名，这些不存在："+strings.Join(unknown, "、")+
+				"（别名请改用其规范模型名；新模型先到「模型管理」登记）")
 	}
 	return nil
 }

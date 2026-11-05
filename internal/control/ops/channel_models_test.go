@@ -98,6 +98,9 @@ func TestChannelUpstreamModelsReadsVendorCatalogue(t *testing.T) {
 	svc := newTestService(t)
 	uid := newTestUser(t, "OPS")
 	name := "t15-models-" + uniqueSuffix()
+	// 映射 key 必须是已登记的平台模型，否则保存就被拦下（见 validateModelNameMap）。
+	platformModel := "t15-models-platform-" + uniqueSuffix()
+	seedPlatformModel(t, platformModel)
 	ch := createTestChannel(t, svc, uid, map[string]any{
 		"name":         name,
 		"protocol_id":  protocolID(t, "OPENAI_COMPAT"),
@@ -105,7 +108,7 @@ func TestChannelUpstreamModelsReadsVendorCatalogue(t *testing.T) {
 		"base_url":     upstream.URL,
 		"upstream_key": "sk-test-abcdefgh1234",
 		// The channel already points deepseek-flash at a platform model.
-		"upstream_model_name_map": map[string]string{"local-deepseek-chat": "deepseek-flash"},
+		"upstream_model_name_map": map[string]string{platformModel: "deepseek-flash"},
 	})
 
 	rec := call(t, svc.ChannelUpstreamModels, http.MethodGet,
@@ -131,8 +134,8 @@ func TestChannelUpstreamModelsReadsVendorCatalogue(t *testing.T) {
 	if flash.ID != "deepseek-flash" || flash.Name != "DeepSeek-V4.1-Flash" || flash.ContextWindow != 1048576 {
 		t.Fatalf("first item = %+v", flash)
 	}
-	if flash.PlatformModel != "local-deepseek-chat" {
-		t.Fatalf("platform_model = %q, want local-deepseek-chat", flash.PlatformModel)
+	if flash.PlatformModel != platformModel {
+		t.Fatalf("platform_model = %q, want %s", flash.PlatformModel, platformModel)
 	}
 	if flash.Registered {
 		t.Fatalf("deepseek-flash is not a platform model name yet, registered must be false")

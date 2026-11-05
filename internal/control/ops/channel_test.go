@@ -327,8 +327,12 @@ func TestChannelBaseURLScheme(t *testing.T) {
 func TestChannelUpstreamModelNameMapRoundTrip(t *testing.T) {
 	svc := newTestService(t)
 	uid := newTestUser(t, "OPS")
+	// 映射的 key 必须是已登记的平台模型：写错或未登记的名字现在是 400（需求方
+	// 2026-11-05 裁定），所以先造一条真实模型行。
+	modelName := "t15-namemap-model-" + uniqueSuffix()
+	seedPlatformModel(t, modelName)
 	body := channelBody(t, "t15-namemap-"+uniqueSuffix(), "DOMESTIC")
-	body["upstream_model_name_map"] = map[string]string{"qwen-max": "qwen-max-2025"}
+	body["upstream_model_name_map"] = map[string]string{modelName: "qwen-max-2025"}
 	ch := createTestChannel(t, svc, uid, body)
 
 	rec := call(t, svc.GetChannel, http.MethodGet, "/api/admin/channels/1", nil,
@@ -338,7 +342,7 @@ func TestChannelUpstreamModelNameMapRoundTrip(t *testing.T) {
 	}
 	var resp channelDetailResponse
 	decodeBody(t, rec, &resp)
-	if got := resp.Channel.UpstreamModelNames["qwen-max"]; got != "qwen-max-2025" {
+	if got := resp.Channel.UpstreamModelNames[modelName]; got != "qwen-max-2025" {
 		t.Fatalf("map=%v, want the submitted entry", resp.Channel.UpstreamModelNames)
 	}
 }
