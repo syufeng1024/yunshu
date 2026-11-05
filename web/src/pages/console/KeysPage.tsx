@@ -189,7 +189,8 @@ export default function KeysPage() {
     },
     {
       key: 'usage',
-      header: '今日用量',
+      // 列名说「用量」、值是积分，名实不符；统一成和详情页一致的「消耗」。
+      header: '今日消耗',
       align: 'right',
       render: (row) => (
         <span className="tabular-nums">{formatCreditAmount(row.today_consumed_micro)} 积分</span>
@@ -251,7 +252,7 @@ export default function KeysPage() {
     <div className="space-y-5">
       <PageHeader
         title="密钥管理"
-        description="每个密钥共享账户额度；分组只读，变更需联系运营。"
+        description="同一账户下的多把密钥共享账户额度；用名称区分它们各自用在哪儿。"
         actions={
           showHeaderCreate ? (
             <Button onClick={openCreate} disabled={atLimit}>

@@ -817,6 +817,26 @@ export function useRotateKey() {
   })
 }
 
+/** 复制密钥的结果：available=false 时不能复制，reason 说明为什么。 */
+export interface RevealKeyResponse {
+  available: boolean
+  key?: string
+  /** not_stored = 加密存储上线前创建；kek_unavailable = 部署缺 KEK；decrypt_failed = 密文损坏 */
+  reason?: 'not_stored' | 'kek_unavailable' | 'decrypt_failed'
+}
+
+/**
+ * 取回密钥明文用于复制。
+ *
+ * 用 POST 而不是 GET：CSRF 保护只覆盖写方法，而 GET 返回凭据可能被预取或
+ * 被粘进链接。后端每次成功调用都会写一条 VIEW_SECRET 审计。
+ */
+export function revealKey(id: number | string): Promise<RevealKeyResponse> {
+  return api.post<RevealKeyResponse>(
+    `/api/console/keys/${encodeURIComponent(String(id))}/reveal`,
+  )
+}
+
 export function useDeleteKey() {
   const client = useQueryClient()
   return useMutation({

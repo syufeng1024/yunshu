@@ -24,6 +24,8 @@ const AUDIT_ACTION_LABEL: Record<string, string> = {
   DISABLE: '停用',
   ROTATE: '轮换',
   DELETE: '删除',
+  // 复制密钥时后端写一条 VIEW_SECRET：把凭据交出去，本人应当能在日志里查到。
+  VIEW_SECRET: '查看密钥',
 }
 
 export function auditActionLabel(action: string): string {

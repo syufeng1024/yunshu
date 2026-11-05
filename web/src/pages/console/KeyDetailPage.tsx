@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { errorHint, errorMessage } from '@/api/client'
 import {
   fetchKeyDetail,
+  revealKey,
   useConsoleModels,
   useKeyAudit,
   useKeyDetail,
@@ -35,6 +36,7 @@ import {
   auditFieldValueLabel,
   groupLabel,
 } from '@/lib/consoleLabels'
+import { writeClipboard } from '@/lib/clipboard'
 import { ROUTES, consoleKeyDetailPath } from '@/lib/constants'
 import {
   creditsFromMicro,
@@ -199,6 +201,42 @@ export default function KeyDetailPage() {
 
   const updateKey = useUpdateKey()
   const rotateKey = useRotateKey()
+  const [copyingKey, setCopyingKey] = useState(false)
+
+  /**
+   * 复制完整密钥。
+   *
+   * 明文只在这次请求里出现，直接写进剪贴板，不在页面上渲染任何一位——所以
+   * 复制之后屏幕上仍是有掩码。后端每次成功都会记一条「查看密钥」审计。
+   *
+   * 「拿不到」有三种原因，都要说清下一步该干什么，而不是甩一句失败：
+   * 加密存储上线前创建的密钥没有留明文；部署缺 KEK 解不开；密文损坏。
+   * 三者的出路都是轮换，所以提示里统一指向那个按钮。
+   */
+  const copyKey = async () => {
+    if (!data) return
+    setCopyingKey(true)
+    try {
+      const result = await revealKey(data.id)
+      if (!result.available || !result.key) {
+        const reason = result.reason ?? 'not_stored'
+        const explanation =
+          reason === 'kek_unavailable'
+            ? '当前部署缺少密钥加密配置，读不出明文。请联系技术同事处理。'
+            : reason === 'decrypt_failed'
+              ? '这把密钥的密文无法解开（可能更换过加密密钥）。可以轮换生成一把新的。'
+              : '这把密钥创建于加密存储上线之前，当时只保存了不可逆的校验值，明文没有留存。可以轮换生成一把新的。'
+        toast.error('无法复制这把密钥', explanation)
+        return
+      }
+      await writeClipboard(result.key)
+      toast.success('已复制密钥', '完整密钥已放进剪贴板；本次查看已记入操作日志。')
+    } catch (err) {
+      toast.error('复制失败', errorMessage(err))
+    } finally {
+      setCopyingKey(false)
+    }
+  }
   const modelsQuery = useConsoleModels(editing)
 
   useEffect(() => {
@@ -346,6 +384,13 @@ export default function KeyDetailPage() {
         description="这是一把调用密钥，名称由创建者填写，用于区分同一账户下的多把密钥。"
         actions={
           <>
+            <Button
+              onClick={() => void copyKey()}
+              loading={copyingKey}
+              title="把完整密钥复制到剪贴板（本次查看会记入操作日志）"
+            >
+              复制密钥
+            </Button>
             <Button
               variant="secondary"
               onClick={() => setRotateOpen(true)}

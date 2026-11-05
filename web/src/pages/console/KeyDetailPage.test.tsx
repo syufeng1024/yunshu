@@ -2,6 +2,7 @@ import { cleanup, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, api } from '@/api/client'
+import { writeClipboard } from '@/lib/clipboard'
 import type { KeyAuditResponse, KeyDetail } from '@/api/console'
 import { renderWithProviders } from '@/test/renderConsole'
 import KeyDetailPage from './KeyDetailPage'
@@ -14,8 +15,12 @@ vi.mock('@/api/client', async (importOriginal) => {
   }
 })
 
+vi.mock('@/lib/clipboard', () => ({ writeClipboard: vi.fn().mockResolvedValue(undefined) }))
+
 const mockedGet = vi.mocked(api.get)
+const mockedClipboard = vi.mocked(writeClipboard)
 const mockedPatch = vi.mocked(api.patch)
+const mockedPost = vi.mocked(api.post)
 
 const detail: KeyDetail = {
   id: 7,
@@ -111,6 +116,11 @@ function renderDetail() {
 beforeEach(() => {
   mockedGet.mockReset()
   mockedPatch.mockReset()
+  mockedPost.mockReset()
+  // 剪贴板 mock 是模块级的，跨用例会累积调用记录。
+  mockedClipboard.mockClear()
+  // 剪贴板 mock 是模块级的，跨用例会累积调用记录。
+  mockedClipboard.mockClear()
 })
 
 afterEach(cleanup)
@@ -188,4 +198,47 @@ describe('KeyDetailPage', () => {
       })
     })
   })
+
+  // 复制密钥走 POST /reveal：后端把明文放在响应里，前端只写剪贴板，不在页面渲染。
+  // 这里盯两件事——按钮真的调了接口、拿到的明文没有被塞进 DOM（页面上仍只有掩码）。
+  it('F7-3: 复制密钥调用 reveal 接口，且明文不出现在页面上', async () => {
+    installMock()
+    mockedPost.mockResolvedValue({ available: true, key: 'sk-abc123FULLSECRETwxyz' })
+
+    const user = userEvent.setup()
+    renderDetail()
+    await screen.findByText('prod-key')
+
+    await user.click(screen.getByRole('button', { name: '复制密钥' }))
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith('/api/console/keys/7/reveal')
+    })
+    await waitFor(() => {
+      expect(mockedClipboard).toHaveBeenCalledWith('sk-abc123FULLSECRETwxyz')
+    })
+    // 明文只进剪贴板：页面上不该出现它。
+    expect(screen.queryByText('sk-abc123FULLSECRETwxyz')).not.toBeInTheDocument()
+    expect(screen.getByText('sk-abc123****wxyz')).toBeInTheDocument()
+  })
+
+  it('F7-4: 拿不到明文时说明原因，而不是静默失败', async () => {
+    installMock()
+    mockedPost.mockResolvedValue({ available: false, reason: 'not_stored' })
+
+    const user = userEvent.setup()
+    renderDetail()
+    await screen.findByText('prod-key')
+
+    await user.click(screen.getByRole('button', { name: '复制密钥' }))
+
+    // 拿不到明文时绝不能往剪贴板写空字符串或掩码——那会让用户以为复制成功了。
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalled()
+    })
+    expect(mockedClipboard).not.toHaveBeenCalled()
+  })
+
+  // 复制密钥走 POST /reveal：后端把明文放在响应里，前端只写剪贴板，不在页面渲染。
+  // 这里盯两件事——按钮真的调了接口、拿到的明文没有被塞进 DOM（页面上仍只有掩码）。
 })
