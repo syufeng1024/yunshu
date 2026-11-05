@@ -28,7 +28,12 @@ import {
   useToast,
 } from '@/components'
 import type { TableColumn } from '@/components'
-import { AuditTrail, SourceRegionGuard, isSourceRegionBlocked } from '@/components/admin'
+import {
+  AuditTrail,
+  ModelMapPicker,
+  SourceRegionGuard,
+  isSourceRegionBlocked,
+} from '@/components/admin'
 import { ConfirmDialog } from '@/components/console'
 import { protocolLabel } from '@/lib/consoleLabels'
 import { formatBasisPoints, formatDateTime } from '@/lib/format'
@@ -133,6 +138,36 @@ function parseUserIDs(raw: string): number[] | null {
     out.push(id)
   }
   return out
+}
+
+/**
+ * 把「平台模型=上游模型」写进映射文本：同名覆盖、保持其余行与原顺序。
+ *
+ * 选择器（ModelMapPicker）给的是两个确定的字符串，所以这里不需要像 parseModelMap
+ * 那样做严格校验；它只负责把一行落进文本，剩下的交给保存前的统一校验。
+ */
+export function upsertModelMapLine(raw: string, platformModel: string, upstreamModel: string): string {
+  const lines = raw
+    .split(/\r?\n/)
+    .map((line) => line.replace(/＝/g, '=').trim())
+    .filter((line) => line !== '')
+  const out: string[] = []
+  let replaced = false
+  for (const line of lines) {
+    const index = line.indexOf('=')
+    const key = index > 0 ? line.slice(0, index).trim() : line
+    if (key === platformModel) {
+      if (!replaced) {
+        out.push(`${platformModel}=${upstreamModel}`)
+        replaced = true
+      }
+      continue
+    }
+    // 顺手把「键 = 值」这种带空格的写法归一，避免写回后同一份映射有两种排版。
+    out.push(index > 0 ? `${key}=${line.slice(index + 1).trim()}` : line)
+  }
+  if (!replaced) out.push(`${platformModel}=${upstreamModel}`)
+  return out.join('\n')
 }
 
 function parseModelMap(raw: string): Record<string, string> | null {
@@ -364,6 +399,8 @@ export default function ChannelsPage() {
   const [form, setForm] = useState<ChannelFormState>(EMPTY_FORM)
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [upstreamKeyTouched, setUpstreamKeyTouched] = useState(false)
+  // 上游模型选择器：只在编辑已有渠道时可用（需要渠道 id 才能用它自己的密钥去查）。
+  const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
 
   const [disableTarget, setDisableTarget] = useState<Channel | null>(null)
@@ -396,6 +433,17 @@ export default function ChannelsPage() {
   const closeDrawer = () => {
     if (createChannel.isPending || updateChannel.isPending) return
     resetDrawerState()
+  }
+
+  // 选择器选完只改表单，不直接落库：运营仍然要过一遍保存，写入才会进审计。
+  const applyModelMap = (platformModel: string, upstreamModel: string) => {
+    updateField('modelMapText', upsertModelMapLine(form.modelMapText, platformModel, upstreamModel))
+    setErrors((previous) => {
+      if (previous.modelMapText === undefined) return previous
+      const next = { ...previous }
+      delete next.modelMapText
+      return next
+    })
   }
 
   const openCreate = () => {
@@ -922,9 +970,29 @@ export default function ChannelsPage() {
             />
 
             <div className="space-y-1.5">
-              <label className="block text-sm font-medium text-ink" htmlFor="channel-model-map">
-                模型名映射
-              </label>
+              <div className="flex items-center justify-between gap-2">
+                <label
+                  className="block text-sm font-medium text-ink"
+                  htmlFor="channel-model-map"
+                >
+                  模型名映射
+                </label>
+                {/* 上游模型名不要手打：厂商改目录时手打的名字不会报错，只会在调用时 502。 */}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  disabled={editTarget === null}
+                  title={
+                    editTarget === null
+                      ? '先保存渠道，才能用它自己的密钥向上游查询'
+                      : undefined
+                  }
+                  onClick={() => setModelPickerOpen(true)}
+                >
+                  从上游获取模型名
+                </Button>
+              </div>
               <textarea
                 id="channel-model-map"
                 className="min-h-24 w-full rounded-lg border border-border-strong bg-surface px-3 py-2 font-mono text-xs text-ink placeholder:text-ink-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
@@ -943,6 +1011,13 @@ export default function ChannelsPage() {
           </div>
         )}
       </Drawer>
+
+      <ModelMapPicker
+        open={modelPickerOpen}
+        channelId={editTarget === null ? null : editTarget.id}
+        onClose={() => setModelPickerOpen(false)}
+        onApply={applyModelMap}
+      />
 
       <ConfirmDialog
         open={disableTarget !== null}

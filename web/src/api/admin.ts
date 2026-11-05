@@ -268,6 +268,49 @@ export function useChannel(id: number | string | null | undefined) {
   })
 }
 
+/**
+ * 上游模型清单（只读）：控制面用渠道自己的密钥去读厂商的 /v1/models。
+ *
+ * 存在的理由是「模型名别手填」：厂商会下架模型（DeepSeek 现在只有
+ * deepseek-flash / deepseek-v4-pro），手填的名字不会报错，只会在调用时变成 502。
+ */
+export interface UpstreamModelItem {
+  id: string
+  name?: string
+  context_window?: number
+  max_output_tokens?: number
+  /** 平台已登记同名模型（t_model.model_name == id）。 */
+  registered: boolean
+  /** 已通过映射指向这个上游模型的平台模型名。 */
+  platform_model?: string
+}
+
+export interface UpstreamModelsResponse {
+  items: UpstreamModelItem[]
+}
+
+export function fetchChannelUpstreamModels(
+  id: number | string,
+): Promise<UpstreamModelsResponse> {
+  return api.get<UpstreamModelsResponse>(
+    `/api/admin/channels/${encodeURIComponent(String(id))}/upstream-models`,
+  )
+}
+
+export function useChannelUpstreamModels(
+  id: number | string | null | undefined,
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: ['admin', 'channels', 'upstream-models', String(id)],
+    queryFn: () => fetchChannelUpstreamModels(id as number | string),
+    enabled: enabled && id !== null && id !== undefined,
+    staleTime: 60_000,
+    // 401/502 是「这把密钥或这个地址有问题」的结论，重试只会拖长等待。
+    retry: false,
+  })
+}
+
 function invalidateChannels(client: ReturnType<typeof useQueryClient>) {
   void client.invalidateQueries({ queryKey: ['admin', 'channels'] })
 }

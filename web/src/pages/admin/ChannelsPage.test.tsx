@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api } from '@/api/client'
 import type { Channel, ChannelListResponse } from '@/api/admin'
 import { renderWithProviders } from '@/test/renderConsole'
-import ChannelsPage from './ChannelsPage'
+import ChannelsPage, { upsertModelMapLine } from './ChannelsPage'
 
 vi.mock('@/api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/client')>()
@@ -105,5 +105,25 @@ describe('ChannelsPage', () => {
     expect(body).not.toHaveProperty('upstream_key')
     expect(body).not.toHaveProperty('enabled')
     expect(body.weight).toBe(100)
+  })
+})
+
+// 「从上游获取模型名」写回表单的规则。选择器给的是两个确定的字符串，唯一要保证的
+// 是：同名覆盖而不是追加出两条互相矛盾的映射，其余行原样保留。
+describe('模型名映射写入规则', () => {
+  it('同名覆盖，其余行顺序不变', () => {
+    expect(upsertModelMapLine('a=up-a\nb=up-b', 'a', 'up-a2')).toBe('a=up-a2\nb=up-b')
+  })
+
+  it('新模型追加到末尾', () => {
+    expect(upsertModelMapLine('a=up-a', 'c', 'up-c')).toBe('a=up-a\nc=up-c')
+  })
+
+  it('全角等号与空行都被归一，不会留下空映射', () => {
+    expect(upsertModelMapLine('  a ＝ up-a  \n\n', 'b', 'up-b')).toBe('a=up-a\nb=up-b')
+  })
+
+  it('同一个键只保留一条', () => {
+    expect(upsertModelMapLine('a=1\na=2', 'a', '3')).toBe('a=3')
   })
 })
