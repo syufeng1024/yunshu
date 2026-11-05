@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, api } from '@/api/client'
 import type { ConfigItem, ConfigListResponse } from '@/api/admin'
 import { CONFIG_FIELD_META } from '@/lib/configKeys'
+import { CONFIG_NAV, CONFIG_NAV_ITEMS } from '@/lib/configNav'
 import { renderWithProviders } from '@/test/renderConsole'
 import AdminSystemPage from './SystemPage'
 
@@ -144,9 +145,6 @@ const FULL: readonly FixtureRow[] = [
   { key: 'quota.overdraft_warn_days', namespace: 'UNASSIGNED', value: 7 },
 ]
 
-const GROUP_TITLES = ['计费与配额', '限流与额度', '网关与超时', '功能开关', '系统行为'] as const
-const NAMESPACES = ['PRICING', 'RATELIMIT', 'UPSTREAM', 'FEATURE', 'UNASSIGNED'] as const
-
 /** 服务端「当前值」：PUT 之后会被覆盖，用来模拟真实的重新拉取。 */
 let storedOverrides: Record<string, unknown> = {}
 
@@ -175,33 +173,33 @@ afterEach(() => {
   cleanup()
 })
 
-/** 默认用小 fixture；需要全量结构的用例显式传 `FULL`。 */
+/**
+ * 渲染并等首屏就绪。「保存更改」和菜单是同一批渲染出来的，等它比等文案稳。
+ */
 async function renderPage(rows: readonly FixtureRow[] = SMALL) {
   mockedGet.mockImplementation(() => Promise.resolve(buildList(rows)))
   const view = renderWithProviders(<AdminSystemPage />)
-  const firstGroup = rows[0]?.namespace
-  const title = GROUP_TITLES[NAMESPACES.indexOf(firstGroup as (typeof NAMESPACES)[number])]
-  await screen.findByRole('heading', { level: 2, name: title ?? GROUP_TITLES[0] })
+  // 等设置项标题出现：它只在 drafts 就绪后渲染，比等页头的按钮可靠。
+  await screen.findByRole('heading', { level: 2 })
   return view
 }
 
-function sectionOf(index: number): HTMLElement {
-  const headings = screen.getAllByRole('heading', { level: 2 })
-  const heading = headings[index]
-  const section = heading?.closest('section')
-  if (section === null || section === undefined) {
-    throw new Error(`第 ${index + 1} 个分组标题不在 <section> 里，页面结构变了`)
-  }
-  return section
+/**
+ * 切到某个设置项。菜单项的可访问名就是标题本身（`aria-label`），所以这里按标题点。
+ * 想改别的项下的键，都得先走这一步——页面一次只渲染当前项。
+ */
+async function openItem(title: string) {
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('button', { name: title }))
+  return user
 }
 
-/** 分组内渲染出来的键名（键名用 <code> 呈现，便于与说明文字区分）。 */
-function keysIn(section: HTMLElement): string[] {
+/** 当前设置项里渲染出来的键名（键名用 <code> 呈现，便于与说明文字区分）。 */
+function keysOfActiveItem(): string[] {
+  const heading = screen.getByRole('heading', { level: 2 })
+  const section = heading.closest('section')
+  if (section === null) throw new Error('设置项标题不在 <section> 里，页面结构变了')
   return Array.from(section.querySelectorAll('code')).map((node) => node.textContent ?? '')
-}
-
-function expectedKeys(namespace: string): string[] {
-  return FULL.filter((row) => row.namespace === namespace).map((row) => row.key)
 }
 
 const saveButton = () => screen.getByRole('button', { name: '保存更改' })
@@ -210,45 +208,63 @@ const saveButton = () => screen.getByRole('button', { name: '保存更改' })
 // 全量结构（唯一使用 FULL 的三条 + 一条纯数据用例）
 // ---------------------------------------------------------------------------
 
-describe('系统管理页：分组结构（全量 45 键）', () => {
-  it('5 个分组标题按序渲染，45 键逐组归属，页内导航可切换当前项', async () => {
-    const user = userEvent.setup()
+describe('系统管理页：菜单结构（全量 45 键）', () => {
+  it('5 个分组、11 个设置项按 CONFIG_NAV 渲染，默认落在有数据的项上', async () => {
     await renderPage(FULL)
+    const nav = screen.getByRole('navigation', { name: '设置菜单' })
 
-    const headings = screen.getAllByRole('heading', { level: 2 })
-    expect(headings.map((heading) => heading.textContent)).toEqual([...GROUP_TITLES])
+    // 分组按钮按注册表顺序出现，且默认全部展开。
+    const groupToggles = within(nav).getAllByRole('button', { expanded: true })
+    expect(groupToggles.map((node) => node.textContent)).toEqual(
+      CONFIG_NAV.map((group) => group.title),
+    )
 
-    const perSection = GROUP_TITLES.map((_, index) => keysIn(sectionOf(index)))
-    expect(perSection.map((keys) => keys.length)).toEqual([21, 6, 9, 8, 1])
-    expect(perSection.flat()).toHaveLength(45)
+    for (const group of CONFIG_NAV) {
+      for (const item of group.items) {
+        expect(within(nav).getByRole('button', { name: item.title })).toBeInTheDocument()
+      }
+    }
 
-    NAMESPACES.forEach((namespace, index) => {
-      // 顺序敏感：页面按服务端返回顺序渲染组内键，fixture 也按同一份文档顺序写。
-      expect(perSection[index]).toEqual(expectedKeys(namespace))
-    })
+    // 默认选第一个「接口里有数据」的设置项，不是空页也不是空表单。
+    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('系统信息')
+    expect(keysOfActiveItem()).toEqual(['site.recommend_limit'])
+  })
 
-    // 反向证明：45 个键一个不少、一个不多。
-    expect(perSection.flat().sort()).toEqual(FULL.map((row) => row.key).sort())
+  it('点一项只渲染该项的键；11 项走完，45 个键一个不少一个不多', async () => {
+    await renderPage(FULL)
+    const user = userEvent.setup()
+    const seen: string[] = []
 
-    // 页内锚点导航：5 个分组按钮、条数与分组一致、当前项带 aria-current，点击可切换。
-    // （与上面的结构断言共用同一次 FULL 渲染，避免为同一份数据再渲 45 个字段。）
-    const nav = screen.getByRole('navigation', { name: '配置分组' })
-    const navItems = within(nav).getAllByRole('button')
-    expect(navItems.map((item) => item.textContent)).toEqual([
-      '计费与配额21',
-      '限流与额度6',
-      '网关与超时9',
-      '功能开关8',
-      '系统行为1',
-    ])
-    expect(navItems[0]).toHaveAttribute('aria-current', 'true')
+    for (const item of CONFIG_NAV_ITEMS) {
+      await user.click(screen.getByRole('button', { name: item.title }))
+      expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent(item.title)
 
-    await user.click(navItems[2])
+      // 菜单里已不存在空项（2026-11-05 裁定），每一项都必须渲染出自己的键。
+      const keys = keysOfActiveItem()
+      expect(keys).toEqual([...item.keys])
+      seen.push(...keys)
+    }
 
-    expect(navItems[2]).toHaveAttribute('aria-current', 'true')
-    expect(navItems[0]).not.toHaveAttribute('aria-current')
-    // 窄屏下拉与导航共用同一份选中态。
-    expect(screen.getByLabelText('跳到分组')).toHaveValue('upstream')
+    expect(seen.sort()).toEqual(FULL.map((row) => row.key).sort())
+  })
+
+  it('分组可折叠：收起后组内条目从菜单消失，再点展开回来', async () => {
+    await renderPage(FULL)
+    const user = userEvent.setup()
+    const nav = screen.getByRole('navigation', { name: '设置菜单' })
+
+    await user.click(within(nav).getByRole('button', { name: '计费与支付' }))
+    expect(within(nav).queryByRole('button', { name: '额度设置' })).not.toBeInTheDocument()
+
+    await user.click(within(nav).getByRole('button', { name: '计费与支付' }))
+    expect(within(nav).getByRole('button', { name: '额度设置' })).toBeInTheDocument()
+  })
+
+  it('窄屏下拉与菜单共用同一个选中态', async () => {
+    await renderPage(FULL)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: '速率限制' }))
+    expect(screen.getByLabelText('跳到设置')).toHaveValue('rate-limit')
   })
 
   it('45 个键全部有中文标签与说明，没有漏登记的键', () => {
@@ -270,41 +286,48 @@ describe('系统管理页：分组结构（全量 45 键）', () => {
 
   it('12 个可写键全部可编辑、33 个锁定键全部只读，且只读键带「需重启生效」标记', async () => {
     await renderPage(FULL)
+    const user = userEvent.setup()
 
     const writable = FULL.filter((row) => row.writable === true).length
     const locked = FULL.length - writable
 
-    // 页面上所有「填值」类控件（输入框 / 数字框 / 多行文本 / 开关）。窄屏分组下拉
-    // 是 combobox，不在这三类里，不会被误算。
-    const controls = [
-      ...screen.getAllByRole('textbox'),
-      ...screen.getAllByRole('spinbutton'),
-      ...screen.getAllByRole('switch'),
-    ]
     const isEditable = (control: HTMLElement): boolean => {
       const element = control as HTMLInputElement | HTMLTextAreaElement | HTMLButtonElement
       const readOnly = 'readOnly' in element ? element.readOnly : false
       return readOnly !== true && element.disabled !== true
     }
 
-    expect(controls).toHaveLength(FULL.length)
-    expect(controls.filter(isEditable)).toHaveLength(writable)
-    expect(controls.filter((control) => !isEditable(control))).toHaveLength(locked)
+    // 一次只渲染一个设置项，所以逐项切过去累计。顺带钉住「每项的控件数 == 该项键数」，
+    // 少渲染一个键就会在这里暴露。
+    let editable = 0
+    let readonly = 0
+    let lockedBadges = 0
+    let defaultBadges = 0
 
-    // 顺带钉住基线：文档口径是 12 可写 / 33 只读，改 fixture 时别把这条衬托掉。
+    for (const item of CONFIG_NAV_ITEMS) {
+      await user.click(screen.getByRole('button', { name: item.title }))
+      if (item.keys.length === 0) continue
+
+      const controls = [
+        ...screen.queryAllByRole('textbox'),
+        ...screen.queryAllByRole('spinbutton'),
+        ...screen.queryAllByRole('switch'),
+      ]
+      expect(controls).toHaveLength(item.keys.length)
+      for (const control of controls) {
+        if (isEditable(control)) editable += 1
+        else readonly += 1
+      }
+      lockedBadges += screen.queryAllByText('需重启生效').length
+      defaultBadges += screen.queryAllByText('默认值').length
+    }
+
+    expect(editable).toBe(writable)
+    expect(readonly).toBe(locked)
+    // 文档口径是 12 可写 / 33 只读，改 fixture 时别把这条衬托掉。
     expect([writable, locked]).toEqual([12, 33])
-
-    // 每个锁定键都有 Badge，可写键没有；DEFAULT 只有一个。
-    expect(screen.getAllByText('需重启生效')).toHaveLength(33)
-    expect(screen.getAllByText('默认值')).toHaveLength(1)
-
-    // 计费与配额 21 键里只有 billing.deduct_policy 与 billing.prehold_max_ratio 在运行时
-    // 白名单内，其余 19 个只读。
-    expect(
-      within(sectionOf(0)).getByText(
-        '本组 19 个键为只读：需改配置文件并重启进程，无法在线发布。',
-      ),
-    ).toBeInTheDocument()
+    expect(lockedBadges).toBe(33)
+    expect(defaultBadges).toBe(1)
   })
 })
 
@@ -315,6 +338,7 @@ describe('系统管理页：分组结构（全量 45 键）', () => {
 describe('系统管理页：控件按值类型自适应', () => {
   it('string 渲染成单行输入框，值与服务端一致', async () => {
     await renderPage()
+    await openItem('速率限制')
 
     // 可写键：可编辑。
     const input = screen.getByLabelText('日额度重置时区')
@@ -324,6 +348,7 @@ describe('系统管理页：控件按值类型自适应', () => {
     expect(input).toHaveProperty('readOnly', false)
 
     // 锁定键：同一种控件，但只读（值仍可见、可复制）。
+    await openItem('额度设置')
     const locked = screen.getByLabelText('退款策略')
     expect(locked).toHaveAttribute('type', 'text')
     expect(locked).toHaveValue('by_order')
@@ -337,6 +362,7 @@ describe('系统管理页：控件按值类型自适应', () => {
     expect(ratio).toHaveAttribute('type', 'number')
     expect(ratio).toHaveValue(1.2)
 
+    await openItem('性能')
     const inflight = screen.getByLabelText('单实例并发上限')
     expect(inflight).toHaveAttribute('type', 'number')
     expect(inflight).toHaveValue(8000)
@@ -344,6 +370,7 @@ describe('系统管理页：控件按值类型自适应', () => {
 
   it('boolean 渲染成开关，aria-checked 反映当前值；只读时 disabled + aria-readonly', async () => {
     await renderPage()
+    await openItem('模型定价')
 
     const toggle = screen.getByRole('switch', { name: '缓存计价开关' })
     expect(toggle).toHaveAttribute('aria-checked', 'false')
@@ -412,6 +439,7 @@ describe('系统管理页：保存语义', () => {
       })
     })
     await renderPage()
+    await openItem('性能')
 
     // 用 change 一次性置值（不逐键 type）：本用例断言的是"值进了 draft 并进了 payload"，
     // 不是逐键输入的健壮性，省掉每键一个 act tick 的开销。
@@ -444,6 +472,7 @@ describe('系统管理页：保存语义', () => {
       changed_keys: ['gw.max_inflight'],
     })
     await renderPage()
+    await openItem('性能')
 
     fireEvent.change(screen.getByLabelText('单实例并发上限'), { target: { value: '12.5' } })
     await user.click(saveButton())
@@ -467,6 +496,7 @@ describe('系统管理页：保存语义', () => {
       }),
     )
     await renderPage()
+    await openItem('性能')
 
     fireEvent.change(screen.getByLabelText('单实例并发上限'), { target: { value: '999999' } })
     await user.click(saveButton())
@@ -502,8 +532,10 @@ describe('系统管理页：保存语义', () => {
     })
     await renderPage()
 
-    // 试着改一个只读键（无效），再正常改一个可写键。
+    // 试着改一个只读键（无效），再换到另一项正常改一个可写键——
+    // 顺带验证「切走设置项不会丢掉上一项的草稿」。
     await user.type(screen.getByLabelText('预扣比例'), '1.5')
+    await openItem('性能')
     fireEvent.change(screen.getByLabelText('单实例并发上限'), { target: { value: '9000' } })
 
     expect(saveButton()).toBeEnabled()
@@ -521,12 +553,15 @@ describe('系统管理页：保存语义', () => {
     await waitFor(() => {
       expect(screen.getByLabelText('单实例并发上限')).toHaveValue(8000)
     })
+    // 回到只读键所在的那一项：它本来就改不动，保存后仍是服务端值。
+    await openItem('额度设置')
     expect(screen.getByLabelText('预扣比例')).toHaveValue(1.2)
   })
 
   it('重置丢弃未保存改动，回到上次加载值', async () => {
     const user = userEvent.setup()
     await renderPage()
+    await openItem('性能')
 
     const input = screen.getByLabelText('单实例并发上限')
     fireEvent.change(input, { target: { value: '9000' } })
@@ -597,14 +632,14 @@ describe('系统管理页：可写 object 键的 JSON 校验（合成 fixture）
     // 少一个右括号：JSON.parse 在真实浏览器里同样会抛。
     fireEvent.change(editor, { target: { value: '{"zh":1' } })
 
-    expect(screen.getByText(/JSON 格式不合法/)).toBeInTheDocument()
+    expect(screen.getByText(/格式不正确/)).toBeInTheDocument()
     expect(editor).toHaveAttribute('aria-invalid', 'true')
     expect(screen.getByText(/个字段格式不合法，修正后才能保存/)).toBeInTheDocument()
     expect(saveButton()).toBeDisabled()
 
     // 补成合法 JSON（且值有改动）→ 错误消失、保存可点。
     fireEvent.change(editor, { target: { value: '{"zh": 2, "en": 1, "code": 1, "mixed": 1}' } })
-    expect(screen.queryByText(/JSON 格式不合法/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/格式不正确/)).not.toBeInTheDocument()
     expect(editor).not.toHaveAttribute('aria-invalid')
 
     expect(saveButton()).toBeEnabled()

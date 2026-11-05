@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { errorHint, errorMessage } from '@/api/client'
 import { useAdminConfig, useUpdateAdminConfig } from '@/api/admin'
@@ -7,13 +7,14 @@ import {
   Badge,
   Button,
   ErrorState,
+  Icon,
   PageHeader,
   Select,
   Skeleton,
   useToast,
 } from '@/components'
-import { CONFIG_FALLBACK_GROUP, CONFIG_GROUPS, configFieldMeta } from '@/lib/configKeys'
-import type { ConfigGroupMeta } from '@/lib/configKeys'
+import { configFieldMeta } from '@/lib/configKeys'
+import { CONFIG_NAV, CONFIG_NAV_ITEMS, CONFIG_NAV_ITEM_OF_KEY, firstItemWithKeys } from '@/lib/configNav'
 import { cn } from '@/lib/cn'
 import { usePageTitle } from '@/lib/usePageTitle'
 
@@ -120,7 +121,7 @@ function parseDraft(field: DraftField): ParsedDraft {
       try {
         return { ok: true, value: JSON.parse(field.text) as unknown }
       } catch {
-        return { ok: false, error: 'JSON 格式不合法：请检查引号、逗号与括号是否配对' }
+        return { ok: false, error: '格式不正确：请检查引号、逗号与括号是否配对' }
       }
   }
 }
@@ -156,40 +157,6 @@ function isDirtyField(field: DraftField): boolean {
 // ---------------------------------------------------------------------------
 // 分组
 // ---------------------------------------------------------------------------
-
-interface ConfigGroupSection {
-  meta: ConfigGroupMeta
-  items: ConfigItem[]
-}
-
-/**
- * 按后端 `namespace` 把键归入固定的 5 组（顺序即 `CONFIG_GROUPS` 的顺序）。
- * 空组不渲染；未知命名空间归入兜底组，避免被静默丢弃。
- */
-function groupConfigItems(items: readonly ConfigItem[]): ConfigGroupSection[] {
-  const known = new Set(CONFIG_GROUPS.map((group) => group.namespace))
-  const sections: ConfigGroupSection[] = []
-  for (const meta of CONFIG_GROUPS) {
-    const grouped = items.filter((item) => item.namespace === meta.namespace)
-    if (grouped.length > 0) sections.push({ meta, items: grouped })
-  }
-  const leftovers = items.filter((item) => !known.has(item.namespace))
-  if (leftovers.length > 0) sections.push({ meta: CONFIG_FALLBACK_GROUP, items: leftovers })
-  return sections
-}
-
-function sectionDomId(groupId: string): string {
-  return `config-group-${groupId}`
-}
-
-function scrollToSection(groupId: string): void {
-  if (typeof document === 'undefined') return
-  const element = document.getElementById(sectionDomId(groupId))
-  if (element === null) return
-  if (typeof element.scrollIntoView === 'function') {
-    element.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  }
-}
 
 // ---------------------------------------------------------------------------
 // 单字段
@@ -315,7 +282,17 @@ function ConfigField({ item, field, onDraftChange }: ConfigFieldProps) {
             <span className="text-xs text-primary">未保存</span>
           ) : null}
         </div>
-        <code className="block font-mono text-xs text-ink-muted">{item.key}</code>
+        {/*
+          键名保留给技术同事对照配置文件用，但必须自证身份：只挂一串 billing.xxx
+          在运营眼里就是「日志词」。前缀放在 <code> 外面，键名本身仍是纯文本，
+          复制、对照配置都不受影响。
+        */}
+        <p className="flex flex-wrap items-baseline gap-1 text-xs text-ink-muted">
+          <span>技术标识</span>
+          <code className="font-mono" title="配置项的技术标识，报给技术同事时用这一串">
+            {item.key}
+          </code>
+        </p>
         <p id={hintId} className="text-xs text-ink-secondary">
           {meta.description}
         </p>
@@ -346,7 +323,11 @@ export default function AdminSystemPage() {
   const [drafts, setDrafts] = useState<Record<string, DraftField> | null>(null)
   const [saveError, setSaveError] = useState<{ message: string; hint: string | null } | null>(null)
   const [lastResult, setLastResult] = useState<ConfigUpdateResponse | null>(null)
-  const [activeGroupId, setActiveGroupId] = useState<string>(CONFIG_GROUPS[0]?.id ?? '')
+  // 当前选中的设置项。null 表示「还没点过」，此时用第一个**有数据**的项兜底：
+  // 一进来就落到空页会让人以为页面坏了，落到没有数据的项则是一个空表单。
+  const [activeItemId, setActiveItemId] = useState<string | null>(null)
+  // 折叠状态按组记录。默认全展开（与参考站一致），点组标题才收起。
+  const [collapsedGroupIds, setCollapsedGroupIds] = useState<readonly string[]>([])
 
   // 首屏把接口返回值拍平成编辑态。只在还没有编辑态时执行：后台自动重取
   // （窗口重新聚焦等）不应该把运营正在改的内容冲掉。
@@ -361,7 +342,18 @@ export default function AdminSystemPage() {
     return map
   }, [items])
 
-  const groups = useMemo(() => groupConfigItems(items ?? []), [items])
+  const firstAvailableItem = useMemo(() => {
+    const present = new Set((items ?? []).map((item) => item.key))
+    return (
+      CONFIG_NAV_ITEMS.find((item) => item.keys.some((key) => present.has(key))) ??
+      firstItemWithKeys()
+    )
+  }, [items])
+
+  const activeItem =
+    (activeItemId === null
+      ? undefined
+      : CONFIG_NAV_ITEMS.find((item) => item.id === activeItemId)) ?? firstAvailableItem
 
   const fields = useMemo(
     () => (drafts === null ? [] : Object.values(drafts)),
@@ -372,6 +364,16 @@ export default function AdminSystemPage() {
     () => fields.filter((field) => isDirtyField(field)).map((field) => field.key),
     [fields],
   )
+
+  /** 设置项 id → 该项下未保存的键数。菜单上直接标出来，省得「改了没存」被忘在别的页。 */
+  const dirtyCountByItem = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const key of dirtyKeys) {
+      const itemId = CONFIG_NAV_ITEM_OF_KEY.get(key)
+      if (itemId !== undefined) counts.set(itemId, (counts.get(itemId) ?? 0) + 1)
+    }
+    return counts
+  }, [dirtyKeys])
 
   const invalidKeys = useMemo(
     () => fields.filter((field) => field.error !== null).map((field) => field.key),
@@ -445,61 +447,57 @@ export default function AdminSystemPage() {
     }
   }
 
-  // 高亮项：分组数据变了（首屏加载、后端加组）之后回落到第一组。
-  const activeId = groups.some((section) => section.meta.id === activeGroupId)
-    ? activeGroupId
-    : groups[0]?.meta.id ?? ''
+  // 吸顶页头的实测高度：左侧菜单要钉在它下沿，否则菜单会钻到页头底下。
+  const headerRef = useRef<HTMLDivElement | null>(null)
+  const [headerHeight, setHeaderHeight] = useState(72)
 
-  const jumpTo = (groupId: string) => {
-    setActiveGroupId(groupId)
-    scrollToSection(groupId)
-  }
-
-  // 滚动到哪组就高亮哪组。jsdom 没有 IntersectionObserver，跳过即可（选中态
-  // 仍由点击维护，不影响可用性）。
   useEffect(() => {
-    if (groups.length === 0) return
-    if (typeof IntersectionObserver === 'undefined') return
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const visible = entries
-          .filter((entry) => entry.isIntersecting)
-          .sort((left, right) => left.boundingClientRect.top - right.boundingClientRect.top)
-        const first = visible[0]
-        if (first === undefined) return
-        setActiveGroupId(first.target.id.replace('config-group-', ''))
-      },
-      { rootMargin: '-96px 0px -60% 0px', threshold: 0 },
-    )
-    for (const section of groups) {
-      const element = document.getElementById(sectionDomId(section.meta.id))
-      if (element !== null) observer.observe(element)
+    const element = headerRef.current
+    if (element === null || typeof ResizeObserver === 'undefined') return
+    // 量到 0 就别采信（布局还没算出来的那一帧，jsdom 里也永远是 0）。
+    const measure = () => {
+      const height = element.offsetHeight
+      if (height > 0) setHeaderHeight(height)
     }
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    measure()
     return () => observer.disconnect()
-  }, [groups])
+  }, [])
+
+  const toggleGroup = (groupId: string) => {
+    setCollapsedGroupIds((current) =>
+      current.includes(groupId)
+        ? current.filter((id) => id !== groupId)
+        : [...current, groupId],
+    )
+  }
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="系统管理"
-        description="按命名空间分组的配置键在线维护入口。改动以整体版本发布，网关与控制面在发布后热加载。"
-        // 操作区随页面滚动固定：45 个键排下来很长，改到下一屏时不必回到顶部找保存。
-        className="sticky top-0 z-10 bg-canvas"
-        actions={
-          <>
-            <Button
-              variant="secondary"
-              onClick={handleReset}
-              disabled={dirtyKeys.length === 0 || saving}
-            >
-              重置
-            </Button>
-            <Button onClick={handleSave} disabled={!canSave} loading={saving}>
-              保存更改
-            </Button>
-          </>
-        }
-      />
+      {/*
+        操作区随页面滚动固定：改到页面下半截时不必回到顶部找保存。
+      */}
+      <div ref={headerRef} className="sticky top-0 z-10 bg-canvas">
+        <PageHeader
+          title="系统管理"
+          description="按「站点 / 计费 / 路由 / 安全 / 运维」分组的配置入口。改动按整体版本发布，网关与控制面在发布后热加载。"
+          actions={
+            <>
+              <Button
+                variant="secondary"
+                onClick={handleReset}
+                disabled={dirtyKeys.length === 0 || saving}
+              >
+                重置
+              </Button>
+              <Button onClick={handleSave} disabled={!canSave} loading={saving}>
+                保存更改
+              </Button>
+            </>
+          }
+        />
+      </div>
 
       {configQuery.isError ? (
         <ErrorState
@@ -563,93 +561,127 @@ export default function AdminSystemPage() {
             </p>
           ) : null}
 
-          <div className="flex flex-col gap-6 md:flex-row">
-            <div className="md:w-56 md:shrink-0">
-              <div className="md:hidden">
-                <Select
-                  label="跳到分组"
-                  value={activeId}
-                  onChange={(event) => jumpTo(event.target.value)}
-                  options={groups.map((section) => ({
-                    value: section.meta.id,
-                    label: `${section.meta.title}（${section.items.length}）`,
-                  }))}
-                />
-              </div>
-              <nav aria-label="配置分组" className="hidden md:block md:sticky md:top-2">
-                <ul className="space-y-1">
-                  {groups.map((section) => {
-                    const active = section.meta.id === activeId
-                    return (
-                      <li key={section.meta.id}>
-                        <button
-                          type="button"
-                          onClick={() => jumpTo(section.meta.id)}
-                          aria-current={active ? 'true' : undefined}
-                          className={cn(
-                            'flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
-                            active
-                              ? 'bg-surface-muted font-medium text-ink'
-                              : 'text-ink-secondary hover:bg-surface-muted hover:text-ink',
-                          )}
-                        >
-                          <span>{section.meta.title}</span>
-                          <span className="text-xs text-ink-muted">{section.items.length}</span>
-                        </button>
-                      </li>
-                    )
-                  })}
-                </ul>
-              </nav>
+          <div className="flex flex-col gap-6 md:flex-row md:items-start">
+            {/* 窄屏：树形菜单换成「分组 / 设置项」下拉，避免横向挤爆。 */}
+            <div className="md:hidden">
+              <Select
+                label="跳到设置"
+                value={activeItem.id}
+                onChange={(event) => setActiveItemId(event.target.value)}
+                options={CONFIG_NAV_ITEMS.map((item) => ({
+                  value: item.id,
+                  label: `${item.groupTitle} / ${item.title}`,
+                }))}
+              />
             </div>
 
-            <div className="min-w-0 flex-1 space-y-6">
-              {groups.length === 0 ? (
-                <p className="rounded-xl border border-dashed border-border-strong bg-surface p-6 text-center text-sm text-ink-secondary">
-                  接口没有返回任何配置键。
-                </p>
-              ) : null}
-              {groups.map((section) => {
-                const lockedCount = section.items.filter((item) => !item.runtime_writable).length
-                const headingId = `${sectionDomId(section.meta.id)}-title`
+            <nav
+              aria-label="设置菜单"
+              className="hidden md:sticky md:block md:max-h-[calc(100vh-12rem)] md:w-56 md:shrink-0 md:overflow-y-auto md:pr-1"
+              style={{ top: headerHeight + 8 }}
+            >
+              {CONFIG_NAV.map((group) => {
+                const collapsed = collapsedGroupIds.includes(group.id)
                 return (
-                  <section
-                    key={section.meta.id}
-                    id={sectionDomId(section.meta.id)}
-                    aria-labelledby={headingId}
-                    className="scroll-mt-4 rounded-xl border border-border bg-surface p-5 shadow-card"
-                  >
-                    <div className="flex flex-wrap items-start justify-between gap-2 border-b border-border pb-3">
-                      <div className="space-y-0.5">
-                        <h2 id={headingId} className="text-base font-semibold text-ink">
-                          {section.meta.title}
-                        </h2>
-                        <p className="text-xs text-ink-secondary">{section.meta.description}</p>
-                      </div>
-                      <Badge variant="neutral">{section.items.length} 个键</Badge>
-                    </div>
-                    {lockedCount > 0 ? (
-                      <p className="pt-3 text-xs text-ink-muted">
-                        本组 {lockedCount} 个键为只读：需改配置文件并重启进程，无法在线发布。
-                      </p>
-                    ) : null}
-                    <div className="pt-3">
-                      {section.items.map((item) => {
-                        const field = drafts[item.key]
-                        if (field === undefined) return null
-                        return (
-                          <ConfigField
-                            key={item.key}
-                            item={item}
-                            field={field}
-                            onDraftChange={handleDraftChange}
-                          />
-                        )
-                      })}
-                    </div>
-                  </section>
+                  <div key={group.id} className="mb-1">
+                    <button
+                      type="button"
+                      onClick={() => toggleGroup(group.id)}
+                      aria-expanded={!collapsed}
+                      className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-xs font-medium text-ink-muted transition-colors duration-fast hover:bg-surface-muted hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                    >
+                      <Icon name={group.icon} className="h-4 w-4" />
+                      <span className="flex-1 text-left">{group.title}</span>
+                      <Icon
+                        name="chevron-down"
+                        className={cn(
+                          'h-3.5 w-3.5 transition-transform',
+                          collapsed && '-rotate-90',
+                        )}
+                      />
+                    </button>
+                    {collapsed ? null : (
+                      <ul className="mb-1 space-y-0.5 border-l border-border pl-2">
+                        {group.items.map((item) => {
+                          const active = item.id === activeItem.id
+                          const dirtyCount = dirtyCountByItem.get(item.id) ?? 0
+                          return (
+                            <li key={item.id}>
+                              <button
+                                type="button"
+                                onClick={() => setActiveItemId(item.id)}
+                                aria-current={active ? 'page' : undefined}
+                                aria-label={item.title}
+                                className={cn(
+                                  'flex w-full items-center justify-between gap-2 rounded-lg px-3 py-1.5 text-left text-sm transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+                                  active
+                                    ? 'bg-surface-muted font-medium text-ink'
+                                    : 'text-ink-secondary hover:bg-surface-muted hover:text-ink',
+                                )}
+                              >
+                                <span className="truncate">{item.title}</span>
+                                {dirtyCount > 0 ? (
+                                  <span className="shrink-0 rounded-full bg-primary-soft px-1.5 text-xs text-primary-strong">
+                                    {dirtyCount}
+                                  </span>
+                                ) : (
+                                  <span className="shrink-0 text-xs text-ink-muted">
+                                    {item.keys.length > 0 ? item.keys.length : '—'}
+                                  </span>
+                                )}
+                              </button>
+                            </li>
+                          )
+                        })}
+                      </ul>
+                    )}
+                  </div>
                 )
               })}
+            </nav>
+
+            <div className="min-w-0 flex-1">
+              <section
+                aria-labelledby="config-item-title"
+                className="rounded-xl border border-border bg-surface p-5 shadow-card"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-2 border-b border-border pb-3">
+                  <div className="space-y-0.5">
+                    <h2 id="config-item-title" className="text-base font-semibold text-ink">
+                      {activeItem.title}
+                    </h2>
+                    <p className="text-xs text-ink-secondary">{activeItem.description}</p>
+                  </div>
+                  <Badge variant="neutral">{activeItem.groupTitle}</Badge>
+                </div>
+
+                {activeItem.keys.length === 0 ? (
+                  // 空项照实说清楚「为什么是空的」，比放一个假表单有用：
+                  // 运营至少知道该去找谁，而不是以为页面坏了。
+                  <div className="mt-4 rounded-lg border border-dashed border-border-strong bg-surface-muted px-4 py-8 text-center">
+                    <p className="text-sm font-medium text-ink">这一项当前没有可在线修改的配置</p>
+                    <p className="mx-auto mt-1 max-w-md text-xs text-ink-secondary">
+                      相关能力由部署配置或代码固定，需要调整请联系技术同事。其余设置项不受影响。
+                    </p>
+                  </div>
+                ) : (
+                  <div className="pt-3">
+                    {activeItem.keys.map((key) => {
+                      const field = drafts[key]
+                      const item = itemByKey.get(key)
+                      if (field === undefined || item === undefined) return null
+                      return (
+                        <ConfigField
+                          key={key}
+                          item={item}
+                          field={field}
+                          onDraftChange={handleDraftChange}
+                        />
+                      )
+                    })}
+                  </div>
+                )}
+              </section>
             </div>
           </div>
         </>
