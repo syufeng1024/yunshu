@@ -363,6 +363,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 	// views expose base_url and the key mask. Mutations need channel.write.
 	mux.Handle("GET /api/admin/channels", s.authed(mw.PermChannelRead, s.ops.ListChannels))
 	mux.Handle("GET /api/admin/channels/{id}", s.authed(mw.PermChannelRead, s.ops.GetChannel))
+	// 渠道能提供哪些模型不要手填：用渠道自己的密钥读上游 /v1/models。
+	// 只读接口，登记模型（含定价/上架）仍走 POST /api/admin/models。
+	mux.Handle("GET /api/admin/channels/{id}/upstream-models", s.authed(mw.PermChannelRead, s.ops.ChannelUpstreamModels))
 	mux.Handle("POST /api/admin/channels", s.authed(mw.PermChannelWrite, s.ops.CreateChannel))
 	mux.Handle("PATCH /api/admin/channels/{id}", s.authed(mw.PermChannelWrite, s.ops.UpdateChannel))
 	mux.Handle("POST /api/admin/channels/{id}/disable", s.authed(mw.PermChannelWrite, s.ops.DisableChannel))
