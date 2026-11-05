@@ -87,6 +87,16 @@ describe('AppShell', () => {
     expect(aside.className).toContain('md:overflow-y-auto')
     const main = screen.getByRole('main')
     expect(main.className).toContain('overflow-y-auto')
+
+    // 外层必须同时有 relative。只有 overflow-hidden 时，内容区（overflow-y-auto）
+    // 里长页面的溢出仍会被算进根滚动容器的可滚动区域——实测密钥详情页
+    // html.scrollHeight=1376、视口 529，窗口右侧于是与内容区并排多出一根滚动条
+    // （2026-11-05 需求方报「页面右侧出现两个滚动条」）。jsdom 没有布局，测不到
+    // scrollHeight，只能把决定性的类钉住，防止有人当冗余样式清掉。
+    const shell = main.closest('.h-screen')
+    expect(shell).not.toBeNull()
+    expect(shell?.className).toContain('relative')
+    expect(shell?.className).toContain('overflow-hidden')
   })
 
   it('侧栏按「常规 / 个人 / 管理员」三组渲染，顺序固定', () => {

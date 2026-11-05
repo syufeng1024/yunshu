@@ -25,10 +25,18 @@ function navClass({ isActive }: { isActive: boolean }): string {
  * 超管要跨两个后台来回跳；现在个人功能与管理员功能各归其组，用角色过滤解决
  * 「我不该看见这一组」。两个分支共用同一个组件，因此两边渲染结果不可能漂移。
  *
- * 布局要点：外层 `h-screen overflow-hidden`，侧栏与内容区各自滚动（侧栏
+ * 布局要点：外层 `relative h-screen overflow-hidden`，侧栏与内容区各自滚动（侧栏
  * `md:overflow-y-auto`，内容区 `flex-1 overflow-y-auto`）。原来是整页滚动，
  * 菜单跟着长表格一起走——翻到一半想换页面得先把滚动条拉回顶部。运营页的表格
  * 比用户侧更长，这条尤其重要。
+ *
+ * `relative` 不是装饰：只写 `overflow-hidden` 时，内容区（overflow-y-auto）里超长
+ * 页面的溢出仍会被算进根滚动容器的可滚动区域——实测密钥详情页 html.scrollHeight
+ * 是 1376 而视口只有 529，于是窗口右侧多出一根滚动条，与内容区那根并排（2026-11-05
+ * 需求方报「页面右侧出现两个滚动条」）。给根节点建立包含块后，溢出被真正裁在壳内，
+ * 窗口不再可滚；也试过 html/body 加 overflow:hidden，都能绕过但不是正解，其它路由
+ * （公开页）还要靠根滚动。fixed 定位的抽屉/弹窗不受影响：relative 不建立包含块
+ * 给 fixed（只有 transform/filter/contain 之类会）。
  *
  * 顶栏放**站点导航**（首页/定价/模型价格/文档/工具集成）。这里原本钉着一条
  * 「调用地址」，占了首屏最贵的一行，而那个地址在密钥详情与调试台的代码生成里
@@ -46,9 +54,11 @@ export function AppShell() {
   }
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-canvas md:flex-row">
+    <div className="relative flex h-screen flex-col overflow-hidden bg-canvas md:flex-row">
       <ScrollRestorer />
-      <aside className="flex shrink-0 flex-row items-center gap-2 bg-sidebar-bg px-3 py-2 md:h-full md:w-sidebar md:flex-col md:items-stretch md:gap-6 md:overflow-y-auto md:border-r md:border-sidebar-border md:px-4 md:py-5">
+      {/* 侧栏在矮窗口（20 项菜单放不下）里会自己滚，滚动条收细一点：它和内容区
+          的滚动条不是同一件事，两条粗滚动条并排会让人以为页面滚重了。 */}
+      <aside className="flex shrink-0 flex-row items-center gap-2 bg-sidebar-bg px-3 py-2 [scrollbar-width:thin] md:h-full md:w-sidebar md:flex-col md:items-stretch md:gap-6 md:overflow-y-auto md:border-r md:border-sidebar-border md:px-4 md:py-5">
         <div className="flex items-center justify-between gap-2 md:justify-start">
           <Logo size="sm" collapsible to={ROUTES.console} />
           {user ? (
