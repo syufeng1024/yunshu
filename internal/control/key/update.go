@@ -95,12 +95,15 @@ func (s *Service) Update(w http.ResponseWriter, r *http.Request) {
 	var newExpire sql.NullTime
 	hasExpire := len(req.ExpireAt) > 0
 	if hasExpire {
-		expire, apiErr := parseRequiredExpireAt(req.ExpireAt, s.now())
+		expire, apiErr := parseOptionalExpireAt(req.ExpireAt, s.now())
 		if apiErr != nil {
 			mw.WriteError(w, r, apiErr)
 			return
 		}
-		newExpire = sql.NullTime{Time: expire, Valid: true}
+		// null 表示清空有效期（改为永不过期）；零值 sql.NullTime 写入即 NULL。
+		if expire != nil {
+			newExpire = sql.NullTime{Time: *expire, Valid: true}
+		}
 	}
 	var newRules []ipRule
 	hasIP := req.IPAllowlist != nil

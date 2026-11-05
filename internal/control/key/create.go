@@ -103,7 +103,7 @@ func (s *Service) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	expireAt, apiErr := parseRequiredExpireAt(req.ExpireAt, s.now())
+	expireAt, apiErr := parseOptionalExpireAt(req.ExpireAt, s.now())
 	if apiErr != nil {
 		mw.WriteError(w, r, apiErr)
 		return
@@ -172,23 +172,28 @@ func (s *Service) resolveModelScope(ctx context.Context, mode string, raw []int6
 	return out, nil
 }
 
-// parseRequiredExpireAt enforces PRD §5.2: a user-created key must carry an
-// expiry. "Permanent" is an operations-granted property and has no console
-// entry, so both an absent field and an explicit null are rejected.
-func parseRequiredExpireAt(raw jsonx.RawMessage, now time.Time) (time.Time, *apierr.APIError) {
+// parseOptionalExpireAt reads the requested expiry. An absent field or an
+// explicit null means "never expires" (需求方 2026-11-05 裁定：有效期改为可选，
+// 不再强制用户填)。A supplied value must still be in the future.
+//
+// Whether a key expires is carried to the gateway as K13's EXP field, where 0
+// means no expiry (internal/redisx/authcache.go), so nil maps cleanly onto the
+// existing auth path.
+func parseOptionalExpireAt(raw jsonx.RawMessage, now time.Time) (*time.Time, *apierr.APIError) {
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" || trimmed == "null" {
-		return time.Time{}, mw.InvalidField("expire_at")
+		return nil, nil
 	}
 	var text string
 	if err := jsonx.Unmarshal(raw, &text); err != nil {
-		return time.Time{}, mw.InvalidField("expire_at")
+		return nil, mw.InvalidField("expire_at")
 	}
 	t, err := time.Parse(time.RFC3339, strings.TrimSpace(text))
 	if err != nil || !t.After(now) {
-		return time.Time{}, mw.InvalidField("expire_at")
+		return nil, mw.InvalidField("expire_at")
 	}
-	return t.UTC(), nil
+	utc := t.UTC()
+	return &utc, nil
 }
 
 type pendingKey struct {
@@ -202,7 +207,7 @@ type pendingKey struct {
 // commit. Publishing first means a Redis failure rolls the whole batch back,
 // so a caller who never received the plaintext cannot burn free-tier slots.
 // If the commit then fails, the already-written K13 entries are deleted.
-func (s *Service) createBatch(r *http.Request, uid int64, name string, count int, scopeMode string, modelIDs []int64, expireAt time.Time, rules []ipRule) ([]createdKey, *apierr.APIError) {
+func (s *Service) createBatch(r *http.Request, uid int64, name string, count int, scopeMode string, modelIDs []int64, expireAt *time.Time, rules []ipRule) ([]createdKey, *apierr.APIError) {
 	ctx := r.Context()
 	now := s.now()
 	if s.KeyAuth == nil {
@@ -293,7 +298,7 @@ func (s *Service) createBatch(r *http.Request, uid int64, name string, count int
 			ModelScopeMode: scopeMode,
 			ModelIDs:       modelIDs,
 			GroupCode:      "standard",
-			ExpireAt:       &expireAt,
+			ExpireAt:       expireAt,
 			IPAllowlist:    ruleCIDRs(rules),
 		}
 		after, err := jsonx.Marshal(map[string]any{
@@ -369,11 +374,11 @@ func (s *Service) createBatch(r *http.Request, uid int64, name string, count int
 	return items, nil
 }
 
-func (s *Service) upsertBatchK13(ctx context.Context, pending []pendingKey, uid int64, name string, expireAt time.Time, ratioBP int64) error {
+func (s *Service) upsertBatchK13(ctx context.Context, pending []pendingKey, uid int64, name string, expireAt *time.Time, ratioBP int64) error {
 	for _, p := range pending {
 		if err := s.KeyAuth.Upsert(ctx, p.hash16, redisx.KeyAuthRecord{
 			UID: uid, KID: p.id, ST: "ENABLED", IPM: p.maxIPID,
-			EXP: expireAt.UnixMilli(), NT: "", KN: name,
+			EXP: optionalExpireMillis(expireAt), NT: "", KN: name,
 			GRP: "standard", GP: ratioBP,
 		}); err != nil {
 			return err
@@ -429,4 +434,14 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) *apierr.APIErro
 		return mw.InvalidField("body")
 	}
 	return nil
+}
+
+// optionalExpireMillis converts a nullable expiry into K13's EXP field.
+// 0 means "no expiry" there, so a key without a deadline keeps working
+// through the existing check in gw/p05_auth.go (`rec.EXP > 0 && ...`).
+func optionalExpireMillis(t *time.Time) int64 {
+	if t == nil {
+		return 0
+	}
+	return t.UTC().UnixMilli()
 }

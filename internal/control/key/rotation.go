@@ -88,12 +88,17 @@ func (s *Service) Rotate(w http.ResponseWriter, r *http.Request) {
 
 	expire := old.ExpireAt
 	if len(req.ExpireAt) > 0 {
-		parsed, apiErr := parseRequiredExpireAt(req.ExpireAt, now)
+		parsed, apiErr := parseOptionalExpireAt(req.ExpireAt, now)
 		if apiErr != nil {
 			mw.WriteError(w, r, apiErr)
 			return
 		}
-		expire = sql.NullTime{Time: parsed, Valid: true}
+		// 显式给 null 表示改成永不过期，与创建时的口径一致。
+		if parsed == nil {
+			expire = sql.NullTime{}
+		} else {
+			expire = sql.NullTime{Time: *parsed, Valid: true}
+		}
 	} else if old.ExpireAt.Valid && !old.ExpireAt.Time.After(now) {
 		// Copying an already-expired date would produce a replacement that is
 		// dead on arrival. Ask for a new expiry instead of inventing one.

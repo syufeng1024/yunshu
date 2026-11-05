@@ -226,6 +226,37 @@ func TestGroupCodeIsRejectedAndReadOnly(t *testing.T) {
 }
 
 // A6 / F6-2: the four wizard steps are the request; missing required fields
+// 有效期不再是必填项（需求方 2026-11-05 裁定）：不传或传 null 表示永不过期，
+// K13 的 EXP 记为 0，网关的过期判断（EXP > 0 才校验）天然跳过。
+func TestCreateWithoutExpiryIsPermanent(t *testing.T) {
+	svc, _ := newTestService(t)
+	uid := newTestUser(t, nil)
+	modelID := newTestModel(t)
+
+	rec := call(t, svc.Create, http.MethodPost, "/api/console/keys",
+		map[string]any{"name": "permanent-" + futureExpiry(), "model_ids": []int64{modelID}}, uid, "")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp createResponse
+	decodeBody(t, rec, &resp)
+	if len(resp.Items) != 1 {
+		t.Fatalf("items = %d", len(resp.Items))
+	}
+	if resp.Items[0].ExpireAt != nil {
+		t.Fatalf("expire_at = %v, want nil (永不过期)", resp.Items[0].ExpireAt)
+	}
+
+	var stored sql.NullTime
+	if err := testDB.QueryRowContext(context.Background(),
+		`SELECT expire_at FROM t_api_key WHERE id = ?`, resp.Items[0].ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Valid {
+		t.Fatalf("stored expire_at = %v, want NULL", stored.Time)
+	}
+}
+
 // name the field, and no group step exists.
 func TestCreateRequiredFields(t *testing.T) {
 	svc, _ := newTestService(t)
@@ -238,7 +269,7 @@ func TestCreateRequiredFields(t *testing.T) {
 		field string
 	}{
 		{"missing name", map[string]any{"model_ids": []int64{modelID}, "expire_at": futureExpiry()}, "name"},
-		{"missing expiry", map[string]any{"name": "x", "model_ids": []int64{modelID}}, "expire_at"},
+		{"expiry in the past", map[string]any{"name": "x", "model_ids": []int64{modelID}, "expire_at": "2020-01-01T00:00:00Z"}, "expire_at"},
 		{"empty models", map[string]any{"name": "x", "model_ids": []int64{}, "expire_at": futureExpiry()}, "model_ids"},
 	}
 	for _, tc := range cases {
