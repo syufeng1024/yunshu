@@ -389,3 +389,62 @@ func TestWriteIsDeterministicForSameInput(t *testing.T) {
 		t.Fatalf("same input produced different bodies:\n%s\n%s", body1, body2)
 	}
 }
+
+// Retry-After is derived from retry_after_seconds, not from a status-code
+// allowlist. A 502 upstream_all_failed used to carry retry_after_seconds=30 and
+// hint「按 30 秒退避重试」while sending no header at all — SDKs back off on the
+// header, so they saw nothing (found 2026-11-05 during failure injection).
+func TestRetryAfterHeaderMatchesBodyOnEveryRetryableStatus(t *testing.T) {
+	cases := []struct {
+		code   string
+		status int
+		secs   int
+	}{
+		{CodeUpstreamAllFailed, 502, 30},
+		{CodeUpstreamInvalidResponse, 502, 10},
+		{CodeUpstreamCapacityExceeded, 503, 30},
+		{CodeUpstreamTimeout, 504, 30},
+	}
+	for _, tc := range cases {
+		t.Run(tc.code, func(t *testing.T) {
+			rec, body := writeError(t, New(tc.code))
+			if rec.Code != tc.status {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.status)
+			}
+			if got := int(body["retry_after_seconds"].(float64)); got != tc.secs {
+				t.Fatalf("body retry_after_seconds = %d, want %d", got, tc.secs)
+			}
+			if got := rec.Header().Get("Retry-After"); got != strconv.Itoa(tc.secs) {
+				t.Fatalf("Retry-After = %q, want %d", got, tc.secs)
+			}
+		})
+	}
+}
+
+// 402 is the documented exception (E.1.2: top-up, not a wait). Even a caller
+// that sets a value by mistake must not advertise it.
+func Test402NeverSendsRetryAfter(t *testing.T) {
+	e := NewInsufficientCredits(100, -1, 0).WithRetryAfter(30)
+	rec, _ := writeError(t, e)
+	if rec.Code != 402 {
+		t.Fatalf("status = %d, want 402", rec.Code)
+	}
+	if got := rec.Header().Get("Retry-After"); got != "" {
+		t.Fatalf("402 must not send Retry-After, got %q", got)
+	}
+}
+
+// A caller-set backoff on a status that has no spec value still reaches the
+// header (409 request_in_flight relies on this: TDS §4.5).
+func TestCallerSetRetryAfterReachesHeaderOnConflict(t *testing.T) {
+	rec, body := writeError(t, New(CodeRequestInFlight).WithRetryAfter(2))
+	if rec.Code != 409 {
+		t.Fatalf("status = %d, want 409", rec.Code)
+	}
+	if got := rec.Header().Get("Retry-After"); got != "2" {
+		t.Fatalf("Retry-After = %q, want 2", got)
+	}
+	if got := int(body["retry_after_seconds"].(float64)); got != 2 {
+		t.Fatalf("body retry_after_seconds = %d, want 2", got)
+	}
+}

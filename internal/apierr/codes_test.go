@@ -556,3 +556,21 @@ func sameSet(got map[string]bool, want []string) bool {
 	}
 	return true
 }
+
+// Write emits Retry-After for every code with a positive retry_after_seconds,
+// independent of HTTP status. That is only safe while the two agree: a
+// non-zero backoff on a "do not retry" code would tell clients to wait for
+// something they must not retry.
+func TestNonZeroRetryAfterImpliesRetryable(t *testing.T) {
+	for _, spec := range specs {
+		if spec.RetryAfterSeconds == 0 {
+			continue
+		}
+		switch spec.Retry {
+		case RetryYes, RetryDuration:
+		default:
+			t.Errorf("%s: retry_after_seconds=%d but retry=%v",
+				spec.Code, spec.RetryAfterSeconds, spec.Retry)
+		}
+	}
+}

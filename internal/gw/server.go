@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"strconv"
 	"strings"
 	"time"
 
@@ -296,17 +295,13 @@ func (h *Handler) writeReplay(w http.ResponseWriter, ctx context.Context, c *Ctx
 	e := apierr.New(code)
 	switch code {
 	case apierr.CodeRequestInFlight:
+		// 409 in-flight: TDS §4.5 wants Retry-After here too. apierr.Write now
+		// emits the header for any code with a positive retry_after_seconds,
+		// so the body field and the header come from this one call.
 		e.WithRetryAfter(2)
-		// apierr.Write emits Retry-After for 402/429/503 only. TDS §4.5
-		// requires it on the in-flight 409 as well, so the header is set here;
-		// the body field is set through the error so the two cannot drift.
-		w.Header().Set("Retry-After", "2")
 	case apierr.CodeDuplicateRequestInFlight:
-		// The remaining duplicate window, at least one second. Same reason as
-		// above: the 409 branch of apierr.Write does not set the header.
-		secs := retryAfterSeconds(decision.RetryAfter)
-		e.WithRetryAfter(secs)
-		w.Header().Set("Retry-After", strconv.Itoa(secs))
+		// The remaining duplicate window, at least one second.
+		e.WithRetryAfter(retryAfterSeconds(decision.RetryAfter))
 	}
 	// A replay 409 is an idempotency conflict, which belongs to the AUTH domain
 	// once stageForFail normalises it for the failure usage row.

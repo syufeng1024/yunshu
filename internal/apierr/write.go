@@ -50,15 +50,17 @@ func applyErrorHeaders(h http.Header, e *APIError) {
 			h.Set("X-Credits-Remaining", formatNumber(*e.Remaining))
 		}
 	case http.StatusTooManyRequests:
-		if e.RetryAfterSeconds > 0 {
-			h.Set("Retry-After", strconv.Itoa(e.RetryAfterSeconds))
-		}
 		if e.rateLimit != nil {
 			applyRateLimitHeaders(h, *e.rateLimit)
 		}
-	case http.StatusServiceUnavailable:
-		if e.RetryAfterSeconds > 0 {
-			h.Set("Retry-After", strconv.Itoa(e.RetryAfterSeconds))
-		}
+	}
+	// Retry-After follows retry_after_seconds, not the status code. Any code
+	// whose spec carries a positive backoff must advertise it in the header:
+	// SDKs back off on the header, never on the body field, so a 502
+	// upstream_all_failed used to say "retry in 30s" in the body while sending
+	// no header at all. 402 is the one documented exception (E.1.2: the fix is
+	// a top-up, not a wait), and it never carries a value anyway.
+	if e.RetryAfterSeconds > 0 && e.HTTPStatus != http.StatusPaymentRequired {
+		h.Set("Retry-After", strconv.Itoa(e.RetryAfterSeconds))
 	}
 }
