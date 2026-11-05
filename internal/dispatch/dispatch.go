@@ -564,7 +564,14 @@ func (d *Dispatcher) decryptKey(ch *gw.ChannelEntry) (string, error) {
 
 func (d *Dispatcher) buildBody(c *gw.Ctx, t target) ([]byte, string, error) {
 	upstreamModel := strings.TrimSpace(t.route.UpstreamModelName)
-	if mapped := strings.TrimSpace(t.ch.UpstreamModelNameMap[c.IR.Model]); mapped != "" {
+	// 映射按「平台模型名」索引，因此这里用 P07 解析出的规范名，而不是客户端原始
+	// 请求名：别名调用和规范名调用必须命中同一条映射。RequestModel 仍保留客户端
+	// 原始写法，用于日志与用量归因。
+	mapKey := c.IR.Model
+	if c.Model != nil && strings.TrimSpace(c.Model.ModelName) != "" {
+		mapKey = c.Model.ModelName
+	}
+	if mapped := strings.TrimSpace(t.ch.UpstreamModelNameMap[mapKey]); mapped != "" {
 		upstreamModel = mapped
 	}
 	if upstreamModel == "" {

@@ -18,7 +18,10 @@ import (
 func buildUpstreamModel(t *testing.T, ch *gw.ChannelEntry, route gw.RouteCandidate) string {
 	t.Helper()
 	d := &Dispatcher{}
-	body, _, err := d.buildBody(testCtx(false), target{route: route, ch: ch})
+	ctx := testCtx(false)
+	// P07 解析出的规范模型名；映射按它索引（客户端可能用别名调用）。
+	ctx.Model = &gw.ModelEntry{ModelName: ctx.IR.Model}
+	body, _, err := d.buildBody(ctx, target{route: route, ch: ch})
 	if err != nil {
 		t.Fatalf("buildBody: %v", err)
 	}
@@ -67,7 +70,9 @@ func TestChannelModelMapAppliesToStreamingToo(t *testing.T) {
 	route := gw.RouteCandidate{RouteID: 1, ChannelID: 10, ProtocolID: 2, UpstreamModelName: "route-default-model"}
 
 	d := &Dispatcher{}
-	body, _, err := d.buildBody(testCtx(true), target{route: route, ch: ch})
+	ctx := testCtx(true)
+	ctx.Model = &gw.ModelEntry{ModelName: ctx.IR.Model}
+	body, _, err := d.buildBody(ctx, target{route: route, ch: ch})
 	if err != nil {
 		t.Fatalf("buildBody: %v", err)
 	}
@@ -82,5 +87,35 @@ func TestChannelModelMapAppliesToStreamingToo(t *testing.T) {
 	}
 	if payload.Model != "mapped-model" {
 		t.Fatalf("stream upstream model = %q, want mapped-model", payload.Model)
+	}
+}
+
+// 客户端用别名调用时，映射仍要命中：P07 把别名解析成同一份 ModelEntry，
+// 映射按这个规范名索引。若这里改用客户端原始请求名，同一条映射在
+// 别名入口与规范名入口上的行为会不一致——一处生效、一处静默失效。
+func TestChannelMapMatchesCanonicalNameWhenClientUsesAlias(t *testing.T) {
+	ch := &gw.ChannelEntry{
+		ID: 10, ProtocolID: 2, StreamUsageMode: "UNKNOWN",
+		UpstreamModelNameMap: map[string]string{"canonical-model": "mapped-model"},
+	}
+	route := gw.RouteCandidate{RouteID: 1, ChannelID: 10, ProtocolID: 2, UpstreamModelName: "route-default-model"}
+
+	ctx := testCtx(false)
+	ctx.IR.Model = "client-alias"
+	ctx.Model = &gw.ModelEntry{ModelName: "canonical-model"}
+
+	d := &Dispatcher{}
+	body, _, err := d.buildBody(ctx, target{route: route, ch: ch})
+	if err != nil {
+		t.Fatalf("buildBody: %v", err)
+	}
+	var payload struct {
+		Model string `json:"model"`
+	}
+	if err := jsonx.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode body: %v (%s)", err, body)
+	}
+	if payload.Model != "mapped-model" {
+		t.Fatalf("upstream model = %q, want mapped-model (alias call must hit the canonical key)", payload.Model)
 	}
 }
