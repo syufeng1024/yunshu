@@ -245,15 +245,25 @@ export default function KeysPage() {
     },
   ]
 
+  /**
+   * 列表为空且没有筛选条件时，动作交给空状态里的那个「新建密钥」——页头再放一个
+   * 同名同色的主按钮，同屏两个 CTA 主次不分，读屏也只会听到两个一样的名字。
+   */
+  const hasFilters = debouncedSearch !== '' || status !== 'ALL'
+  const listIsEmpty = query.data !== undefined && query.data.items.length === 0
+  const showHeaderCreate = !listIsEmpty || hasFilters
+
   return (
     <div className="space-y-5">
       <PageHeader
         title="密钥管理"
         description="每个密钥共享账户额度；分组只读，变更需联系运营。"
         actions={
-          <Button onClick={openCreate} disabled={atLimit}>
-            新建密钥
-          </Button>
+          showHeaderCreate ? (
+            <Button onClick={openCreate} disabled={atLimit}>
+              新建密钥
+            </Button>
+          ) : null
         }
       />
 
@@ -300,12 +310,10 @@ export default function KeysPage() {
         onRetry={() => void query.refetch()}
         emptyTitle="暂无密钥"
         emptyDescription={
-          debouncedSearch || status !== 'ALL'
-            ? '当前搜索与筛选组合没有匹配结果。'
-            : '创建第一个密钥以开始调用 API。'
+          hasFilters ? '当前搜索与筛选组合没有匹配结果。' : '创建第一个密钥以开始调用 API。'
         }
         emptyAction={
-          debouncedSearch || status !== 'ALL' ? undefined : (
+          hasFilters ? undefined : (
             <Button size="sm" onClick={openCreate} disabled={atLimit}>
               新建密钥
             </Button>

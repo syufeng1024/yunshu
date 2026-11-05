@@ -43,15 +43,22 @@ export function UserMenu() {
 
   if (!user) return null
 
-  const displayName = user.display_name || user.email
-  const initial = displayName.trim().charAt(0).toUpperCase() || '?'
+  const roleLabel = USER_ROLE_LABEL[user.role]
+  const displayName = user.display_name || user.username || user.email
+  const initial = (displayName ?? '').trim().charAt(0).toUpperCase() || '?'
+
+  // 昵称叫「超级管理员」的内置账号，名字与角色名一模一样，两行并排就是重复。
+  // 这种情况下副标题换成登录名，信息不丢也不再复读。
+  const subtitle =
+    displayName === roleLabel && user.username ? `@${user.username}` : roleLabel
 
   // 账号菜单只放「属于这个人」的三项（资料 / 订阅 / 钱包）。这些入口在侧栏的
-  // 「个人」分组里也有：菜单是快捷入口，侧栏是完整导航，两处不冲突。
+  // 「个人」分组里也有：菜单是快捷入口，侧栏是完整导航，两处不冲突——但名字必须
+  // 一致，否则同一目的地出现两套叫法，用户会以为是两个页面。
   const items: { to: string; icon: IconName; label: string }[] = [
-    { to: ROUTES.consoleAccount, icon: 'users', label: '个人资料' },
+    { to: ROUTES.consoleAccount, icon: 'users', label: '账户设置' },
     { to: ROUTES.consoleSubscription, icon: 'tag', label: '我的订阅' },
-    { to: ROUTES.consoleRecharge, icon: 'wallet', label: '钱包与充值' },
+    { to: ROUTES.consoleRecharge, icon: 'wallet', label: '充值中心' },
   ]
 
   const handleLogout = async () => {
@@ -97,7 +104,7 @@ export function UserMenu() {
             </span>
             <div className="min-w-0">
               <p className="truncate text-sm font-medium text-ink">{displayName}</p>
-              <p className="truncate text-xs text-ink-muted">{USER_ROLE_LABEL[user.role]}</p>
+              <p className="truncate text-xs text-ink-muted">{subtitle}</p>
             </div>
           </div>
 

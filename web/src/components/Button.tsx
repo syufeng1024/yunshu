@@ -6,7 +6,10 @@ export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger'
 export type ButtonSize = 'sm' | 'md' | 'lg'
 
 const BASE =
-  'inline-flex items-center justify-center gap-2 rounded-lg font-medium transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60'
+  // 禁用态不能只靠降透明度：实心主按钮在 60% 不透明度下仍是鲜明的紫色，看着像能点
+  // （系统管理页的「保存更改」在没有改动时就是这个样子）。抽掉饱和度把它压成灰面，
+  // 语义才和「点不动」对上；secondary / ghost 本来就没有彩色底，不受影响。
+  'inline-flex items-center justify-center gap-2 rounded-lg font-medium transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 disabled:saturate-0'
 
 const VARIANTS: Record<ButtonVariant, string> = {
   primary: 'bg-primary text-ink-inverse hover:bg-primary-hover active:bg-primary-strong',

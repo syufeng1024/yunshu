@@ -54,7 +54,7 @@ describe('UserMenu', () => {
     // 名字与角色在头部，自助入口在下面。
     expect(screen.getByText('孙丰')).toBeInTheDocument()
     expect(screen.getByText(/个人用户/)).toBeInTheDocument()
-    for (const label of ['个人资料', '我的订阅', '钱包与充值', '退出登录']) {
+    for (const label of ['账户设置', '我的订阅', '充值中心', '退出登录']) {
       expect(screen.getByRole('menuitem', { name: label })).toBeInTheDocument()
     }
   })
@@ -82,12 +82,23 @@ describe('UserMenu', () => {
     expect(screen.queryByRole('menuitem', { name: '运营后台' })).not.toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: '返回控制台' })).not.toBeInTheDocument()
     // 管理员的菜单项与个人用户完全一致：位置感交给侧栏的选中态，不再由菜单自称。
+    // 文案也必须与侧栏「个人」分组逐字一致，否则同一目的地会出现两套叫法。
     expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
-      '个人资料',
+      '账户设置',
       '我的订阅',
-      '钱包与充值',
+      '充值中心',
       '退出登录',
     ])
+  })
+
+  it('昵称与角色同名时副标题换成登录名，不复读两行「超级管理员」', async () => {
+    const user = userEvent.setup()
+    signIn({ display_name: '超级管理员', role: 'SUPER_ADMIN', username: 'admin' })
+    renderMenu()
+    await user.click(screen.getByRole('button', { name: '账号菜单' }))
+
+    expect(screen.getAllByText('超级管理员')).toHaveLength(1)
+    expect(screen.getByText('@admin')).toBeInTheDocument()
   })
 
   it('closes on Escape', async () => {
