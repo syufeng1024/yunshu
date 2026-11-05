@@ -21,7 +21,7 @@ const (
 )
 
 func (d *Dispatcher) streamAttempt(ctx context.Context, w http.ResponseWriter, c *gw.Ctx,
-	t target, resp *http.Response, out outcome, start time.Time, secret string) outcome {
+	t target, resp *http.Response, out outcome, start time.Time, attemptNo int, secret string) outcome {
 	proto, _ := protocolName(t.ch.ProtocolID)
 	out.attempt.Phase = "P18"
 
@@ -65,7 +65,7 @@ func (d *Dispatcher) streamAttempt(ctx context.Context, w http.ResponseWriter, c
 			out.attempt.ErrorClass = ClassClientAbort
 			return out
 		}
-		out.class, out.apiErr = classifyStreamStartError(err)
+		out.class, out.apiErr = classifyStreamStartError(err, attemptNo)
 		out.attempt.ErrorClass = out.class
 		out.attempt.Phase = "P16"
 		if out.class == ClassMalformedBody && d.opts.Metrics != nil {
@@ -124,7 +124,7 @@ func (d *Dispatcher) streamAttempt(ctx context.Context, w http.ResponseWriter, c
 	}
 
 	if result.NeedErrorFrame {
-		api := streamFailureAPI(result)
+		api := streamFailureAPI(result, attemptNo)
 		c.ErrCode = api.Code
 		api = api.WithRequestID(c.RequestID)
 		credits := consumed
@@ -154,10 +154,10 @@ func (d *Dispatcher) streamAttempt(ctx context.Context, w http.ResponseWriter, c
 	return out
 }
 
-func classifyStreamStartError(err error) (string, *apierr.APIError) {
+func classifyStreamStartError(err error, attemptNo int) (string, *apierr.APIError) {
 	switch {
 	case errors.Is(err, stream.ErrBeforeFirstByte):
-		return ClassTimeout, apierr.New(apierr.CodeUpstreamTimeout)
+		return ClassTimeout, retriedError(apierr.CodeUpstreamTimeout, attemptNo)
 	case errors.Is(err, stream.ErrUpstreamEmpty):
 		return ClassEmptyChoices, apierr.New(apierr.CodeUpstreamEmptyResponse)
 	case errors.Is(err, stream.ErrMalformedFrame):
@@ -168,22 +168,24 @@ func classifyStreamStartError(err error) (string, *apierr.APIError) {
 		return ClassClientAbort, apierr.New(apierr.CodeClientAborted)
 	default:
 		if errors.Is(err, context.DeadlineExceeded) {
-			return ClassTimeout, apierr.New(apierr.CodeUpstreamTimeout)
+			return ClassTimeout, retriedError(apierr.CodeUpstreamTimeout, attemptNo)
 		}
-		return ClassConnectRefused, apierr.New(apierr.CodeUpstreamAllFailed)
+		return ClassConnectRefused, retriedError(apierr.CodeUpstreamAllFailed, attemptNo)
 	}
 }
 
-func streamFailureAPI(result stream.Result) *apierr.APIError {
+func streamFailureAPI(result stream.Result, attemptNo int) *apierr.APIError {
 	switch {
 	case errors.Is(result.LastError, stream.ErrMalformedFrame),
 		errors.Is(result.LastError, stream.ErrUpstreamEvent):
 		return apierr.New(apierr.CodeUpstreamInvalidResponse).WithRetryAfter(10)
 	case errors.Is(result.LastError, stream.ErrUpstreamIdle),
 		errors.Is(result.LastError, stream.ErrUpstreamEmpty):
-		return apierr.New(apierr.CodeUpstreamTimeout).WithRetryAfter(30)
+		// Both codes carry "%d 次" in their templates, so they must go through
+		// Newf: a bare New ships a literal "%d" in the SSE error frame.
+		return retriedError(apierr.CodeUpstreamTimeout, attemptNo).WithRetryAfter(30)
 	default:
-		return apierr.New(apierr.CodeUpstreamAllFailed).WithRetryAfter(30)
+		return retriedError(apierr.CodeUpstreamAllFailed, attemptNo).WithRetryAfter(30)
 	}
 }
 

@@ -376,7 +376,9 @@ func (d *Dispatcher) dispatch(w http.ResponseWriter, r *http.Request, c *gw.Ctx,
 func (d *Dispatcher) failFrom(w http.ResponseWriter, r *http.Request, c *gw.Ctx, out outcome, attempts int) {
 	api := out.apiErr
 	if api == nil {
-		api = apierr.New(apierr.CodeUpstreamAllFailed)
+		// Same template as the classified paths: a bare New would ship the
+		// literal "%d" to the client.
+		api = retriedError(apierr.CodeUpstreamAllFailed, attempts)
 	}
 	reason := "UPSTREAM_FAIL"
 	switch out.class {
@@ -541,7 +543,7 @@ func (d *Dispatcher) try(ctx context.Context, w http.ResponseWriter, c *gw.Ctx, 
 	}
 
 	if c.Stream {
-		return d.streamAttempt(ctx, w, c, t, resp, out, start, plain)
+		return d.streamAttempt(ctx, w, c, t, resp, out, start, attemptNo, plain)
 	}
 	return d.unaryAttempt(ctx, w, c, t, resp, out, start, plain)
 }
@@ -751,12 +753,43 @@ func (t *traceTimes) trace() *httptrace.ClientTrace {
 	}
 }
 
+// retriedError builds an error whose message names how many retries already
+// happened. Both templates read "已重试 %d 次" (apierr spec E-09), so the
+// argument is the retry count — not the 1-based attempt number. Passing
+// attemptNo verbatim told users "已重试 2 次" after a single retry (observed
+// 2026-11-05 in a 500-once injection run).
+//
+// A first attempt has nothing to report and "已重试 0 次" reads like a defect,
+// so that case falls back to the same sentence without a count.
+func retriedError(code string, attemptNo int) *apierr.APIError {
+	retries := attemptNo - 1
+	if retries < 0 {
+		retries = 0
+	}
+	e := apierr.Newf(code, retries)
+	if retries == 0 {
+		e = e.WithMessage(firstAttemptMessage(code))
+	}
+	return e
+}
+
+// firstAttemptMessage is retriedError's no-retry variant: same claim, without
+// the count. Kept next to the templates so the two cannot drift apart.
+func firstAttemptMessage(code string) string {
+	if code == apierr.CodeUpstreamTimeout {
+		return "上游响应超时，本次未重试"
+	}
+	return "上游服务当前不可用，本次未重试"
+}
+
 // classifyTransportError maps a transport failure to its class and outward code.
 //
 // attemptNo is required, not cosmetic: both upstream_timeout and
 // upstream_all_failed carry "%d 次" in their message template (apierr spec
 // E-09). Building them with New instead of Newf leaves a literal "%d" in the
-// user-facing body — observed 2026-10-29 in a T39 counter-proof.
+// user-facing body — observed 2026-10-29 in a T39 counter-proof. The count
+// itself must be the retry count, which is why the templates go through
+// retriedError rather than Newf directly.
 func classifyTransportError(err error, attemptNo int) (string, *apierr.APIError) {
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
@@ -767,22 +800,22 @@ func classifyTransportError(err error, attemptNo int) (string, *apierr.APIError)
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
-		return ClassTimeout, apierr.Newf(apierr.CodeUpstreamTimeout, attemptNo)
+		return ClassTimeout, retriedError(apierr.CodeUpstreamTimeout, attemptNo)
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return ClassTimeout, apierr.Newf(apierr.CodeUpstreamTimeout, attemptNo)
+		return ClassTimeout, retriedError(apierr.CodeUpstreamTimeout, attemptNo)
 	}
 	if errors.Is(err, context.Canceled) {
 		return ClassClientAbort, apierr.New(apierr.CodeClientAborted)
 	}
-	return ClassConnectRefused, apierr.Newf(apierr.CodeUpstreamAllFailed, attemptNo)
+	return ClassConnectRefused, retriedError(apierr.CodeUpstreamAllFailed, attemptNo)
 }
 
-func upstreamStatusError(status, attempts int) *apierr.APIError {
+func upstreamStatusError(status, attemptNo int) *apierr.APIError {
 	if status == http.StatusGatewayTimeout {
-		return apierr.Newf(apierr.CodeUpstreamTimeout, attempts)
+		return retriedError(apierr.CodeUpstreamTimeout, attemptNo)
 	}
-	return apierr.Newf(apierr.CodeUpstreamAllFailed, attempts)
+	return retriedError(apierr.CodeUpstreamAllFailed, attemptNo)
 }
 
 func clientStatusError(status int, msg string) *apierr.APIError {
