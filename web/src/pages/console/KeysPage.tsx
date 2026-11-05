@@ -132,8 +132,8 @@ export default function KeysPage() {
       ),
     },
     {
-      key: 'prefix',
-      header: 'Key 前缀',
+      key: 'masked',
+      header: '密钥',
       render: (row) => <code className="font-mono text-xs text-ink-secondary">{row.key_masked}</code>,
     },
     {
@@ -149,26 +149,20 @@ export default function KeysPage() {
       ),
     },
     {
-      key: 'group',
-      header: '分组',
+      key: 'group_expire',
+      header: '分组 · 到期',
       render: (row) => {
         const label = groupLabel(row.group_code)
-        return label ? (
-          <span className="text-ink-secondary">{label}</span>
-        ) : (
-          <span className="text-ink-muted">—</span>
+        return (
+          <span className="whitespace-nowrap text-xs">
+            <span className="text-ink-secondary">{label ?? '—'}</span>
+            <span className="text-ink-muted"> · </span>
+            <span className={row.expire_at ? 'text-ink-secondary' : 'text-ink-muted'}>
+              {row.expire_at ? formatDateTime(row.expire_at) : '永不过期'}
+            </span>
+          </span>
         )
       },
-    },
-    {
-      key: 'expire',
-      header: '有效期',
-      render: (row) =>
-        row.expire_at ? (
-          <span className="text-xs text-ink-secondary">{formatDateTime(row.expire_at)}</span>
-        ) : (
-          <span className="text-xs text-ink-muted">永不过期</span>
-        ),
     },
     {
       key: 'created',
@@ -285,7 +279,7 @@ export default function KeysPage() {
           type="search"
           value={search}
           onChange={(event) => setSearch(event.target.value)}
-          placeholder="输入密钥名称片段"
+          placeholder="请输入密钥名称进行搜索"
           aria-label="按名称搜索密钥"
         />
         <Select

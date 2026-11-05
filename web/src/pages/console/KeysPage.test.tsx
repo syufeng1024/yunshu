@@ -120,6 +120,30 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('KeysPage', () => {
+  it('表头是 8 列，不再有「Key 前缀」，分组与到期合并为一列', async () => {
+    installMock()
+    renderWithProviders(<KeysPage />)
+    await screen.findByText('prod-key')
+
+    const headers = screen.getAllByRole('columnheader').map((th) => th.textContent?.trim() ?? '')
+    expect(headers).toHaveLength(8)
+    expect(headers.some((text) => text.includes('Key 前缀'))).toBe(false)
+    expect(headers.some((text) => text.startsWith('密钥'))).toBe(true)
+    expect(headers.some((text) => text.startsWith('分组 · 到期'))).toBe(true)
+  })
+
+  it('表头是 8 列，不再有「Key 前缀」，分组与到期合并为一列', async () => {
+    installMock()
+    renderWithProviders(<KeysPage />)
+    await screen.findByText('prod-key')
+
+    const headers = screen.getAllByRole('columnheader').map((th) => th.textContent?.trim() ?? '')
+    expect(headers).toHaveLength(8)
+    expect(headers.some((text) => text.includes('Key 前缀'))).toBe(false)
+    expect(headers.some((text) => text.startsWith('密钥'))).toBe(true)
+    expect(headers.some((text) => text.startsWith('分组 · 到期'))).toBe(true)
+  })
+
   it('sorts by the clicked column and asks the server for that order', async () => {
     installMock()
     const user = userEvent.setup()
