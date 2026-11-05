@@ -198,7 +198,13 @@ func (s *EstimateStage) outputTokens(c *Ctx) int64 {
 		return c.Model.MaxOutputTokens
 	}
 	if c.Model.ContextLength > 0 {
-		return c.Model.ContextLength
+		// context_length is input + output, so using it as the output ceiling
+		// reserves the whole context twice. Cap it at the platform output
+		// ceiling; smaller contexts stay as they are (more conservative).
+		if c.Model.ContextLength < PlatformMaxOutputTokens {
+			return c.Model.ContextLength
+		}
+		return PlatformMaxOutputTokens
 	}
 	return PlatformMaxOutputTokens
 }
