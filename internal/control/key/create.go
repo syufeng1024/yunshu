@@ -347,10 +347,19 @@ func (s *Service) createBatch(r *http.Request, uid int64, name string, count int
 		return nil, apierr.New(apierr.CodeInternalError)
 	}
 
-	// A key with a whitelist must not reach K13 before cfg:snap:ROUTING carries
-	// its rules: P06 finds no snapshot entry and would allow every source IP.
-	// Publish first, then write K13. A failure soft-deletes the batch so the
-	// caller's free-tier slots are not consumed by keys it never saw.
+	// Publish on every create, not just the ones carrying a whitelist.
+	//
+	// P06 reads the whitelist from cfg:snap:ROUTING, but P07 reads the key's
+	// *model grant* from the same snapshot (snap.KeyGrant / KeyModels). A key
+	// with no whitelist used to skip publication on the grounds that "a missing
+	// entry means OFF" — true for P06, false for P07, which denies when the
+	// grant is absent. Observed 2026-11-05: a freshly created key answered 403
+	// model_not_authorized until the four-minute refresh published the snapshot.
+	//
+	// Ordering, per branch:
+	//   - with whitelist: publish, then write K13 (P06 must see the rules first);
+	//   - without: K13 was already written before commit, so a publish failure
+	//     drops those records and soft-deletes the batch.
 	if hasIPRules {
 		if err := s.publishIPRules(ctx); err != nil {
 			s.logError(ctx, "key_create_route_publish_failed: "+err.Error())
@@ -362,6 +371,11 @@ func (s *Service) createBatch(r *http.Request, uid int64, name string, count int
 			s.compensateCreate(ctx, pending)
 			return nil, apierr.New(apierr.CodeAuthUnavailable).WithCause(err)
 		}
+	} else if err := s.publishIPRules(ctx); err != nil {
+		s.logError(ctx, "key_create_route_publish_failed: "+err.Error())
+		s.dropK13(ctx, pending)
+		s.compensateCreate(ctx, pending)
+		return nil, apierr.New(apierr.CodeConfigUnavailable).WithCause(err)
 	}
 
 	items := make([]createdKey, 0, len(pending))

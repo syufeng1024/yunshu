@@ -765,8 +765,10 @@ func TestDeleteSoftDeletesAndFreesSlot(t *testing.T) {
 	}
 }
 
-// A whitelist only works after cfg:snap:ROUTING carries it: P06 treats a
-// missing entry as "no whitelist". Every IP-rule write must republish.
+// 快照承载两件事：P06 的 IP 白名单，和 P07 的模型授权（snap.KeyGrant）。所以
+// **没有白名单的新密钥同样必须发布**——否则新 key 在快照里没有 grant，P07 直接
+// 拒绝（403 model_not_authorized），要等四分钟定时刷新才可用。改名之类不影响
+// 快照内容的写入仍然不该发布。
 func TestIPRuleChangeRepublishesSnapshot(t *testing.T) {
 	svc, _ := newTestService(t)
 	var calls int32
@@ -778,8 +780,8 @@ func TestIPRuleChangeRepublishesSnapshot(t *testing.T) {
 	modelID := newTestModel(t)
 
 	mustCreate(t, svc, uid, "no-ip", []int64{modelID})
-	if got := atomic.LoadInt32(&calls); got != 0 {
-		t.Fatalf("publish calls = %d after a key without IP rules, want 0", got)
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("publish calls = %d after a key without IP rules, want 1（grant 也在快照里）", got)
 	}
 
 	body := createBody("with-ip", []int64{modelID}, 0)
@@ -788,8 +790,8 @@ func TestIPRuleChangeRepublishesSnapshot(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create with IP status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if got := atomic.LoadInt32(&calls); got != 1 {
-		t.Fatalf("publish calls = %d after create with IP, want 1", got)
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("publish calls = %d after create with IP, want 2", got)
 	}
 	var created createResponse
 	decodeBody(t, rec, &created)
@@ -799,8 +801,8 @@ func TestIPRuleChangeRepublishesSnapshot(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("patch IP status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if got := atomic.LoadInt32(&calls); got != 2 {
-		t.Fatalf("publish calls = %d after IP change, want 2", got)
+	if got := atomic.LoadInt32(&calls); got != 3 {
+		t.Fatalf("publish calls = %d after IP change, want 3", got)
 	}
 
 	rec = call(t, svc.Update, http.MethodPatch, "/api/console/keys/"+idStr(created.Items[0].ID),
@@ -808,8 +810,8 @@ func TestIPRuleChangeRepublishesSnapshot(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("rename status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if got := atomic.LoadInt32(&calls); got != 2 {
-		t.Fatalf("publish calls = %d after a rename, want 2", got)
+	if got := atomic.LoadInt32(&calls); got != 3 {
+		t.Fatalf("publish calls = %d after a rename, want 3（改名不影响授权）", got)
 	}
 }
 

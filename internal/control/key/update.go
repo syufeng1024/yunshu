@@ -292,10 +292,12 @@ func (s *Service) Update(w http.ResponseWriter, r *http.Request) {
 	rec.IPWhitelistMode = ipModeValue
 	rec.ExpireAt = expireValue
 
-	// P06 reads the whitelist from the routing snapshot. Republish before the
-	// new ipm reaches K13; on failure keep the old ipm so the gateway stays
-	// consistent with the snapshot it already has.
-	if ipChanged {
+	// P06 reads the whitelist from the routing snapshot, P07 reads the model
+	// grant from the same one. Republish when either changes — gating on ipChanged
+	// alone left a widened/narrowed model scope invisible for up to four minutes.
+	// On failure keep the old ipm so the gateway stays consistent with the
+	// snapshot it already has.
+	if ipChanged || modelsChanged {
 		if err := s.publishIPRules(ctx); err != nil {
 			s.logError(ctx, "key_update_route_publish_failed: "+err.Error())
 			if perr := s.pushK13WithIPM(ctx, rec, ipmBefore); perr != nil {

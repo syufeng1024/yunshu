@@ -239,9 +239,11 @@ func (s *Service) Rotate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A replacement that inherits a whitelist must not reach K13 before the
-	// snapshot contains those rules (P06 treats a missing entry as allow-all).
-	if len(rules) > 0 {
+	// The replacement needs a snapshot entry for the same reason a new key does:
+	// P07 resolves its model grant from the snapshot, and an absent grant is a
+	// denial. Gating on len(rules) left every whitelist-free rotation unusable
+	// for up to four minutes (same defect as create, found 2026-11-05).
+	{
 		if err := s.publishIPRules(ctx); err != nil {
 			s.logError(ctx, "key_rotate_route_publish_failed: "+err.Error())
 			s.compensateRotate(ctx, newID, hash16)
