@@ -984,7 +984,43 @@ func (s *Service) validatePatchChannel(r *http.Request, tx *sql.Tx, req *channel
 		routingChanged = routingChanged || *req.Enabled != cur.Enabled
 		in.enabled = *req.Enabled
 	}
+	// 路由快照里带着 base_url、区域、三段超时、重试上限、流式能力与用量口径、
+	// 以及上游模型名映射。这些字段原先不在判定里：改了照样 200，但网关要到
+	// 4 分钟定时器才看见，于是「保存后立刻验证」看起来像功能坏了（2026-11-05
+	// 实测：别名映射保存成功，网关仍发旧上游名）。按快照真正承载的字段补全。
+	if !routingChanged {
+		routingChanged = in.baseURL != cur.BaseURL ||
+			in.region != cur.Region ||
+			in.timeoutConnectMS != cur.TimeoutConnectMS ||
+			in.timeoutFirstByteMS != cur.TimeoutFirstByteMS ||
+			in.timeoutTotalMS != cur.TimeoutTotalMS ||
+			in.retryMax != cur.RetryMax ||
+			in.streamSupported != cur.StreamSupported ||
+			in.streamUsageMode != cur.StreamUsageMode ||
+			!modelNameMapEqual(in.modelNameMap, cur.UpstreamModelNames)
+	}
 	return in, envelope, mask, routingChanged, nil
+}
+
+// modelNameMapEqual compares the encoded map about to be written with the one
+// currently stored. An unparsable payload counts as "changed" — republishing
+// once too many is harmless, staying stale is not.
+func modelNameMapEqual(raw []byte, current map[string]string) bool {
+	incoming := map[string]string{}
+	if len(raw) > 0 {
+		if err := jsonx.Unmarshal(raw, &incoming); err != nil {
+			return false
+		}
+	}
+	if len(incoming) != len(current) {
+		return false
+	}
+	for k, v := range incoming {
+		if current[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 func validateRegion(raw *string, field, noun string) (string, *apierr.APIError) {
@@ -1084,9 +1120,18 @@ func (s *Service) validateModelNameMap(ctx context.Context, q modelNameQueryer, 
 	for i, k := range keys {
 		args[i] = k
 	}
+	// 合法键 = 已登记的平台模型名 ∪ 已启用的别名。别名也收，是因为分发侧是两级
+	// 查找（先请求名、后规范名），运营可以只给某个别名指定专用上游；只认规范名
+	// 会把这条路堵死。别名表的过滤条件必须与快照一致（enabled=1 且模型未删），
+	// 否则会放行一个路由层根本不认的名字。
 	rows, err := q.QueryContext(ctx, `
 		SELECT model_name FROM t_model
-		WHERE deleted_at IS NULL AND model_name IN (`+placeholders+`)`, args...)
+		 WHERE deleted_at IS NULL AND model_name IN (`+placeholders+`)
+		UNION
+		SELECT a.alias_name FROM t_model_alias a
+		  JOIN t_model m ON m.id = a.model_id
+		 WHERE a.enabled = 1 AND m.deleted_at IS NULL AND a.alias_name IN (`+placeholders+`)`,
+		append(append([]any{}, args...), args...)...)
 	if err != nil {
 		s.logError(ctx, "ops_channel_model_map_check_failed: "+err.Error())
 		return apierr.New(apierr.CodeInternalError)
@@ -1112,8 +1157,8 @@ func (s *Service) validateModelNameMap(ctx context.Context, q modelNameQueryer, 
 	}
 	if len(unknown) > 0 {
 		return apierr.Newf(apierr.CodeInvalidRequestBody,
-			"模型名映射的左侧必须是已登记的平台模型名，这些不存在："+strings.Join(unknown, "、")+
-				"（别名请改用其规范模型名；新模型先到「模型管理」登记）")
+			"模型名映射的左侧必须是已登记的平台模型名或别名，这些都对不上："+strings.Join(unknown, "、")+
+				"（新模型先到「模型管理」登记；别名在模型详情页维护）")
 	}
 	return nil
 }

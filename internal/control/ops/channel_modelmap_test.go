@@ -130,3 +130,113 @@ func TestChannelPatchAcceptsEmptyMapAndClearsIt(t *testing.T) {
 		t.Fatalf("status=%d body=%s, want 200", rec.Code, rec.Body.String())
 	}
 }
+
+// seedModelAlias binds an alias to a model the way the ops API does.
+func seedModelAlias(t *testing.T, modelID int64, alias string, enabled bool) {
+	t.Helper()
+	flag := 0
+	if enabled {
+		flag = 1
+	}
+	if _, err := testDB.ExecContext(context.Background(), `
+		INSERT INTO t_model_alias (alias_name, model_id, source, enabled, created_at)
+		VALUES (?, ?, 'OPS', ?, NOW(3))`, alias, modelID, flag); err != nil {
+		t.Fatalf("seed alias %s: %v", alias, err)
+	}
+	t.Cleanup(func() {
+		_, _ = testDB.ExecContext(context.Background(),
+			`DELETE FROM t_model_alias WHERE alias_name = ?`, alias)
+	})
+}
+
+// 别名也能做映射的键：分发侧是两级查找（先请求名、后规范名），别名键正是
+// 「只给这个别名指定专用上游」的落点。
+func TestChannelCreateAcceptsAliasMapKey(t *testing.T) {
+	svc := newTestService(t)
+	uid := newTestUser(t, "OPS")
+	modelName := "t15-alias-model-" + uniqueSuffix()
+	modelID := seedPlatformModel(t, modelName)
+	alias := "t15-alias-" + uniqueSuffix()
+	seedModelAlias(t, modelID, alias, true)
+
+	body := channelBody(t, "t15-alias-chan-"+uniqueSuffix(), "DOMESTIC")
+	body["upstream_model_name_map"] = map[string]string{alias: "deepseek-v4-pro"}
+
+	rec := call(t, svc.CreateChannel, http.MethodPost, "/api/admin/channels", body,
+		testCallOptions{uid: uid, role: "OPS"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s, want 201", rec.Code, rec.Body.String())
+	}
+	var resp channelDetailResponse
+	decodeBody(t, rec, &resp)
+	t.Cleanup(func() {
+		ctx := context.Background()
+		_, _ = testDB.ExecContext(ctx, `DELETE FROM t_channel_dedicated_user WHERE channel_id = ?`, resp.Channel.ID)
+		_, _ = testDB.ExecContext(ctx, `DELETE FROM t_route WHERE channel_id = ?`, resp.Channel.ID)
+		_, _ = testDB.ExecContext(ctx, `DELETE FROM t_channel WHERE id = ?`, resp.Channel.ID)
+	})
+	if got := resp.Channel.UpstreamModelNames[alias]; got != "deepseek-v4-pro" {
+		t.Fatalf("saved map = %v, want %s=deepseek-v4-pro", resp.Channel.UpstreamModelNames, alias)
+	}
+}
+
+// 停用的别名要被拒：快照只加载 enabled=1 的别名，放行一个路由层不认的名字
+// 等于又造了一条静默不命中的规则。
+func TestChannelCreateRejectsDisabledAliasMapKey(t *testing.T) {
+	svc := newTestService(t)
+	uid := newTestUser(t, "OPS")
+	modelName := "t15-disabled-model-" + uniqueSuffix()
+	modelID := seedPlatformModel(t, modelName)
+	alias := "t15-disabled-alias-" + uniqueSuffix()
+	seedModelAlias(t, modelID, alias, false)
+
+	body := channelBody(t, "t15-disabled-chan-"+uniqueSuffix(), "DOMESTIC")
+	body["upstream_model_name_map"] = map[string]string{alias: "deepseek-v4-pro"}
+
+	rec := call(t, svc.CreateChannel, http.MethodPost, "/api/admin/channels", body,
+		testCallOptions{uid: uid, role: "OPS"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s, want 400", rec.Code, rec.Body.String())
+	}
+	eb := errorBody(t, rec)
+	if !strings.Contains(eb.Error.Message, alias) {
+		t.Fatalf("message = %q, want it to name the disabled alias", eb.Error.Message)
+	}
+}
+
+// 改了映射必须立刻重发路由快照：网关按快照里的映射决定发什么上游名，若不重发，
+// 保存成功到定时器刷新之间有长达 4 分钟的「配置生效了但行为没变」的窗口。
+func TestChannelPatchRepublishesWhenOnlyModelMapChanges(t *testing.T) {
+	svc := newTestService(t)
+	uid := newTestUser(t, "OPS")
+	modelName := "t15-repub-model-" + uniqueSuffix()
+	seedPlatformModel(t, modelName)
+	ch := createTestChannel(t, svc, uid, channelBody(t, "t15-repub-"+uniqueSuffix(), "DOMESTIC"))
+
+	calls := 0
+	svc.PublishRoutes = func(context.Context) error {
+		calls++
+		return nil
+	}
+	opts := testCallOptions{uid: uid, role: "OPS", pathVal: map[string]string{"id": strconv.FormatInt(ch.ID, 10)}}
+	path := "/api/admin/channels/" + strconv.FormatInt(ch.ID, 10)
+
+	rec := call(t, svc.UpdateChannel, http.MethodPatch, path,
+		map[string]any{"upstream_model_name_map": map[string]string{modelName: "upstream-x"}}, opts)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("publish calls = %d, want 1 (map change must republish)", calls)
+	}
+
+	// 值没变就不该重复发布：避免无意义的快照重建。
+	rec = call(t, svc.UpdateChannel, http.MethodPatch, path,
+		map[string]any{"upstream_model_name_map": map[string]string{modelName: "upstream-x"}}, opts)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("publish calls = %d, want still 1 (identical map)", calls)
+	}
+}
