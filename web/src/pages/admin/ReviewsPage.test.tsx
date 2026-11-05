@@ -169,10 +169,10 @@ describe('ReviewsPage', () => {
     await screen.findByText('申请人甲')
 
     await user.click(screen.getByRole('button', { name: '通过' }))
-    await screen.findByLabelText(/发票文件 URL/)
+    await screen.findByLabelText(/发票文件链接/)
     await user.click(screen.getByRole('button', { name: '确认通过' }))
 
-    expect(await screen.findByText('开票审批必须填写发票文件 URL。')).toBeInTheDocument()
+    expect(await screen.findByText('开票审批必须填写发票文件链接。')).toBeInTheDocument()
     expect(mockedPost).not.toHaveBeenCalled()
   })
 })

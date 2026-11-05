@@ -55,7 +55,7 @@ export default function AdminOverviewPage() {
     <div className="space-y-6">
       <PageHeader
         title="运营概览"
-        description="今日为 UTC+8 自然日；成功率分母为 0 时显示 —，不以 0 代替。"
+        description="按北京时间统计当天数据；分母为 0 时显示 —，不写 0。"
       />
 
       {error ? (
@@ -71,7 +71,7 @@ export default function AdminOverviewPage() {
               label="今日调用量"
               loading={loading}
               value={data ? formatInteger(data.today.requests) : undefined}
-              hint="今日 t_usage_record 全部请求行"
+              hint="今天收到的全部调用请求"
             />
             <StatCard
               label="今日消耗"
@@ -89,25 +89,25 @@ export default function AdminOverviewPage() {
                     : formatBasisPoints(data.today.success_rate_bp)
                   : undefined
               }
-              hint="SUCCESS / 非 402/429 请求；分母为 0 时为 —"
+              hint="成功且没被限流、没欠费的请求；没有请求时显示 —"
             />
             <StatCard
               label="待处理单据"
               loading={loading}
               value={data ? formatInteger(data.counts.pending_reviews) : undefined}
-              hint="审核中心 PENDING 队列"
+              hint="审核中心里还没处理的单据"
             />
             <StatCard
               label="未关闭工单"
               loading={loading}
               value={data ? formatInteger(data.counts.open_tickets) : undefined}
-              hint="OPEN + RESPONDED；SLA 只提示不处置"
+              hint="待处理与已回复的工单；超时只提醒，不自动关闭"
             />
             <StatCard
               label="异常渠道"
               loading={loading}
               value={data ? formatInteger(data.alerts.channel_abnormal) : undefined}
-              hint="境内、启用且 health_state 非 CLOSED"
+              hint="境内、已启用且健康状态正常的渠道"
             />
           </section>
 
@@ -136,22 +136,22 @@ export default function AdminOverviewPage() {
                 <AlertCard
                   label="悬挂预扣"
                   value={data?.alerts.dangling_prehold ?? 0}
-                  description="t_prehold_hold.state=HELD 且已过 expires_at"
+                  description="已冻结但超过解冻时间的预扣，可能占着可用额度"
                 />
                 <AlertCard
                   label="对账差异"
                   value={data?.alerts.recon_diff ?? 0}
-                  description="近 30 天 status=OPEN 的 t_reconcile_diff"
+                  description="近 30 天还没处理完的账目核对差异"
                 />
                 <AlertCard
-                  label="SLA 超时工单"
+                  label="超时未处理工单"
                   value={data?.alerts.sla_overdue ?? 0}
-                  description="OPEN、未响应且已过首次响应时限；保持 OPEN，需人工处理"
+                  description="待处理且超过首次响应时限；不会自动关闭，需人工处理"
                 />
                 <AlertCard
                   label="异常渠道"
                   value={data?.alerts.channel_abnormal ?? 0}
-                  description="境内、启用、未删除且 health_state 非 CLOSED"
+                  description="境内、已启用且未停用的渠道"
                 />
               </div>
             )}

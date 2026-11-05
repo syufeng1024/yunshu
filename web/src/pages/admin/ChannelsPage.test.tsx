@@ -92,7 +92,7 @@ describe('ChannelsPage', () => {
     expect(screen.getByRole('button', { name: '重新填写' })).toBeInTheDocument()
 
     // No plaintext input exists until 「重新填写」 is clicked.
-    expect(screen.queryByLabelText(/新的上游 Key/)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/新的上游密钥/)).not.toBeInTheDocument()
     const inputValues = Array.from(document.querySelectorAll('input')).map(
       (input) => (input as HTMLInputElement).value,
     )

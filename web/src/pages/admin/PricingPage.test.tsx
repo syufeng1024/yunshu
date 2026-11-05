@@ -40,7 +40,17 @@ function priceRule(overrides: Partial<AdminPriceRule> = {}): AdminPriceRule {
   }
 }
 
-const active = priceRule({ effective_to: '2026-11-05T00:00:00Z' })
+/**
+ * 「在售中」的价格必须有**未过期**的 effective_to。原来写死 `2026-11-05T00:00:00Z`，
+ * 到这一天（本地 08:00 之后）夹具就变成"已过期"，页面判定没有生效中的价格：
+ * 涨价方向退化成降价（生效时间 min 取当天）、新价又被要求填生效时间——两条用例
+ * 于是同时变红。夹具里的时间一律相对当前时刻生成，别再写死日期。
+ */
+function futureIso(days: number): string {
+  return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString()
+}
+
+const active = priceRule({ effective_to: futureIso(30) })
 
 const groups: PriceGroup[] = [
   {
@@ -246,7 +256,7 @@ describe('PricingPage', () => {
     installMock([
       priceRule({
         cache_hit_ratio_bp: 8500,
-        effective_to: '2026-11-05T00:00:00Z',
+        effective_to: futureIso(30),
       }),
     ])
     const user = await openPriceEditor()
@@ -278,8 +288,8 @@ describe('PricingPage', () => {
     const user = await openGroupEditor('internal')
 
     await user.click(screen.getByRole('button', { name: '保存' }))
-    const dialog = await screen.findByRole('dialog', { name: '确认修改 internal 分组' })
-    const confirm = within(dialog).getByRole('button', { name: '确认保存 internal 分组' })
+    const dialog = await screen.findByRole('dialog', { name: '确认修改内部分组' })
+    const confirm = within(dialog).getByRole('button', { name: '确认保存内部分组' })
     expect(confirm).toBeDisabled()
     expect(mockedPatch).not.toHaveBeenCalled()
 

@@ -196,7 +196,7 @@ export default function AdminTicketsPage() {
       setReplyContent('')
       setInternalConfirmOpen(false)
       if (isInternal) {
-        toast.success('内部备注已记录（用户不可见）', '状态与 SLA 均未改变。')
+        toast.success('内部备注已记录（用户不可见）', '状态与处理时限均未改变。')
       } else {
         toast.success('已回复用户', '工单状态已变为已响应。')
       }
@@ -288,7 +288,7 @@ export default function AdminTicketsPage() {
     },
     {
       key: 'sla',
-      header: 'SLA（服务端计算）',
+      header: '处理时限（系统计算）',
       render: (ticket) => (
         <div className={ticket.sla.overdue ? 'space-y-1 text-danger' : 'space-y-1'}>
           <p className="whitespace-nowrap text-xs">{ticket.sla.display}</p>
@@ -328,7 +328,7 @@ export default function AdminTicketsPage() {
     <div className="space-y-5">
       <PageHeader
         title="工单处理"
-        description="SLA 由服务端计算，只提示不处置；超时工单保持 OPEN，需运营人工回复或关闭。"
+        description="处理时限由系统计算，只提示不处置；超时工单不会自动关闭，需运营人工回复或关闭。"
         actions={
           <Button variant="secondary" onClick={() => openAudit()}>
             审计记录
@@ -343,7 +343,7 @@ export default function AdminTicketsPage() {
           value={search}
           onChange={(event) => setSearch(event.target.value)}
           placeholder="工单号或标题片段"
-          hint="后端按工单号与标题 LIKE 搜索。"
+          hint="按工单号或标题模糊搜索。"
         />
         <Select
           label="状态"
@@ -358,11 +358,11 @@ export default function AdminTicketsPage() {
           options={TYPE_OPTIONS}
         />
         <Select
-          label="SLA"
+          label="处理时限"
           value={overdueFilter}
           onChange={(event) => setOverdueFilter(event.target.value as OverdueFilter)}
           options={[
-            { value: 'ALL', label: '全部 SLA' },
+            { value: 'ALL', label: '全部处理时限' },
             { value: 'true', label: '仅已超时' },
             { value: 'false', label: '仅未超时' },
           ]}
@@ -434,9 +434,9 @@ export default function AdminTicketsPage() {
                     </Badge>
                   }
                 />
-                <InfoRow label="请求 ID" value={selected.request_id || '—'} />
+                <InfoRow label="请求编号" value={selected.request_id || '—'} />
                 <InfoRow
-                  label="策略命中 ID"
+                  label="规则命中编号"
                   value={
                     selected.policy_hit_id === null || selected.policy_hit_id === undefined
                       ? '—'
@@ -452,7 +452,7 @@ export default function AdminTicketsPage() {
                 <InfoRow label="创建时间" value={formatDateTime(selected.created_at)} />
                 <InfoRow label="重开次数" value={formatInteger(ticketDetail?.reopen_count ?? 0)} />
                 <InfoRow
-                  label="SLA"
+                  label="处理时限"
                   value={
                     ticketSla ? (
                       <span className={ticketSla.overdue ? 'text-danger' : undefined}>
@@ -573,7 +573,7 @@ export default function AdminTicketsPage() {
                       </Button>
                     </div>
                     <p className="rounded-lg border border-info bg-info-soft px-3 py-2 text-xs text-info">
-                      内部备注仅运营可见，不会发给用户、不改变工单状态，也不停止 SLA 计时；提交前会再次确认。
+                      内部备注仅运营可见，不会发给用户、不改变工单状态，也不停止处理时限计时；提交前会再次确认。
                     </p>
                   </>
                 )}
@@ -582,7 +582,7 @@ export default function AdminTicketsPage() {
               <section className="space-y-2">
                 <h3 className="text-sm font-semibold text-ink">状态</h3>
                 <p className="text-xs text-ink-muted">
-                  只有 OPEN / RESPONDED / CLOSED 三态。关闭是运营手工动作；SLA 超时只做提示，需人工处理。
+                  工单只有「待处理 / 已回复 / 已关闭」三种状态。关闭是运营手工动作；超过处理时限只做提示，需人工处理。
                 </p>
                 <Button
                   variant="danger"
@@ -606,7 +606,7 @@ export default function AdminTicketsPage() {
       <ConfirmDialog
         open={internalConfirmOpen}
         title="提交内部备注"
-        description="内部备注仅运营可见，不会发给用户、不改变工单状态、也不停止 SLA 计时。确认提交？"
+        description="内部备注仅运营可见，不会发给用户、不改变工单状态、也不停止处理时限计时。确认提交？"
         confirmLabel="确认提交内部备注"
         loading={savingReply}
         error={replyError}
@@ -622,7 +622,7 @@ export default function AdminTicketsPage() {
         title="关闭工单"
         description={
           <div className="space-y-3">
-            <p>关闭后不可再回复；这是人工关闭，SLA 只提示不处置。</p>
+            <p>关闭后不可再回复；这是人工关闭，处理时限只提示不处置。</p>
             <Input
               label="关闭原因（可选）"
               value={closeReason}

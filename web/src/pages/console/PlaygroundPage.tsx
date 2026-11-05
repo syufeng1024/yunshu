@@ -30,7 +30,7 @@ import { usePageTitle } from '@/lib/usePageTitle'
  *
  * 结构：工具条（密钥 / 模型 / 高级参数折叠）→ 计费与快捷键提示 → 对话区
  * （flex-1 内部滚动）→ 底部 composer（Enter 发送、Shift+Enter 换行）→ 默认收起
- * 的「请求预览与调用代码」。
+ * 的「开发者信息（请求参数与调用示例）」。
  *
  * 两处刻意的取舍，别当成漏做：
  *  1. **不再提供逐条消息的 role 下拉和单条删除**。这里是「一条条聊」的对话台，
@@ -404,7 +404,7 @@ export default function PlaygroundPage() {
     // 空输入排在密钥 / 余额 / 模型之后：真正的阻断原因不能被「请输入内容」盖掉。
     if (!draftText) {
       setSendError('请输入消息内容后再发送。')
-      setSendHint('Enter 发送，Shift+Enter 换行。')
+      setSendHint('回车发送，Shift + 回车换行。')
       return
     }
 
@@ -584,7 +584,7 @@ export default function PlaygroundPage() {
       <PageHeader
         className="pb-4 sm:pb-5"
         title="在线调试台"
-        description="选择密钥与模型后直接对话，响应流式返回。"
+        description="选择密钥与模型后直接对话，回答会边生成边显示。"
         actions={balanceCard}
       />
 
@@ -651,7 +651,7 @@ export default function PlaygroundPage() {
       </div>
 
       <p className="text-xs text-ink-muted">
-        费用按实际调用计入当前账号；Enter 发送，Shift+Enter 换行。
+        费用按实际调用计入当前账号；回车发送，Shift + 回车换行。
       </p>
 
       {advancedOpen ? (
@@ -661,43 +661,50 @@ export default function PlaygroundPage() {
           className="space-y-3 rounded-xl border border-border bg-surface p-4 shadow-card"
         >
           <label className="block space-y-1.5">
-            <span className="block text-sm font-medium text-ink">System 提示词</span>
+            <span className="block text-sm font-medium text-ink">角色设定</span>
             <textarea
               value={system}
               onChange={(event) => setSystem(event.target.value)}
               rows={2}
               className="w-full rounded-lg border border-border-strong bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
               placeholder="设定助手角色与回答约束"
-              aria-label="System 提示词"
+              aria-label="角色设定"
             />
           </label>
 
           <div className="grid gap-3 sm:grid-cols-3">
             <Input
-              label="temperature"
+              label="回答发散度"
               type="number"
               min={0}
               max={2}
               step="0.1"
               value={temperature}
+              // 中文名 + 说明代替 temperature：运营和需求方看不懂参数名，
+              // 但调参的人靠这句「0 最稳、越大越随机」也够用。
+              hint="0 最稳定、2 最随机，常用 0.7。"
               onChange={(event) => setTemperature(event.target.value)}
             />
             <Input
-              label="max_tokens"
+              label="最长回答长度"
               type="number"
               min={1}
               step={1}
               value={maxTokens}
+              hint="按字计算，越大回答越长、扣的积分越多。"
               onChange={(event) => setMaxTokens(event.target.value)}
             />
-            <label className="flex h-full items-center gap-2 pt-6 text-sm text-ink">
+            <label className="flex h-full items-start gap-2 pt-6 text-sm text-ink">
               <input
                 type="checkbox"
                 checked={stream}
                 onChange={(event) => setStream(event.target.checked)}
-                className="h-4 w-4 rounded border-border-strong text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                className="mt-0.5 h-4 w-4 rounded border-border-strong text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
               />
-              流式输出（stream）
+              <span className="space-y-0.5">
+                <span className="block">逐字显示回答</span>
+                <span className="block text-xs text-ink-muted">关闭后等整段答完再一次性显示。</span>
+              </span>
             </label>
           </div>
         </section>
@@ -812,7 +819,7 @@ export default function PlaygroundPage() {
             onKeyDown={handleComposerKeyDown}
             aria-label="消息输入"
             rows={2}
-            placeholder="输入消息，Enter 发送，Shift+Enter 换行"
+            placeholder="输入消息，回车发送，Shift + 回车换行"
             className="max-h-36 w-full resize-none rounded-lg border border-border-strong bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
           />
           <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
@@ -854,7 +861,7 @@ export default function PlaygroundPage() {
           aria-controls="playground-dev"
           className="flex w-full items-center justify-between gap-2 px-4 py-2.5 text-sm font-medium text-ink transition-colors duration-fast hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         >
-          请求预览与调用代码
+          开发者信息（请求参数与调用示例）
           <Icon
             name="chevron-down"
             className={cn(

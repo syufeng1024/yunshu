@@ -172,10 +172,10 @@ export default function AdminReviewsPage() {
       decisionKind === 'approve' && target.biz_type === 'INVOICE_APPLY'
     if (invoiceRequired) {
       if (!invoiceUrl.trim()) {
-        setInvoiceError('开票审批必须填写发票文件 URL。')
+        setInvoiceError('开票审批必须填写发票文件链接。')
         invalid = true
       } else if ([...invoiceUrl.trim()].length > INVOICE_URL_MAX) {
-        setInvoiceError(`发票文件 URL 最多 ${INVOICE_URL_MAX} 个字符。`)
+        setInvoiceError(`发票文件链接最多 ${INVOICE_URL_MAX} 个字符。`)
         invalid = true
       }
     }
@@ -420,7 +420,7 @@ export default function AdminReviewsPage() {
     <div className="space-y-5">
       <PageHeader
         title="审核中心"
-        description="默认 PENDING，按提交时间升序；不提供金额排序，审批人不得审批自己的单据。"
+        description="默认只看待处理的单据，按提交时间从早到晚排序；审批人不能审批自己提交的单据。"
         actions={
           <Button variant="secondary" onClick={() => openAudit()}>
             审计记录
@@ -515,11 +515,11 @@ export default function AdminReviewsPage() {
 
             {invoiceRequired ? (
               <Input
-                label="发票文件 URL（开票申请必填）"
+                label="发票文件链接（开票申请必填）"
                 required
                 value={invoiceUrl}
                 error={invoiceError ?? undefined}
-                hint="后端 IssueInvoice 无文件不收单。"
+                hint="开票必须上传发票文件，没有文件无法提交。"
                 onChange={(event) => {
                   setInvoiceUrl(event.target.value)
                   setInvoiceError(null)

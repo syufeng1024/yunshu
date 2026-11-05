@@ -150,11 +150,11 @@ async function openAdvanced() {
   if (toggle.getAttribute('aria-expanded') !== 'true') {
     fireEvent.click(toggle)
   }
-  await screen.findByLabelText('System 提示词')
+  await screen.findByLabelText('角色设定')
 }
 
 async function openDeveloperInfo() {
-  const toggle = screen.getByRole('button', { name: /请求预览与调用代码/ })
+  const toggle = screen.getByRole('button', { name: /开发者信息（请求参数与调用示例）/ })
   if (toggle.getAttribute('aria-expanded') !== 'true') {
     fireEvent.click(toggle)
   }
@@ -180,11 +180,11 @@ describe('PlaygroundPage', () => {
     expect(composer()).toHaveValue('请把下面的技术文档总结成三条要点：\n')
 
     await openAdvanced()
-    expect(screen.getByLabelText('System 提示词')).toHaveValue(
+    expect(screen.getByLabelText('角色设定')).toHaveValue(
       '你是一名技术编辑，回答使用简体中文，先给结论。',
     )
-    expect(screen.getByLabelText('temperature')).toHaveValue(0.3)
-    expect(screen.getByLabelText('max_tokens')).toHaveValue(512)
+    expect(screen.getByLabelText('回答发散度')).toHaveValue(0.3)
+    expect(screen.getByLabelText('最长回答长度')).toHaveValue(512)
 
     expect(mockedChat).not.toHaveBeenCalled()
     for (const call of mockedGet.mock.calls) {

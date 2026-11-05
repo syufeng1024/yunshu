@@ -623,7 +623,7 @@ export default function AdminUsersPage() {
         open={detailId !== null}
         onClose={() => setDetailId(null)}
         title="用户详情"
-        description="余额与状态展示；余额调整需另一位审核人批准，Key 数为实时聚合值。"
+        description="余额与状态展示；余额调整需另一位审核人批准，密钥数为实时汇总值。"
         size="lg"
       >
         {detail.isLoading ? (
@@ -808,7 +808,7 @@ export default function AdminUsersPage() {
             </section>
 
             <section className="space-y-1">
-              <h3 className="text-sm font-semibold text-ink">Key 数</h3>
+              <h3 className="text-sm font-semibold text-ink">密钥数</h3>
               <p className="text-sm text-ink">
                 {formatInteger(detailUser.key_count)} 个活跃 Key
               </p>

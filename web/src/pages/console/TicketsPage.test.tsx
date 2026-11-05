@@ -333,7 +333,7 @@ describe('TicketsPage', () => {
     })
     renderWithProviders(<TicketsPage />)
 
-    expect(await screen.findByText('SLA 超时')).toBeInTheDocument()
+    expect(await screen.findByText('处理超时')).toBeInTheDocument()
     expect(screen.getByText('已超时 2 小时')).toBeInTheDocument()
   })
 

@@ -1228,13 +1228,13 @@ export default function AdminPricingPage() {
                 <div className="flex flex-wrap items-end justify-between gap-3">
                   <div className="grid gap-3 sm:grid-cols-3">
                     <Input
-                      label="模型 ID"
+                      label="模型编号"
                       inputMode="numeric"
                       value={modelIdFilter}
-                      placeholder="按 model_id 筛选"
+                      placeholder="按模型编号筛选"
                       error={
                         modelIdFilter.trim() && modelIdParam === null
-                          ? '模型 ID 需为正整数。'
+                          ? '模型编号需为正整数。'
                           : undefined
                       }
                       onChange={(event) => {
@@ -1652,7 +1652,7 @@ export default function AdminPricingPage() {
               <>
                 <CheckboxField
                   label="确认按无成本价保存（不参与毛利地板校验）"
-                  description="后端要求显式传 confirm_no_cost=true；该确认会写入审计。"
+                  description="不计费需要单独勾选确认，这条确认会写入审计记录。"
                   checked={form.confirmNoCost}
                   onChange={(checked) => updateField('confirmNoCost', checked)}
                 />
@@ -1668,7 +1668,7 @@ export default function AdminPricingPage() {
               label="成本币种"
               value={form.currency}
               error={errors.currency}
-              hint="当前后端仅接受 CNY。"
+              hint="当前只支持人民币。"
               onChange={(event) => updateField('currency', event.target.value)}
             />
             <div className="space-y-1">
@@ -1756,7 +1756,7 @@ export default function AdminPricingPage() {
         open={groupTarget !== null}
         onClose={closeGroup}
         title="编辑分组倍率"
-        description="保存后后端会异步写穿到该分组下所有 Key；同步结果在下方展示。"
+        description="保存后会把新倍率同步到该分组下所有密钥；同步结果显示在下方。"
         size="md"
         footer={
           <>
@@ -1782,14 +1782,14 @@ export default function AdminPricingPage() {
               disabled={groupInternal}
               hint={
                 groupInternal
-                  ? 'internal 固定为 0：语义为不计费。'
+                  ? '内部渠道固定为 0：表示不计费。'
                   : '8500 表示 0.85；必须大于 0 且不超过 10000。'
               }
               onChange={(event) => setRatioBp(event.target.value)}
             />
             {groupInternal ? (
               <Input
-                label="备注（internal 必填）"
+                label="备注（内部渠道必填）"
                 value={groupRemark}
                 onChange={(event) => setGroupRemark(event.target.value)}
                 hint="需写明不计费语义，后端会拒绝空备注。"
@@ -1844,14 +1844,14 @@ export default function AdminPricingPage() {
             ) : null}
             {groupSync ? (
               <div className="space-y-1 rounded-lg border border-border bg-surface-muted p-3 text-xs">
-                <p className="font-medium text-ink">Key 同步结果</p>
+                <p className="font-medium text-ink">密钥同步结果</p>
                 <p className="text-ink-secondary">
-                  影响 Key 数：{formatInteger(groupSync.keys)} · 结果：
+                  影响密钥数：{formatInteger(groupSync.keys)} · 结果：
                   {groupSync.ok ? '成功' : '失败'}（后端异步写穿）
                 </p>
                 {groupSync.note ? <p className="text-ink-muted">{groupSync.note}</p> : null}
                 {groupSync.keys === 0 && groupSync.ok ? (
-                  <p className="text-ink-muted">该分组下没有需要同步的 Key。</p>
+                  <p className="text-ink-muted">该分组下没有需要同步的密钥。</p>
                 ) : null}
               </div>
             ) : null}
@@ -1865,8 +1865,8 @@ export default function AdminPricingPage() {
           if (updateGroup.isPending) return
           setInternalConfirmOpen(false)
         }}
-        title="确认修改 internal 分组"
-        description="internal 的倍率 0 表示不计费。保存须二次确认并填写理由，理由会写入审计日志。"
+        title="确认修改内部分组"
+        description="内部渠道的倍率 0 表示不计费。保存须二次确认并填写理由，理由会写入审计日志。"
         size="sm"
         footer={
           <>
@@ -1881,7 +1881,7 @@ export default function AdminPricingPage() {
               onClick={confirmInternalSave}
               loading={updateGroup.isPending}
               disabled={!confirmReason.trim()}
-              aria-label="确认保存 internal 分组"
+              aria-label="确认保存内部分组"
             >
               确认保存
             </Button>

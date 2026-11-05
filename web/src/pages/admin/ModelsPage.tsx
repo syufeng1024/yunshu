@@ -296,13 +296,13 @@ export default function AdminModelsPage() {
 
     const protocolID = parseInteger(form.protocolId)
     if (protocolID === null || protocolID <= 0) {
-      nextErrors.protocolId = '请填写有效的协议 ID（正整数）。'
+      nextErrors.protocolId = '请填写有效的协议编号（正整数）。'
     }
 
     const primaryRaw = form.primaryChannelId.trim()
     const parsedPrimary = primaryRaw ? parseInteger(primaryRaw) : undefined
     if (primaryRaw && (parsedPrimary === null || parsedPrimary === undefined || parsedPrimary <= 0)) {
-      nextErrors.primaryChannelId = '主渠道 ID 需为正整数，留空表示不指定。'
+      nextErrors.primaryChannelId = '主渠道编号需为正整数，留空表示不指定。'
     }
     const primaryChannelID =
       parsedPrimary !== null && parsedPrimary !== undefined && parsedPrimary > 0
@@ -730,7 +730,7 @@ export default function AdminModelsPage() {
               required
               value={form.modelName}
               error={errors.modelName}
-              hint="对外调用使用的 model_name；改名会同步影响价格表与模型广场。"
+              hint="对外调用时使用的模型名；改名会同步影响价格表与模型广场。"
               onChange={(event) => updateField('modelName', event.target.value)}
             />
             <Input
@@ -754,7 +754,7 @@ export default function AdminModelsPage() {
               ]}
             />
             <Input
-              label="协议 ID"
+              label="协议编号"
               required
               inputMode="numeric"
               value={form.protocolId}
@@ -781,7 +781,7 @@ export default function AdminModelsPage() {
               onChange={(event) => updateField('contextLength', event.target.value)}
             />
             <Input
-              label="主渠道 ID"
+              label="主渠道编号"
               inputMode="numeric"
               value={form.primaryChannelId}
               error={errors.primaryChannelId}
@@ -860,7 +860,7 @@ export default function AdminModelsPage() {
                     setNewAlias(event.target.value)
                     setAliasError(null)
                   }}
-                  hint="别名与任何模型的 model_name 不得互相占用。"
+                  hint="别名不能与任何已有模型名重复。"
                 />
                 <Button
                   variant="secondary"

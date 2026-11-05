@@ -51,11 +51,13 @@ const SCOPE_OPTIONS = [
   { value: 'SELECTED', label: '指定分组' },
 ]
 
+// 用量口径原来是「NATIVE（上游返回用量）」这种「枚举 + 括号解释」的写法，
+// 运营看到的第一眼是英文。只留中文解释，枚举交给接口，界面上不出现代码值。
 const STREAM_USAGE_OPTIONS = [
-  { value: 'NATIVE', label: 'NATIVE（上游返回用量）' },
-  { value: 'STREAM_OPTIONS', label: 'STREAM_OPTIONS（流内 options）' },
-  { value: 'ESTIMATE', label: 'ESTIMATE（本地估算）' },
-  { value: 'UNKNOWN', label: 'UNKNOWN（未知）' },
+  { value: 'NATIVE', label: '上游返回的用量' },
+  { value: 'STREAM_OPTIONS', label: '从返回内容里读取用量' },
+  { value: 'ESTIMATE', label: '本地按字数估算' },
+  { value: 'UNKNOWN', label: '未知（不做限制）' },
 ]
 
 interface ChannelFormState {
@@ -197,29 +199,29 @@ function validateForm(
   }
 
   const protocolID = parseInteger(form.protocolId)
-  if (protocolID === null || protocolID <= 0) errors.protocolId = '请填写有效的协议 ID（正整数）。'
+  if (protocolID === null || protocolID <= 0) errors.protocolId = '请填写有效的协议编号（正整数）。'
 
   const baseURL = form.baseUrl.trim()
   if (!baseURL) {
-    errors.baseUrl = '请填写 Base URL。'
+    errors.baseUrl = '请填写接入地址。'
   } else {
     try {
       const parsed = new URL(baseURL)
       if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-        errors.baseUrl = 'Base URL 只支持 http 或 https。'
+        errors.baseUrl = '接入地址只支持 http 或 https。'
       }
     } catch {
-      errors.baseUrl = 'Base URL 不是合法地址。'
+      errors.baseUrl = '接入地址不是合法地址。'
     }
   }
 
   const upstreamKey = form.upstreamKey.trim()
   if (mode === 'create' && !upstreamKey) {
-    errors.upstreamKey = '新建渠道必须填写上游 Key。'
+    errors.upstreamKey = '新建渠道必须填写上游密钥。'
   } else if (mode === 'edit' && keyTouched && !upstreamKey) {
-    errors.upstreamKey = '已选择重新填写，请填写新的上游 Key；取消后可保留原 Key。'
+    errors.upstreamKey = '已选择重新填写，请填写新的上游密钥；取消后保留原密钥。'
   } else if (upstreamKey.length > 512) {
-    errors.upstreamKey = '上游 Key 最多 512 个字符。'
+    errors.upstreamKey = '上游密钥最多 512 个字符。'
   }
 
   const weight = parseInteger(form.weight)
@@ -251,7 +253,7 @@ function validateForm(
   if (form.dedicatedScopeMode === 'SELECTED') {
     dedicatedUserIDs = parseUserIDs(form.dedicatedUserIds)
     if (dedicatedUserIDs === null) {
-      errors.dedicatedUserIds = '专属名单需为逗号分隔的正整数用户 ID，最多 1000 个。'
+      errors.dedicatedUserIds = '专属名单需为逗号分隔的正整数用户编号，最多 1000 个。'
     }
   }
 
@@ -486,8 +488,7 @@ export default function ChannelsPage() {
         render: (row) => (
           <div className="space-y-0.5">
             <p className="font-medium text-ink">{row.name}</p>
-            <code className="text-xs text-ink-secondary">{row.protocol}</code>
-          </div>
+            </div>
         ),
       },
       {
@@ -618,7 +619,7 @@ export default function ChannelsPage() {
     <div className="space-y-5">
       <PageHeader
         title="渠道管理"
-        description="来源地仅支持境内；上游 Key 保存后只返回掩码。"
+        description="来源地仅支持境内；上游密钥保存后只显示掩码，不再展示明文。"
         actions={
           <>
             <Button variant="secondary" onClick={() => openAudit()}>
@@ -732,15 +733,15 @@ export default function ChannelsPage() {
                 onChange={(event) => updateField('name', event.target.value)}
               />
               <Input
-                label="协议 ID"
+                label="协议编号"
                 required
                 inputMode="numeric"
                 value={form.protocolId}
                 error={errors.protocolId}
                 hint={
                   loadedChannel
-                    ? `当前协议代码：${protocolLabel(loadedChannel.protocol)}`
-                    : '填写后端 t_protocol.id'
+                    ? `当前协议：${protocolLabel(loadedChannel.protocol)}`
+                    : '填写平台登记的协议编号，可向技术同事索取'
                 }
                 onChange={(event) => updateField('protocolId', event.target.value)}
               />
@@ -754,37 +755,37 @@ export default function ChannelsPage() {
             {errors.region ? <p className="text-xs text-danger">{errors.region}</p> : null}
 
             <Input
-              label="Base URL"
+              label="接入地址"
               required
               value={form.baseUrl}
               error={errors.baseUrl}
-              hint="https 强制；http 仅回环或私网地址可用。"
+              hint="只接受 https 地址；http 仅限本机或内网地址。"
               onChange={(event) => updateField('baseUrl', event.target.value)}
             />
 
             {creating ? (
               <Input
-                label="上游 Key"
+                label="上游密钥"
                 required
                 type="password"
                 autoComplete="new-password"
                 value={form.upstreamKey}
                 error={errors.upstreamKey}
-                hint="保存后只返回掩码，无法再次查看明文。"
+                hint="保存后只显示掩码，无法再次查看明文。"
                 onChange={(event) => updateField('upstreamKey', event.target.value)}
               />
             ) : (
               <div className="space-y-2 rounded-lg border border-border bg-surface-muted p-3">
-                <p className="text-sm font-medium text-ink">上游 Key</p>
+                <p className="text-sm font-medium text-ink">上游密钥</p>
                 {upstreamKeyTouched ? (
                   <>
                     <Input
-                      label="新的上游 Key"
+                      label="新的上游密钥"
                       type="password"
                       autoComplete="new-password"
                       value={form.upstreamKey}
                       error={errors.upstreamKey}
-                      hint="填写后保存会覆盖原 Key 并轮换；留空不会提交该字段。"
+                      hint="填写后保存会覆盖原密钥并轮换；留空不会提交该字段。"
                       onChange={(event) => updateField('upstreamKey', event.target.value)}
                     />
                     <Button
@@ -889,10 +890,10 @@ export default function ChannelsPage() {
 
             {form.dedicatedScopeMode === 'SELECTED' ? (
               <Input
-                label="专属用户 ID"
+                label="专属用户编号"
                 value={form.dedicatedUserIds}
                 error={errors.dedicatedUserIds}
-                hint="逗号分隔的正整数用户 ID，最多 1000 个。"
+                hint="用逗号分隔的用户编号，最多 1000 个。"
                 onChange={(event) => updateField('dedicatedUserIds', event.target.value)}
               />
             ) : null}

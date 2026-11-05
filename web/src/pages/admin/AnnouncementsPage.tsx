@@ -711,7 +711,7 @@ export default function AdminAnnouncementsPage() {
         open={drawerOpen}
         onClose={closeDrawer}
         title={creating ? '新建公告' : '编辑公告'}
-        description="保存为草稿或设置未来发布时间；到点发布由后端 jobsd 完成，前端不做本地定时。"
+        description="保存为草稿或设置未来发布时间；到点由系统自动发布，页面不需要保持打开。"
         size="lg"
         footer={
           <>

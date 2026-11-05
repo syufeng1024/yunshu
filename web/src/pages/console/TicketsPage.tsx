@@ -82,7 +82,7 @@ function buildColumns(
           <p className="whitespace-nowrap text-xs text-ink-secondary">
             {row.sla.display}
           </p>
-          {row.sla.overdue ? <Badge variant="danger">SLA 超时</Badge> : null}
+          {row.sla.overdue ? <Badge variant="danger">处理超时</Badge> : null}
         </div>
       ),
     },
