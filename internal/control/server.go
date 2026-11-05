@@ -366,6 +366,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 	// 渠道能提供哪些模型不要手填：用渠道自己的密钥读上游 /v1/models。
 	// 只读接口，登记模型（含定价/上架）仍走 POST /api/admin/models。
 	mux.Handle("GET /api/admin/channels/{id}/upstream-models", s.authed(mw.PermChannelRead, s.ops.ChannelUpstreamModels))
+	// 把选中的上游模型登记成平台模型（CATALOG_ONLY）+ 建路由，定价与上架仍由人工完成。
+	mux.Handle("POST /api/admin/channels/{id}/register-upstream-models", s.authed(mw.PermModelWrite, s.ops.RegisterUpstreamModels))
 	mux.Handle("POST /api/admin/channels", s.authed(mw.PermChannelWrite, s.ops.CreateChannel))
 	mux.Handle("PATCH /api/admin/channels/{id}", s.authed(mw.PermChannelWrite, s.ops.UpdateChannel))
 	mux.Handle("POST /api/admin/channels/{id}/disable", s.authed(mw.PermChannelWrite, s.ops.DisableChannel))

@@ -303,3 +303,264 @@ func decodeModelMap(raw string) map[string]string {
 func modelListSnippet(s string, limit int) string {
 	return truncateRunes(strings.Join(strings.Fields(s), " "), limit)
 }
+
+// ---------------------------------------------------------------------------
+// 一键登记（POST /api/admin/channels/{id}/register-upstream-models）
+// ---------------------------------------------------------------------------
+
+const (
+	// registerMaxModels bounds one request. A catalogue is small today (2 for
+	// DeepSeek); the limit exists so a misbehaving upstream returning thousands
+	// of ids cannot turn one click into an unbounded transaction.
+	registerMaxModels = 50
+)
+
+type registerUpstreamModelsRequest struct {
+	ModelIDs []string `json:"model_ids"`
+}
+
+type registeredModelView struct {
+	ModelID      int64  `json:"model_id"`
+	ModelName    string `json:"model_name"`
+	RouteCreated bool   `json:"route_created"`
+}
+
+type skippedModelView struct {
+	ModelName string `json:"model_name"`
+	Reason    string `json:"reason"`
+}
+
+type registerUpstreamModelsResponse struct {
+	Created []registeredModelView `json:"created"`
+	Skipped []skippedModelView    `json:"skipped"`
+}
+
+// RegisterUpstreamModels imports selected upstream models into the platform.
+//
+// One click does three things that used to be three hand-run steps: create the
+// t_model row (CATALOG_ONLY, no price), bind it to this channel with a t_route,
+// and leave the price/listing decision to the operator.
+//
+// The upstream catalogue is re-read here rather than trusting the ids the
+// console sends: display name and context length come from the vendor, and an
+// id that the vendor no longer offers must not become a model row.
+func (s *Service) RegisterUpstreamModels(w http.ResponseWriter, r *http.Request) {
+	id, apiErr := pathID(r, "id")
+	if apiErr != nil {
+		mw.WriteError(w, r, apiErr)
+		return
+	}
+	var req registerUpstreamModelsRequest
+	if apiErr := decodeJSON(w, r, &req); apiErr != nil {
+		mw.WriteError(w, r, apiErr)
+		return
+	}
+	if len(req.ModelIDs) == 0 || len(req.ModelIDs) > registerMaxModels {
+		mw.WriteError(w, r, mw.InvalidField("model_ids"))
+		return
+	}
+	if s.Box == nil {
+		mw.WriteError(w, r, apierr.New(apierr.CodeConfigUnavailable).
+			WithMessage("渠道密钥未配置解密密钥（CHANNEL_KEY_KEK），无法向上游核对模型"))
+		return
+	}
+
+	ctx := r.Context()
+	var (
+		baseURL  string
+		envelope string
+		region   string
+		protocol int64
+		streamOK bool
+	)
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT base_url, upstream_key_enc, region, protocol_id, stream_supported
+		FROM t_channel
+		WHERE id = ? AND deleted_at IS NULL`, id).
+		Scan(&baseURL, &envelope, &region, &protocol, &streamOK)
+	if errors.Is(err, sql.ErrNoRows) {
+		mw.WriteError(w, r, apierr.New(apierr.CodeChannelNotFound))
+		return
+	}
+	if err != nil {
+		s.logError(ctx, "ops_register_models_load_channel_failed: "+err.Error())
+		mw.WriteError(w, r, apierr.New(apierr.CodeInternalError))
+		return
+	}
+
+	plain, err := s.Box.Open(envelope)
+	if err != nil {
+		s.logError(ctx, "ops_register_models_open_failed: "+err.Error())
+		mw.WriteError(w, r, apierr.New(apierr.CodeUpstreamKeyUnavailable).
+			WithMessage("渠道密钥无法解密，请重新填写上游密钥"))
+		return
+	}
+	catalogue, apiErr := fetchUpstreamModels(ctx, baseURL, string(plain))
+	if apiErr != nil {
+		mw.WriteError(w, r, apiErr)
+		return
+	}
+	byID := make(map[string]upstreamModelItem, len(catalogue))
+	for _, item := range catalogue {
+		byID[item.ID] = item
+	}
+
+	// Validate every id before touching the database: a typo should cost a 400,
+	// not a half-imported batch.
+	seen := make(map[string]struct{}, len(req.ModelIDs))
+	selected := make([]upstreamModelItem, 0, len(req.ModelIDs))
+	var unknown []string
+	for _, raw := range req.ModelIDs {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		item, ok := byID[name]
+		if !ok {
+			unknown = append(unknown, name)
+			continue
+		}
+		selected = append(selected, item)
+	}
+	if len(unknown) > 0 {
+		mw.WriteError(w, r, apierr.Newf(apierr.CodeInvalidRequestBody,
+			"上游没有这些模型："+strings.Join(unknown, "、")+"（可刷新列表后重试）"))
+		return
+	}
+	if len(selected) == 0 {
+		mw.WriteError(w, r, mw.InvalidField("model_ids"))
+		return
+	}
+
+	now := s.now()
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		s.logError(ctx, "ops_register_models_begin_failed: "+err.Error())
+		mw.WriteError(w, r, apierr.New(apierr.CodeInternalError))
+		return
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	out := registerUpstreamModelsResponse{Created: []registeredModelView{}, Skipped: []skippedModelView{}}
+	for _, item := range selected {
+		var existingID int64
+		err := tx.QueryRowContext(ctx,
+			`SELECT id FROM t_model WHERE model_name = ? AND deleted_at IS NULL LIMIT 1`,
+			item.ID).Scan(&existingID)
+		switch {
+		case err == nil:
+			// Already registered: still make sure this channel can route it, so a
+			// second click on a partially configured setup finishes the job.
+			created, routeErr := insertRoute(ctx, tx, existingID, id, protocol, item.ID, region, streamOK, now)
+			if routeErr != nil {
+				s.logError(ctx, "ops_register_models_route_failed: "+routeErr.Error())
+				mw.WriteError(w, r, apierr.New(apierr.CodeInternalError))
+				return
+			}
+			reason := "already_registered"
+			if created {
+				reason = "already_registered_route_added"
+			}
+			out.Skipped = append(out.Skipped, skippedModelView{ModelName: item.ID, Reason: reason})
+			continue
+		case !errors.Is(err, sql.ErrNoRows):
+			s.logError(ctx, "ops_register_models_check_failed: "+err.Error())
+			mw.WriteError(w, r, apierr.New(apierr.CodeInternalError))
+			return
+		}
+
+		display := item.Name
+		if display == "" {
+			display = item.ID
+		}
+		res, err := tx.ExecContext(ctx, `
+			INSERT INTO t_model
+				(model_name, display_name, region, model_type, protocol_id, primary_channel_id,
+				 context_length, capability_mask, listing_state, recommend_weight,
+				 published_at, delisted_at, created_at, updated_at)
+			VALUES (?,?,?, 'TEXT', ?, ?, ?, 0, ?, 0, NULL, NULL, ?, ?)`,
+			item.ID, display, region, protocol, id, item.ContextWindow, listingCatalogOnly, now, now)
+		if err != nil {
+			s.logError(ctx, "ops_register_models_insert_failed: "+err.Error())
+			mw.WriteError(w, r, apierr.New(apierr.CodeInternalError))
+			return
+		}
+		modelID, err := res.LastInsertId()
+		if err != nil {
+			s.logError(ctx, "ops_register_models_id_failed: "+err.Error())
+			mw.WriteError(w, r, apierr.New(apierr.CodeInternalError))
+			return
+		}
+		routeCreated, routeErr := insertRoute(ctx, tx, modelID, id, protocol, item.ID, region, streamOK, now)
+		if routeErr != nil {
+			s.logError(ctx, "ops_register_models_route_failed: "+routeErr.Error())
+			mw.WriteError(w, r, apierr.New(apierr.CodeInternalError))
+			return
+		}
+		if err := s.insertAudit(ctx, tx, r, "MODEL", "CREATE", "t_model", modelID, nil,
+			map[string]any{
+				"model_name":     item.ID,
+				"display_name":   display,
+				"region":         region,
+				"protocol_id":    protocol,
+				"channel_id":     id,
+				"context_length": item.ContextWindow,
+				"listing_state":  listingCatalogOnly,
+				"source":         "upstream_catalogue",
+			}, ""); err != nil {
+			s.logError(ctx, "ops_register_models_audit_failed: "+err.Error())
+			mw.WriteError(w, r, apierr.New(apierr.CodeInternalError))
+			return
+		}
+		out.Created = append(out.Created, registeredModelView{
+			ModelID: modelID, ModelName: item.ID, RouteCreated: routeCreated,
+		})
+	}
+
+	if err := tx.Commit(); err != nil {
+		s.logError(ctx, "ops_register_models_commit_failed: "+err.Error())
+		mw.WriteError(w, r, apierr.New(apierr.CodeInternalError))
+		return
+	}
+	committed = true
+
+	// New t_route rows are invisible to the gateway until the snapshot is
+	// republished. Only worth doing when a route actually landed.
+	if len(out.Created) > 0 {
+		if apiErr := s.publish(ctx); apiErr != nil {
+			mw.WriteError(w, r, apiErr)
+			return
+		}
+	}
+	_ = mw.WriteJSON(w, http.StatusOK, out)
+}
+
+// insertRoute binds model to channel. INSERT IGNORE because the unique key is
+// (model_id, channel_id, protocol_id, upstream_model_name): re-clicking the
+// same button must be a no-op, not a 500.
+func insertRoute(ctx context.Context, tx *sql.Tx, modelID, channelID, protocol int64,
+	upstreamName, region string, streamSupported bool, now time.Time) (bool, error) {
+	res, err := tx.ExecContext(ctx, `
+		INSERT IGNORE INTO t_route
+			(model_id, channel_id, protocol_id, upstream_model_name, region,
+			 weight, priority, stream_supported, max_tokens_ceiling, enabled, created_at, updated_at)
+		VALUES (?,?,?,?,?, 100, 100, ?, 0, 1, ?, ?)`,
+		modelID, channelID, protocol, upstreamName, region, streamSupported, now, now)
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
+}
