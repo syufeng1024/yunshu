@@ -4,9 +4,11 @@
 //
 // Two boundaries are architectural, not cosmetic:
 //
-//   - The plaintext key exists only in the create/rotate response. t_api_key
-//     stores SHA-256, the first eight characters and the last four; every read
-//     path returns a mask assembled from those columns.
+//   - The plaintext key is returned exactly twice: in the create/rotate response,
+//     and on an explicit POST .../reveal (2026-11-05, owner-initiated copy).
+//     t_api_key stores SHA-256, the first eight characters, the last four, and
+//     an envelope-encrypted copy in key_enc for that reveal path only. Every
+//     other read path returns a mask assembled from the hash columns.
 //   - group_code is a price dimension owned by operations. No console write
 //     request may carry it; the field is detected as raw JSON so even
 //     "group_code": null is rejected instead of silently ignored.
@@ -29,6 +31,7 @@ import (
 	"yunshu.dev/core/internal/apierr"
 	"yunshu.dev/core/internal/config"
 	"yunshu.dev/core/internal/control/mw"
+	"yunshu.dev/core/internal/cryptobox"
 	obslog "yunshu.dev/core/internal/obs/log"
 	"yunshu.dev/core/internal/platform/clock"
 	"yunshu.dev/core/internal/redisx"
@@ -48,6 +51,33 @@ type Service struct {
 	// new K13 ipm is written; otherwise the two versions disagree (deny) or the
 	// snapshot has no entry (allow all). Nil in unit tests.
 	PublishRoutes func(ctx context.Context) error
+
+	// Box seals the key plaintext into t_api_key.key_enc so the owner can copy
+	// the key again later (2026-11-05: 「密钥不能完整显示，但必须可复制」).
+	//
+	// It reuses CHANNEL_KEY_KEK rather than adding another secret: one KEK to
+	// rotate, one place to lose. Nil (KEK missing or malformed) degrades to
+	// "keys created while it was missing cannot be copied" — creation itself
+	// still succeeds, because a working key that cannot be re-read is better
+	// than no key at all, and the gateway never reads this column.
+	Box *cryptobox.Box
+}
+
+// sealSecret returns the envelope to store in key_enc, or nil when the secret
+// cannot be sealed. Never fails the caller: an unsealed key still authenticates
+// (auth reads key_hash), it just cannot be copied again.
+func (s *Service) sealSecret(ctx context.Context, plain string) any {
+	if s.Box == nil {
+		return nil
+	}
+	envelope, err := s.Box.SealString(plain)
+	if err != nil {
+		if s.Logger != nil {
+			s.logError(ctx, "key_seal_failed: "+err.Error())
+		}
+		return nil
+	}
+	return []byte(envelope)
 }
 
 // publishIPRules refreshes the routing snapshot when a callback is wired.

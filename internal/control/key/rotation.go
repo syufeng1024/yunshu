@@ -142,11 +142,12 @@ func (s *Service) Rotate(w http.ResponseWriter, r *http.Request) {
 	expireArg := nullableSQLTime(expire)
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO t_api_key
-			(user_id, key_name, key_prefix, key_hash, key_hash_version, key_last4,
+			(user_id, key_name, key_prefix, key_hash, key_hash_version, key_last4, key_enc,
 			 status, model_scope_mode, ip_whitelist_mode, group_code, expire_at,
 			 rotated_from_id, created_at, updated_at)
-		VALUES (?,?,?,?,1,?,'ENABLED',?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,1,?,?, 'ENABLED',?,?,?,?,?,?,?)`,
 		sess.UID, old.Name, apikey.DisplayPrefix(plain), hash, apikey.Last4(plain),
+		s.sealSecret(ctx, plain),
 		old.ModelScopeMode, old.IPWhitelistMode, old.GroupCode, expireArg, old.ID, now, now)
 	if err != nil {
 		s.logError(ctx, "key_rotate_insert_failed: "+err.Error())

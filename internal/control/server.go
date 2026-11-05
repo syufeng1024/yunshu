@@ -175,6 +175,9 @@ func New(d Deps) (*Server, error) {
 		d.Logger.Warn(context.TODO(), "control: CHANNEL_KEY_KEK unavailable: "+boxErr.Error(),
 			obslog.Fields{Stage: "control"})
 	}
+	// 复制密钥用的同一个 KEK：一个要轮换的秘密，一个会丢的地方。
+	// box 为 nil（KEK 缺失/格式错）时密钥照常可用，只是不能再复制。
+	keys.Box = box
 	opss := ops.New(d.DB, d.Audit, d.Now, d.Logger, d.PublishRoutes, box)
 	opss.KeyAuth = redisx.NewKeyAuthCache(d.Redis)
 	opss.PriceRefresh = d.PublishPrices
@@ -308,6 +311,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("PATCH /api/console/keys/{id}", s.authed(mw.PermKeyWrite, s.keys.Update))
 	mux.Handle("DELETE /api/console/keys/{id}", s.authed(mw.PermKeyWrite, s.keys.Delete))
 	mux.Handle("GET /api/console/keys/{id}/audit", s.authed(mw.PermKeyRead, s.keys.ListAudit))
+	// 复制密钥：POST 而不是 GET，走 CSRF 保护；只有本人能取自己的密钥，
+	// 每次成功都会写一条 VIEW_SECRET 审计。
+	mux.Handle("POST /api/console/keys/{id}/reveal", s.authed(mw.PermKeyRead, s.keys.Reveal))
 	// 密钥维度的用量趋势：详情页判断「这把密钥还用不用」的依据。
 	mux.Handle("GET /api/console/keys/{id}/usage", s.authed(mw.PermKeyRead, s.keys.Usage))
 	mux.Handle("POST /api/console/keys/{id}/rotate", s.authed(mw.PermKeyWrite, s.keys.Rotate))

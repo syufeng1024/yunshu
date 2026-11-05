@@ -791,6 +791,37 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
+  /api/console/keys/{id}/reveal:
+    parameters:
+      - $ref: '#/components/parameters/KeyID'
+    post:
+      operationId: revealConsoleKey
+      tags: [console, keys]
+      summary: 取回密钥明文用于复制（仅本人；每次成功记一条 VIEW_SECRET 审计）
+      description: |
+        明文只在响应里出现，前端直接写进剪贴板、不在页面渲染。
+
+        用 POST 而不是 GET：会话鉴权下只有写方法走 CSRF 校验，而 GET 返回凭据
+        可能被预取或被粘进链接。
+
+        available=false 不是错误，而是「这把密钥的明文没有留存」的结论，附 reason：
+        not_stored（加密存储上线前创建，哈希不可逆）、kek_unavailable（部署缺 KEK）、
+        decrypt_failed（密文解不开）。三种情况的出路都是轮换。
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: 明文，或 available=false 加原因
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevealedConsoleKey'
+        '404':
+          description: 密钥不存在或不属于当前账号
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
   /api/console/models:
     get:
       operationId: listConsoleModels
@@ -3450,6 +3481,20 @@ components:
         page: {type: integer}
         page_size: {type: integer}
         total: {type: integer, format: int64}
+    RevealedConsoleKey:
+      type: object
+      required: [available]
+      properties:
+        available:
+          type: boolean
+          description: true 时 key 一定存在；false 表示明文没有留存
+        key:
+          type: string
+          description: 完整密钥明文，仅在 available=true 时出现
+        reason:
+          type: string
+          enum: [not_stored, kek_unavailable, decrypt_failed]
+          description: available=false 时的原因，前端据此给出下一步提示
     RotatedKey:
       type: object
       required: [id, rotated_from_id, key_name, key, key_prefix, key_last4, key_masked, group_code, revocation]

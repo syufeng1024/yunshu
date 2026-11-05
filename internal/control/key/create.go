@@ -172,10 +172,6 @@ func (s *Service) resolveModelScope(ctx context.Context, mode string, raw []int6
 	return out, nil
 }
 
-// parseOptionalExpireAt reads the requested expiry. An absent field or an
-// explicit null means "never expires" (需求方 2026-11-05 裁定：有效期改为可选，
-// 不再强制用户填)。A supplied value must still be in the future.
-//
 // Whether a key expires is carried to the gateway as K13's EXP field, where 0
 // means no expiry (internal/redisx/authcache.go), so nil maps cleanly onto the
 // existing auth path.
@@ -253,10 +249,11 @@ func (s *Service) createBatch(r *http.Request, uid int64, name string, count int
 		}
 		res, err := tx.ExecContext(ctx, `
 			INSERT INTO t_api_key
-				(user_id, key_name, key_prefix, key_hash, key_hash_version, key_last4,
+				(user_id, key_name, key_prefix, key_hash, key_hash_version, key_last4, key_enc,
 				 status, model_scope_mode, ip_whitelist_mode, group_code, expire_at, created_at, updated_at)
-			VALUES (?,?,?,?,1,?,'ENABLED',?,?,?,?,?,?)`,
+			VALUES (?,?,?,?,1,?,?,'ENABLED',?,?,?,?,?,?)`,
 			uid, name, apikey.DisplayPrefix(plain), hash, apikey.Last4(plain),
+			s.sealSecret(ctx, plain),
 			scopeMode, ipMode(rules), "standard", expireAt, now, now)
 		if err != nil {
 			s.logError(ctx, "key_create_insert_failed: "+err.Error())
