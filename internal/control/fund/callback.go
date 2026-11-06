@@ -369,11 +369,17 @@ func (s *Service) grantOrderPaid(ctx context.Context, tx *sql.Tx, orderID, userI
 
 // invalidateBalance deletes K26 so the gateway reloads the balance on its next
 // admission instead of trusting a pre-payment value.
+//
+// The DEL runs on a detached context: the money has already moved, so a client
+// that disconnects between commit and purge must not be able to cancel the
+// invalidation and leave a stale mirror for up to a minute. Every caller of this
+// helper (payment callback, manual confirm, redeem) is a background state
+// change, and its bookkeeping side effect outlives the caller.
 func (s *Service) invalidateBalance(ctx context.Context, userID int64) {
 	if s.Redis == nil {
 		return
 	}
-	cctx, cancel := s.Redis.CommandContext(ctx)
+	cctx, cancel := s.Redis.CommandContext(context.WithoutCancel(ctx))
 	defer cancel()
 	if err := s.Redis.Raw().Del(cctx, redisx.BalanceKey(userID)).Err(); err != nil {
 		s.logWarn(ctx, "fund_balance_mirror_invalidate_failed: "+err.Error())

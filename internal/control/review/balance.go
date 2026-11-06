@@ -31,6 +31,7 @@ import (
 	"yunshu.dev/core/internal/control/audit"
 	"yunshu.dev/core/internal/control/mw"
 	"yunshu.dev/core/internal/ledger"
+	"yunshu.dev/core/internal/redisx"
 )
 
 // t_balance_adjust.direction / state — exactly the 0025 DDL values.
@@ -348,6 +349,13 @@ func (s *Service) approveBalanceAdjust(w http.ResponseWriter, r *http.Request,
 	}
 	committed = true
 
+	// The ledger is already correct; K26 is only the gateway's 60s view of it.
+	// Without this DEL an approved adjustment stays invisible to admission for
+	// up to a minute — a funded user is rejected, or an increased account keeps
+	// spending against the pre-approval number. Post-commit and best-effort: a
+	// Redis failure must never turn a committed money change into a 500.
+	s.invalidateBalanceMirror(ctx, before.UserID)
+
 	task.State = StateApproved
 	task.DecidedAt = &now
 	if note != "" {
@@ -359,6 +367,44 @@ func (s *Service) approveBalanceAdjust(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	_ = mw.WriteJSON(w, http.StatusOK, reviewDetailResponse{Review: item})
+}
+
+// balanceRedis returns the Redis client K26 lives in.
+//
+// The client is not a field of this Service: production already hands the one
+// shared *redisx.Client to fund.Service (server.go wires review.New(..., funds)
+// and fund.New(db, redis, ...)), and reaching it through Fund keeps a
+// hand-wired Service honest — no Fund means no mirror to invalidate, instead of
+// a silently nil client that would skip the DEL in production.
+func (s *Service) balanceRedis() *redisx.Client {
+	if s == nil || s.Fund == nil {
+		return nil
+	}
+	return s.Fund.Redis
+}
+
+// invalidateBalanceMirror deletes K26 (bal:{uid}) after a committed balance
+// change so the gateway reloads the balance on its next admission instead of
+// trusting a pre-approval value. A failed DEL is a WARN, not an error return:
+// the ledger has already committed and the mirror expires on its own 60s TTL,
+// so the worst case is one minute of staleness, not a lost adjustment.
+//
+// The DEL runs on a detached context with its own short budget. The request
+// context is the wrong owner for this: the money has already moved, so a client
+// that disconnects (or a proxy that drops the connection) between commit and
+// purge must not be able to cancel the invalidation and leave a stale mirror for
+// up to a minute. This is a background state change, and its bookkeeping side
+// effect outlives the caller.
+func (s *Service) invalidateBalanceMirror(ctx context.Context, userID int64) {
+	rdb := s.balanceRedis()
+	if rdb == nil {
+		return
+	}
+	cctx, cancel := rdb.CommandContext(context.WithoutCancel(ctx))
+	defer cancel()
+	if err := rdb.Raw().Del(cctx, redisx.BalanceKey(userID)).Err(); err != nil {
+		s.logWarn(ctx, "review_balance_mirror_invalidate_failed: "+err.Error())
+	}
 }
 
 // rejectBalanceAdjust is the non-money path: both rows move together and no
