@@ -289,6 +289,7 @@ main() {
 
   TS=$(date -u +%Y%m%d-%H%M%S)
   local primary_db manifest dump_size=0 db file tmp stats
+  local empty_dbs=()
   primary_db=${DBS%% *}
   manifest="$BACKUP_DIR/$primary_db-$TS.manifest"
 
@@ -333,12 +334,28 @@ main() {
     mv -f -- "$tmp" "$file"
     write_db_block "$db" "$file" "$BACKUP_DIR/.$db-$TS.stats.partial" "$man_tmp"
     dump_size=$((dump_size + $(wc -c <"$file" | tr -d ' ')))
+
+    # 0 张表的库是一次"成功但零内容"的备份：mysqldump 退出码 0、gzip 校验通过、
+    # manifest 写得整整齐齐，演练报告据此就会判通过——而真正需要恢复时这个库是
+    # 空的。2026-11-06 的演练里 yunshu_log 正是这个形态（471 字节空 dump）。
+    # 记为 WARN 而不是 FATAL：库可能确实是新建的或本就不该有表，让脚本因此
+    # 中断会把正常备份也一起挡掉。判定口径放在这里、不写进 manifest，是为了不
+    # 改动 restore.sh 已经在读的清单格式。
+    if [ "$(sed -n 's/^table_count=//p' "$BACKUP_DIR/.$db-$TS.stats.partial")" = "0" ]; then
+      empty_dbs+=("$db")
+    fi
   done
 
   mv -f -- "$man_tmp" "$manifest"
 
   info "备份完成：$(basename "$manifest")（总计 $(human_size "$dump_size")）"
   grep -E '^(file|bytes|sha256|schema_version|table_count)=' "$manifest" | sed 's/^/    /'
+
+  if [ "${#empty_dbs[@]}" -gt 0 ]; then
+    warn "以下库导出成功但 table_count=0，恢复后是空库：${empty_dbs[*]}"
+    warn "  这是「成功但零内容」的备份，演练报告不得据此判定该库可恢复；"
+    warn "  若该库本该有表（例如日志库），说明部署未执行对应迁移——先去确认，不要当通过。"
+  fi
 
   prune_old
 
