@@ -1,8 +1,10 @@
 package gw
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -16,8 +18,10 @@ import (
 	"yunshu.dev/core/internal/config"
 	"yunshu.dev/core/internal/idemstore"
 	"yunshu.dev/core/internal/ledger"
+	obslog "yunshu.dev/core/internal/obs/log"
 	"yunshu.dev/core/internal/ratelimit"
 	"yunshu.dev/core/internal/redisx"
+	"yunshu.dev/core/internal/settle"
 )
 
 // TestIntegrationAuthReadsK13 uses the real Redis cache: the gateway has no
@@ -255,6 +259,332 @@ func TestIntegrationPreholdHonoursHoldCap(t *testing.T) {
 	poor.Est.EstMicro = 7200
 	err := stage.Run(t.Context(), poor)
 	assertAPIError(t, err, apierr.CodeInsufficientCredits, http.StatusPaymentRequired)
+}
+
+// TestIntegrationPreholdRejectsReusedRequestID is the B1 regression: X-Request-Id
+// is client-controlled and is the prehold's unique key, so reusing the id of a
+// finished request used to return a stale hold and let the request through
+// without a second hold (the settlement then found SETTLED and answered with the
+// historical result). The stage must answer 409 duplicate_request_id instead.
+func TestIntegrationPreholdRejectsReusedRequestID(t *testing.T) {
+	userID := seedAccount(t, 100000)
+	seedRechargeBatch(t, userID, 100000)
+	ledgerStore := ledger.NewStore(testDB, nil)
+
+	requestID := "hold-reuse-" + randomID(t)
+	// The real usage writer, wired into FailureSink exactly as gatewayd wires it
+	// (main.go: FailureSink -> usageWriter.WriteUsage). A-12 lives in the
+	// interaction between that writer and the prehold 409, so the test must use
+	// the production path rather than a capturing stub.
+	usageWriter := settle.NewUsageWriter(testDB, nil, nil)
+	t.Cleanup(func() {
+		_, _ = testDB.Exec(`DELETE FROM t_usage_record WHERE request_id = ?`, requestID)
+	})
+
+	deps := staticDeps(nil)
+	deps.Ledger = ledgerStore
+	deps.NodeID = "gw-test"
+	deps.Config = nil
+	deps.FailureSink = func(f FailureUsage) {
+		usageWriter.WriteUsage(settle.UsageRecord{
+			RequestID:    f.RequestID,
+			UserID:       f.UserID,
+			APIKeyID:     f.APIKeyID,
+			APIKeyName:   f.APIKeyName,
+			ModelID:      f.ModelID,
+			ModelName:    f.ModelName,
+			RequestModel: f.RequestModel,
+			InboundProto: f.InboundProto,
+			PriceRuleID:  f.PriceRuleID,
+			GroupCode:    f.GroupCode,
+			PriceRatioBP: f.PriceRatioBP,
+			BillingTier:  "BASE",
+			IsStream:     f.IsStream,
+			HTTPStatus:   f.HTTPStatus,
+			BizCode:      f.BizCode,
+			Result:       "FAILED",
+			FailStage:    f.FailStage,
+			FailOwner:    f.FailOwner,
+			UsageSource:  "NONE",
+			TotalMS:      f.TotalMS,
+			ClientIP:     f.ClientIP,
+			UserAgent:    f.UserAgent,
+			CreatedAt:    f.CreatedAt,
+		})
+	}
+	stage := NewPreholdStage(deps)
+
+	est := billingPreestimateForTest()
+	est.RawMicro = 6000
+	est.EstMicro = 7200
+	first := &Ctx{
+		RequestID: requestID,
+		Auth:      &AuthContext{UserID: userID, KeyID: 1},
+		Model:     &ModelEntry{ID: 1},
+		Est:       &est,
+	}
+	if err := stage.Run(t.Context(), first); err != nil {
+		t.Fatalf("first prehold: %v", err)
+	}
+	balanceAfterPrehold := accountTotal(t, userID)
+	if balanceAfterPrehold != 100000-first.HoldMicro {
+		t.Fatalf("balance after prehold = %d, want %d", balanceAfterPrehold, 100000-first.HoldMicro)
+	}
+
+	// --- A-12, incident order: the replay is rejected while the request is
+	// still HELD, i.e. before the owner has written its usage row. This is the
+	// order that poisons the table: the rejected row lands first, and the
+	// owner's settlement row is then swallowed by uk_ur_request.
+	reuseEst := billingPreestimateForTest()
+	reuseEst.RawMicro = 90000
+	reuseEst.EstMicro = 95000
+	reuse := &Ctx{
+		RequestID: requestID,
+		Auth:      &AuthContext{UserID: userID, KeyID: 1},
+		Model:     &ModelEntry{ID: 1},
+		Est:       &reuseEst,
+	}
+	err := stage.Run(t.Context(), reuse)
+	assertAPIError(t, err, apierr.CodeDuplicateRequestID, http.StatusConflict)
+	if reuse.Hold != nil || reuse.HoldMicro != 0 {
+		t.Fatalf("refused reuse still populated a hold: %+v", reuse.Hold)
+	}
+	if got := accountTotal(t, userID); got != balanceAfterPrehold {
+		t.Fatalf("balance moved on refused reuse: %d -> %d", balanceAfterPrehold, got)
+	}
+	if state, _ := holdStateOf(t, requestID); state != ledger.HoldStateHeld {
+		t.Fatalf("hold state after refused reuse = %s, want HELD", state)
+	}
+
+	// The production failure path: the server loop copies the stage error into
+	// Ctx.ErrCode, then the deferred emitFailureUsage runs. The rejected row IS
+	// written (it is the only record that the id was replayed); it wins the key
+	// for now, and the settlement below must take it back.
+	reuse.ErrCode = apierr.CodeDuplicateRequestID
+	reuse.FailStage = StageP10
+	emitFailureUsage(&Handler{d: deps}, reuse, false)
+	if err := usageWriter.Flush(t.Context()); err != nil {
+		t.Fatalf("flush failure usage: %v", err)
+	}
+	if rows, consumed := usageRowStats(t, requestID); rows != 1 || consumed != 0 {
+		t.Fatalf("rejected replay row = %d rows / consumed %d, want 1 / 0 (FAILED, no money)", rows, consumed)
+	}
+	if result, biz := usageRowIdentity(t, requestID); result != "FAILED" || biz != apierr.CodeDuplicateRequestID {
+		t.Fatalf("before settle the row = %s/%s, want FAILED/%s",
+			result, biz, apierr.CodeDuplicateRequestID)
+	}
+
+	// --- The owner settles and writes its own row (P28). A-12: this row must
+	// replace the FAILED/0 row the rejection left behind, otherwise the customer
+	// is billed while the record says "failed, 0 credits".
+	if _, err := ledgerStore.Settle(t.Context(), ledger.SettleParams{
+		RequestID: requestID, UserID: userID, ConsumedMicro: 1000,
+	}); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	balanceAfterSettle := accountTotal(t, userID)
+	if balanceAfterSettle != 99000 {
+		t.Fatalf("balance after settle = %d, want 99000 (100000 - 1000 consumed)", balanceAfterSettle)
+	}
+	usageWriter.WriteUsage(settle.UsageRecord{
+		RequestID: requestID, UserID: userID, APIKeyID: 1,
+		ModelID: 1, ModelName: "gw-test", RequestModel: "gw-test",
+		InboundProto: "OPENAI_COMPAT", GroupCode: "standard", PriceRatioBP: 10000,
+		BillingTier: "BASE", HTTPStatus: 200, Result: "SUCCESS",
+		UsageSource: "UPSTREAM", TokensIn: 30, TokensOut: 50,
+		PreholdMicro: first.HoldMicro, ConsumedMicro: 1000,
+		UpstreamAttempts: 1, CreatedAt: time.Now().UTC(),
+	})
+	if err := usageWriter.Flush(t.Context()); err != nil {
+		t.Fatalf("flush owner usage: %v", err)
+	}
+	ownerRows, ownerConsumed := usageRowStats(t, requestID)
+	if ownerRows != 1 || ownerConsumed != 1000 {
+		t.Fatalf("owner usage = %d rows / consumed %d, want 1 / 1000 "+
+			"(the settlement row must replace the rejected one)", ownerRows, ownerConsumed)
+	}
+	// Four-conjunct assertion. The first three can be satisfied by a row that is
+	// internally consistent but wrong, so the fourth compares against the ledger —
+	// the only authority on what was actually charged.
+	//   (1) exactly one row for the id   (2) result is a completed state
+	//   (3) consumed > 0                 (4) consumed == |CONSUME_SETTLE|
+	gotResult, gotBizCode := usageRowIdentity(t, requestID)
+	if gotResult != "SUCCESS" && gotResult != "PARTIAL" {
+		t.Fatalf("result = %s; want SUCCESS or PARTIAL (an interrupted stream settles as PARTIAL)", gotResult)
+	}
+	if gotBizCode != "" {
+		t.Fatalf("biz_code = %q; a completed row must not carry a rejection code", gotBizCode)
+	}
+	var settleSum int64
+	if err := testDB.QueryRowContext(t.Context(),
+		`SELECT COALESCE(SUM(amount_total_micro),0) FROM t_ledger_entry
+		  WHERE request_id = ? AND biz_type = ?`,
+		requestID, ledger.BizTypeConsumeSettle).Scan(&settleSum); err != nil {
+		t.Fatalf("read settle entry: %v", err)
+	}
+	if settleSum != -1000 {
+		t.Fatalf("CONSUME_SETTLE sum = %d, want -1000", settleSum)
+	}
+	if ownerConsumed != -settleSum {
+		t.Fatalf("usage consumed %d != |CONSUME_SETTLE| %d; the record and the books disagree",
+			ownerConsumed, -settleSum)
+	}
+
+	// Same id again, now that the owner has finished: this ordering must not
+	// clobber the good row either (the opposite poisoning direction).
+	late := &Ctx{
+		RequestID: requestID,
+		Auth:      &AuthContext{UserID: userID, KeyID: 1},
+		Model:     &ModelEntry{ID: 1},
+		Est:       &reuseEst,
+	}
+	err = stage.Run(t.Context(), late)
+	assertAPIError(t, err, apierr.CodeDuplicateRequestID, http.StatusConflict)
+	if late.Hold != nil || late.HoldMicro != 0 {
+		t.Fatalf("refused post-settlement reuse still populated a hold: %+v", late.Hold)
+	}
+	if got := accountTotal(t, userID); got != balanceAfterSettle {
+		t.Fatalf("balance moved on refused post-settlement reuse: %d -> %d", balanceAfterSettle, got)
+	}
+	if state, _ := holdStateOf(t, requestID); state != ledger.HoldStateSettled {
+		t.Fatalf("hold state after refused reuse = %s, want SETTLED", state)
+	}
+
+	// A-12, opposite direction: a rejection that arrives AFTER the settlement
+	// must not take the row back. Its INSERT is a no-op on the unique key and it
+	// carries consumed_micro = 0, so the overwrite rule (only a row that spent
+	// money may replace one that did not) leaves the good row alone.
+	late.ErrCode = apierr.CodeDuplicateRequestID
+	late.FailStage = StageP10
+	emitFailureUsage(&Handler{d: deps}, late, false)
+	if err := usageWriter.Flush(t.Context()); err != nil {
+		t.Fatalf("flush failure usage: %v", err)
+	}
+	rowsAfter, consumedAfter := usageRowStats(t, requestID)
+	if rowsAfter != 1 || consumedAfter != 1000 {
+		t.Fatalf("usage after a post-settlement rejection = %d rows / consumed %d, want 1 / 1000",
+			rowsAfter, consumedAfter)
+	}
+	if result, bizCode := usageRowIdentity(t, requestID); result != "SUCCESS" || bizCode != "" {
+		t.Fatalf("usage row = %s/%q, want SUCCESS with no biz_code "+
+			"(a rejection must never overwrite a paid row)", result, bizCode)
+	}
+}
+
+// usageRowIdentity reads the (result, biz_code) of the single usage row for one
+// request_id.
+func usageRowIdentity(t *testing.T, requestID string) (string, string) {
+	t.Helper()
+	var result, bizCode string
+	if err := testDB.QueryRowContext(t.Context(),
+		`SELECT result, COALESCE(biz_code,'') FROM t_usage_record WHERE request_id = ?`,
+		requestID).Scan(&result, &bizCode); err != nil {
+		t.Fatalf("read usage identity %s: %v", requestID, err)
+	}
+	return result, bizCode
+}
+
+// TestPreholdReuseWarnCarriesTheAccount pins the only line an operator can use
+// to answer "which account kept reusing ids": the 409 WARN must name the
+// request_id AND the account, or a complaint cannot be attributed to a tenant.
+func TestPreholdReuseWarnCarriesTheAccount(t *testing.T) {
+	userID := seedAccount(t, 100000)
+	seedRechargeBatch(t, userID, 100000)
+	buf := &bytes.Buffer{}
+
+	deps := staticDeps(nil)
+	deps.Ledger = ledger.NewStore(testDB, nil)
+	deps.NodeID = "gw-test"
+	deps.Config = nil
+	deps.Logger = obslog.NewWithWriter("gatewayd", "test", buf, nil)
+	stage := NewPreholdStage(deps)
+
+	requestID := "hold-warn-" + randomID(t)
+	est := billingPreestimateForTest()
+	est.RawMicro, est.EstMicro = 6000, 7200
+	p := &Ctx{
+		RequestID: requestID,
+		Auth:      &AuthContext{UserID: userID, KeyID: 42},
+		Model:     &ModelEntry{ID: 1},
+		Est:       &est,
+	}
+	if err := stage.Run(t.Context(), p); err != nil {
+		t.Fatalf("first prehold: %v", err)
+	}
+	err := stage.Run(t.Context(), p)
+	assertAPIError(t, err, apierr.CodeDuplicateRequestID, http.StatusConflict)
+
+	line := ""
+	for _, l := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(l, "prehold_request_id_reused") {
+			line = l
+			break
+		}
+	}
+	if line == "" {
+		t.Fatalf("no prehold_request_id_reused line in %q", buf.String())
+	}
+	for _, want := range []string{requestID, `"uid":"` + strconv.FormatInt(userID, 10) + `"`, `"kid":"42"`} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("WARN line %q does not carry %s", line, want)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = testDB.Exec(`DELETE FROM t_ledger_entry WHERE request_id = ?`, requestID)
+		_, _ = testDB.Exec(`DELETE FROM t_prehold_hold WHERE request_id = ?`, requestID)
+	})
+}
+
+// holdStateOf reads one prehold row's state.
+func holdStateOf(t *testing.T, requestID string) (string, int64) {
+	t.Helper()
+	var state string
+	var hold int64
+	if err := testDB.QueryRowContext(t.Context(),
+		`SELECT state, hold_micro FROM t_prehold_hold WHERE request_id = ?`,
+		requestID).Scan(&state, &hold); err != nil {
+		t.Fatalf("read hold %s: %v", requestID, err)
+	}
+	return state, hold
+}
+
+// usageRowStats returns how many usage rows exist for one request_id and the sum
+// of their consumed_micro.
+func usageRowStats(t *testing.T, requestID string) (int64, int64) {
+	t.Helper()
+	var rows, consumed int64
+	if err := testDB.QueryRowContext(t.Context(),
+		`SELECT COUNT(*), COALESCE(SUM(consumed_micro),0) FROM t_usage_record WHERE request_id = ?`,
+		requestID).Scan(&rows, &consumed); err != nil {
+		t.Fatalf("read usage stats: %v", err)
+	}
+	return rows, consumed
+}
+
+// accountTotal reads the materialised balance for one account.
+func accountTotal(t *testing.T, userID int64) int64 {
+	t.Helper()
+	var total int64
+	if err := testDB.QueryRowContext(t.Context(),
+		`SELECT balance_micro FROM t_credit_account WHERE user_id = ?`, userID).Scan(&total); err != nil {
+		t.Fatalf("read account %d: %v", userID, err)
+	}
+	return total
+}
+
+// seedRechargeBatch backs the account with one refundable RECHARGE batch so a
+// real settlement can consume it. seedAccount only writes the account row.
+func seedRechargeBatch(t *testing.T, userID, amountMicro int64) {
+	t.Helper()
+	now := time.Now().UTC()
+	if _, err := testDB.ExecContext(t.Context(), `INSERT INTO t_credit_batch
+		(user_id, batch_no, batch_type, face_value_micro, remaining_micro, consumed_micro,
+		 refundable, effective_at, expire_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, 0, 1, ?, NULL, ?, ?)`,
+		userID, fmt.Sprintf("B%d%09d", userID, now.UnixNano()%1_000_000_000),
+		ledger.BatchTypeRecharge, amountMicro, amountMicro, now, now, now); err != nil {
+		t.Fatalf("seed recharge batch for %d: %v", userID, err)
+	}
 }
 
 func TestIntegrationStartupCheckPassesOnSeededConfig(t *testing.T) {

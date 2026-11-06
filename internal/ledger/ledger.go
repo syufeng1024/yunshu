@@ -82,6 +82,13 @@ var (
 	ErrBatchCAS             = errors.New("ledger: batch remaining CAS conflict")
 	ErrDuplicateIdem        = errors.New("ledger: duplicate idem key")
 	ErrRefundIneligible     = errors.New("ledger: refund is not eligible")
+	// ErrDuplicateRequestID means the request_id presented to Prehold is
+	// already bound to a request that has finished (SETTLED / RELEASED /
+	// SUSPENDED) or to another account. request_id is the prehold's unique key
+	// and therefore the money idempotency key: replaying it would let a caller
+	// re-run a paid request without a second hold, so the reuse is refused
+	// instead of being answered idempotently.
+	ErrDuplicateRequestID = errors.New("ledger: request_id already belongs to a finished request")
 )
 
 // Store wires the ledger to a database, a clock and an entry-number source.

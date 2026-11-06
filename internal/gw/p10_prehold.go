@@ -3,6 +3,8 @@ package gw
 import (
 	"context"
 	"errors"
+	"net/http"
+	"strconv"
 	"time"
 
 	"yunshu.dev/core/internal/apierr"
@@ -81,6 +83,29 @@ func (s *PreholdStage) Run(ctx context.Context, c *Ctx) error {
 			overdraft := float64(s.intKey(config.KeyBillingOverdraftLimitDefault, 50))
 			return StageErr(StageP10,
 				apierr.NewInsufficientCredits(c.Est.RawMicro, float64(c.AvailableMicro), overdraft))
+		}
+		// request_id is the prehold's unique key and therefore the money
+		// idempotency key. Reusing one that belongs to a finished request (or
+		// to another account) is a client error with its own code: answering
+		// settlement_unavailable would hide a permanently non-retryable
+		// condition behind a retryable 503, and answering it as a replay would
+		// let the caller skip the hold entirely.
+		//
+		// uid/kid are part of the line because this WARN is how an operator
+		// answers "which account kept reusing ids" — a bare request_id cannot be
+		// attributed to a tenant when the customer calls in.
+		if errors.Is(err, ledger.ErrDuplicateRequestID) {
+			if s.d.Logger != nil {
+				s.d.Logger.Warn(ctx, "prehold_request_id_reused: "+err.Error(),
+					obslog.Fields{
+						Stage:     "P10",
+						RequestID: requestID,
+						UID:       strconv.FormatInt(c.Auth.UserID, 10),
+						KID:       strconv.FormatInt(c.Auth.KeyID, 10),
+						Status:    http.StatusConflict,
+					})
+			}
+			return StageErr(StageP10, apierr.New(apierr.CodeDuplicateRequestID).WithCause(err))
 		}
 		if s.d.Logger != nil {
 			s.d.Logger.Error(ctx, "prehold_failed: "+err.Error(), obslog.Fields{Stage: "P10"})

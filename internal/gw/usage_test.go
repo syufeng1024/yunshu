@@ -111,6 +111,44 @@ func TestEmitFailureUsage(t *testing.T) {
 			t.Fatalf("BizCode = %q, want %s", got.BizCode, apierr.CodeRateLimiterUnavailable)
 		}
 	})
+
+	// A-12 is fixed at the table layer (settle.UsageWriter overwrites a FAILED/0
+	// row when the request that really ran settles), so the 409 row is still
+	// written here: it is the only record that the id was replayed, and it no
+	// longer blocks the real row. This test pins that the failure path is
+	// unchanged for duplicate_request_id.
+	t.Run("duplicate_request_id still lands", func(t *testing.T) {
+		h, got := newSink()
+		c := baseCtx()
+		c.FailStage = "P10"
+		c.ErrCode = apierr.CodeDuplicateRequestID
+		emitFailureUsage(h, c, false)
+		if got.RequestID == "" {
+			t.Fatal("duplicate_request_id must still produce a usage record")
+		}
+		if got.HTTPStatus != 409 || got.BizCode != apierr.CodeDuplicateRequestID {
+			t.Fatalf("row = %d/%s, want 409/%s", got.HTTPStatus, got.BizCode, apierr.CodeDuplicateRequestID)
+		}
+		if got.Result != "FAILED" {
+			t.Fatalf("row = %s, want FAILED", got.Result)
+		}
+	})
+
+	// The overwrite predicate keys on consumed_micro, not on a code list, so
+	// every eager failure code that can steal the key is covered by the same
+	// rule; this one is the pre-existing B7b shape.
+	t.Run("other 409 still lands", func(t *testing.T) {
+		h, got := newSink()
+		c := baseCtx()
+		c.ErrCode = apierr.CodeIdempotencyKeyReused
+		emitFailureUsage(h, c, false)
+		if got.RequestID == "" {
+			t.Fatal("the skip must not widen to every 409")
+		}
+		if got.HTTPStatus != 409 || got.BizCode != apierr.CodeIdempotencyKeyReused {
+			t.Fatalf("row = %d/%s, want 409/%s", got.HTTPStatus, got.BizCode, apierr.CodeIdempotencyKeyReused)
+		}
+	})
 }
 
 func TestStageForFail(t *testing.T) {
