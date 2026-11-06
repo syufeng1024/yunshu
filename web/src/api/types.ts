@@ -383,6 +383,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/console/keys/{id}/reveal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description t_api_key.id；非本人 Key 与不存在同样返回 404 key_not_found */
+                id: components["parameters"]["KeyID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 取回密钥明文用于复制（仅本人；每次成功记一条 VIEW_SECRET 审计）
+         * @description 明文只在响应里出现，前端直接写进剪贴板、不在页面渲染。
+         *
+         *     用 POST 而不是 GET：会话鉴权下只有写方法走 CSRF 校验，而 GET 返回凭据
+         *     可能被预取或被粘进链接。
+         *
+         *     available=false 不是错误，而是「这把密钥的明文没有留存」的结论，附 reason：
+         *     not_stored（加密存储上线前创建，哈希不可逆）、kek_unavailable（部署缺 KEK）、
+         *     decrypt_failed（密文解不开）。三种情况的出路都是轮换。
+         */
+        post: operations["revealConsoleKey"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/console/models": {
         parameters: {
             query?: never;
@@ -849,6 +879,84 @@ export interface paths {
         get: operations["listAdminChannels"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/routes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 路由分页列表（模型 ↔ 渠道绑定，t_route）
+         * @description 读操作不重发 cfg:snap:ROUTING 快照。
+         */
+        get: operations["listAdminRoutes"];
+        put?: never;
+        /**
+         * 新建一条路由
+         * @description region 不接受入参，恒取 t_channel.region；protocol_id 缺省取渠道
+         *     protocol_id。唯一键
+         *     uk_route_model_channel_proto_upstream 重复时返回 409，不静默成功。
+         *     写入提交后重发 cfg:snap:ROUTING。
+         */
+        post: operations["createAdminRoute"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/routes/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * 物理删除一条路由
+         * @description 模型当前为 LISTED 且这是它最后一条 enabled=1 的路由时返回 409；
+         *     先把模型改为 CATALOG_ONLY / DELISTED，或先创建替代路由。提交后重发快照。
+         */
+        delete: operations["deleteAdminRoute"];
+        options?: never;
+        head?: never;
+        /**
+         * 修改路由的调参字段
+         * @description 只接受 upstream_model_name / weight / priority / stream_supported /
+         *     max_tokens_ceiling / enabled；model_id、channel_id、protocol_id 与
+         *     region 不可改（region 恒随渠道）。提交后重发快照。
+         */
+        patch: operations["updateAdminRoute"];
+        trace?: never;
+    };
+    "/api/admin/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 新建平台模型（可同时建默认路由）
+         * @description 同时给出 upstream_model_name 与 primary_channel_id 时，在同一事务内
+         *     建一条默认 t_route（weight=100 / priority=100 / max_tokens_ceiling=0 /
+         *     enabled=1，region 取渠道 region）。只给 upstream_model_name 不给
+         *     primary_channel_id 返回 400 invalid_request_body。建了路由或
+         *     listing_state=LISTED 时提交后重发快照。
+         */
+        post: operations["createAdminModel"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1738,6 +1846,17 @@ export interface components {
             page_size: number;
             /** Format: int64 */
             total: number;
+        };
+        RevealedConsoleKey: {
+            /** @description true 时 key 一定存在；false 表示明文没有留存 */
+            available: boolean;
+            /** @description 完整密钥明文，仅在 available=true 时出现 */
+            key?: string;
+            /**
+             * @description available=false 时的原因，前端据此给出下一步提示
+             * @enum {string}
+             */
+            reason?: "not_stored" | "kek_unavailable" | "decrypt_failed";
         };
         RotatedKey: {
             /** Format: int64 */
@@ -2710,6 +2829,203 @@ export interface components {
             page_size: number;
             /** Format: int64 */
             total: number;
+        };
+        AdminRoute: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            model_id: number;
+            /** @description t_model.model_name；模型行不存在时为空串 */
+            model_name: string;
+            /** Format: int64 */
+            channel_id: number;
+            /** @description t_channel.name；渠道行不存在时为空串 */
+            channel_name: string;
+            /** Format: int64 */
+            protocol_id: number;
+            protocol: string;
+            /** @description 真实上游模型名，对客户端不可见 */
+            upstream_model_name: string;
+            /**
+             * @description 冗余自 t_channel.region，不接受客户端写入
+             * @enum {string}
+             */
+            region: "DOMESTIC" | "OVERSEAS";
+            /** Format: int64 */
+            weight: number;
+            /** Format: int64 */
+            priority: number;
+            /** @description false 时流式请求跳过该路由 */
+            stream_supported: boolean;
+            /**
+             * Format: int64
+             * @description 0 = 不限
+             */
+            max_tokens_ceiling: number;
+            enabled: boolean;
+            /** Format: date-time */
+            probe_at?: string | null;
+            /** @enum {string|null} */
+            probe_result?: "OK" | "AUTH_FAIL" | "TIMEOUT" | "HTTP_5XX" | "DNS_FAIL" | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        AdminRouteList: {
+            items: components["schemas"]["AdminRoute"][];
+            page: number;
+            page_size: number;
+            /** Format: int64 */
+            total: number;
+        };
+        AdminRouteDetail: {
+            route: components["schemas"]["AdminRoute"];
+        };
+        AdminRouteCreateRequest: {
+            /** Format: int64 */
+            model_id: number;
+            /** Format: int64 */
+            channel_id: number;
+            /**
+             * Format: int64
+             * @description 缺省取渠道 protocol_id；给出时必须存在于 t_protocol 且 enabled=1
+             */
+            protocol_id?: number;
+            /** @description 去首尾空白后 1..128 字节 */
+            upstream_model_name: string;
+            /**
+             * Format: int64
+             * @default 100
+             */
+            weight: number;
+            /**
+             * Format: int64
+             * @default 100
+             */
+            priority: number;
+            /** @default true */
+            stream_supported: boolean;
+            /**
+             * Format: int64
+             * @default 0
+             */
+            max_tokens_ceiling: number;
+            /** @default true */
+            enabled: boolean;
+        };
+        AdminRoutePatchRequest: {
+            upstream_model_name?: string;
+            /** Format: int64 */
+            weight?: number;
+            /** Format: int64 */
+            priority?: number;
+            stream_supported?: boolean;
+            /** Format: int64 */
+            max_tokens_ceiling?: number;
+            enabled?: boolean;
+        };
+        AdminModelCreateRequest: {
+            model_name: string;
+            display_name: string;
+            /** @enum {string} */
+            region: "DOMESTIC" | "OVERSEAS";
+            /** @enum {string} */
+            model_type: "TEXT" | "IMAGE" | "EMBEDDING";
+            /** Format: int64 */
+            protocol_id: number;
+            /**
+             * Format: int64
+             * @description 给出 upstream_model_name 时必填，否则 400 invalid_request_body
+             */
+            primary_channel_id?: number;
+            /** Format: int64 */
+            context_length?: number;
+            /**
+             * Format: int64
+             * @description 模型自身的输出上限（对应 `t_model.max_output_tokens`）。
+             *     `0` = 未配置，网关按 `min(context_length, 32768)` 兜底估算。
+             *     与平台输出上限（32768，客户端 `max_tokens` 的硬上限）不是同一个量，
+             *     不要混用。`context_length > 0` 时不得超过 `context_length`，越界返回
+             *     400 `invalid_request_body`（message 为 `max_output_tokens`）；
+             *     `context_length` 为 0（未知）时只要求 `>= 0`。
+             */
+            max_output_tokens?: number;
+            /**
+             * @default CATALOG_ONLY
+             * @enum {string}
+             */
+            listing_state: "LISTED" | "CATALOG_ONLY" | "DELISTED";
+            /** Format: int64 */
+            recommend_weight?: number;
+            aliases?: string[];
+            capabilities?: {
+                stream?: boolean;
+                tool_call?: boolean;
+                vision?: boolean;
+                json_mode?: boolean;
+            } & {
+                [key: string]: boolean;
+            };
+            /** @description T45。上游真实模型名；与 primary_channel_id 同时给出时同事务建一条默认路由 */
+            upstream_model_name?: string;
+            /**
+             * @description T45。默认路由是否支持流式；仅在创建默认路由时生效
+             * @default true
+             */
+            stream_supported: boolean;
+        };
+        AdminModelPatchRequest: {
+            /** @description 唯一改名入口（PRD F22-1）；与其它模型的名称或别名冲突时 400 */
+            model_name?: string;
+            display_name?: string;
+            /**
+             * @description V1.0 只接受 DOMESTIC
+             * @enum {string}
+             */
+            region?: "DOMESTIC" | "OVERSEAS";
+            /** @enum {string} */
+            model_type?: "TEXT" | "IMAGE" | "EMBEDDING";
+            /** Format: int64 */
+            protocol_id?: number;
+            /**
+             * Format: int64
+             * @description 必须是境内渠道
+             */
+            primary_channel_id?: number;
+            /** Format: int64 */
+            context_length?: number;
+            /**
+             * Format: int64
+             * @description 模型自身的输出上限（对应 `t_model.max_output_tokens`）。
+             *     `0` = 未配置，网关按 `min(context_length, 32768)` 兜底估算。
+             *     与平台输出上限（32768，客户端 `max_tokens` 的硬上限）不是同一个量。
+             *     校验用「本次请求生效后的 context_length」：同一次 PATCH 里同时抬高
+             *     两者是允许的；`max_output_tokens > context_length`（`context_length > 0`
+             *     时）返回 400 `invalid_request_body`（message 为 `max_output_tokens`）。
+             */
+            max_output_tokens?: number;
+            /**
+             * @description 转为 LISTED 时必须有生效中的价格
+             * @enum {string}
+             */
+            listing_state?: "LISTED" | "CATALOG_ONLY" | "DELISTED";
+            /**
+             * Format: int64
+             * @description 仅 LISTED 可非 0，离开 LISTED 自动归零
+             */
+            recommend_weight?: number;
+            aliases?: string[];
+            capabilities?: {
+                stream?: boolean;
+                tool_call?: boolean;
+                vision?: boolean;
+                json_mode?: boolean;
+            } & {
+                [key: string]: boolean;
+            };
+            /** @description 写审计用的变更原因 */
+            reason?: string;
         };
         AdminOverviewToday: {
             /**
@@ -4254,6 +4570,38 @@ export interface operations {
             };
         };
     };
+    revealConsoleKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description t_api_key.id；非本人 Key 与不存在同样返回 404 key_not_found */
+                id: components["parameters"]["KeyID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 明文，或 available=false 加原因 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevealedConsoleKey"];
+                };
+            };
+            /** @description 密钥不存在或不属于当前账号 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     listConsoleModels: {
         parameters: {
             query?: {
@@ -5781,6 +6129,340 @@ export interface operations {
                 };
             };
             /** @description 角色缺少 channel.read（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listAdminRoutes: {
+        parameters: {
+            query?: {
+                model_id?: number;
+                channel_id?: number;
+                enabled?: "0" | "1";
+                region?: "DOMESTIC" | "OVERSEAS";
+                page?: number;
+                page_size?: number;
+                sort?: "created_at" | "updated_at" | "id" | "priority" | "weight";
+                order?: "asc" | "desc";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 路由分页 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminRouteList"];
+                };
+            };
+            /** @description 过滤参数非法（invalid_query_parameter） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 model.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    createAdminRoute: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminRouteCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description 已创建 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminRouteDetail"];
+                };
+            };
+            /** @description 字段非法或 model_id / channel_id / protocol_id 不存在（invalid_request_body） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 model.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 唯一键已存在（resource_state_conflict） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 快照发布失败（config_unavailable），行已提交但网关尚未看到 */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    deleteAdminRoute: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description t_route.id */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已删除 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {boolean} */
+                        deleted: true;
+                        /** Format: int64 */
+                        id: number;
+                    };
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 model.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 路由不存在（resource_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description LISTED 模型的最后一条启用路由（resource_state_conflict） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 快照发布失败（config_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    updateAdminRoute: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description t_route.id */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminRoutePatchRequest"];
+            };
+        };
+        responses: {
+            /** @description 已更新 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminRouteDetail"];
+                };
+            };
+            /** @description 字段非法（invalid_request_body） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 model.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 路由不存在（resource_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 修改后的唯一键与既有路由冲突（resource_state_conflict） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 快照发布失败（config_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    createAdminModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminModelCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description 已创建 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        model?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description 字段非法（invalid_request_body） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 model.write（permission_denied） */
             403: {
                 headers: {
                     [name: string]: unknown;
