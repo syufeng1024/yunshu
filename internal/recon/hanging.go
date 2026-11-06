@@ -580,15 +580,16 @@ func reviveCounterKey(requestID string) string { return "recon:revive:" + reques
 //
 // Redis being unavailable is treated as "not capped": the money path must not
 // stall on a counter, and the K12 claim that guards this call already requires a
-// working Redis, so a failure here is a narrow window rather than a mode.
+// working Redis, so a failure here is a narrow window rather than a mode. That
+// reasoning covers an outage; it does NOT cover a counter that can never be
+// incremented again, which is why incrRevive heals before falling back.
 func (h *Hanging) countRevive(ctx context.Context, rid string) (int64, bool) {
 	if h == nil || h.Redis == nil {
 		return 0, false
 	}
 	cctx, cancel := h.Redis.CommandContext(ctx)
 	defer cancel()
-	key := reviveCounterKey(rid)
-	n, err := h.Redis.Raw().Incr(cctx, key).Result()
+	n, err := h.incrRevive(cctx, rid)
 	if err != nil {
 		if h.Logger != nil {
 			h.Logger.Warn(ctx, "prehold_revive_count_failed: "+err.Error(),
@@ -596,15 +597,49 @@ func (h *Hanging) countRevive(ctx context.Context, rid string) (int64, bool) {
 		}
 		return 0, false
 	}
+	return n, n > MaxHangingRevives
+}
+
+// incrRevive increments the counter and guarantees it carries a TTL.
+//
+// Both halves exist because the counter is the ONLY thing that bounds the
+// DEAD -> PENDING -> DEAD loop, and each failure mode silently removes that
+// bound rather than announcing it:
+//
+//   - A key that is not an integer (a WRONGTYPE list, a value written by hand, a
+//     leftover from another tool) makes INCR fail forever. The old code reported
+//     that as "not capped", so the loop ran unbounded at ~288 revives per day per
+//     rid, each costing the worker's five backoff attempts (~13 minutes), with no
+//     TTL to end it. Delete and retry once: that both heals the poisoned value and
+//     clears a stale key that lost its expiry.
+//   - A counter that lost its TTL never expires, so once it passes the cap the
+//     request is silenced permanently — no revive, no notice, no log line, because
+//     the capped branch is gated on a window that has already closed. Dropping the
+//     key is the lesser evil: the next round restarts at 1 and at worst
+//     under-counts once per Redis hiccup.
+func (h *Hanging) incrRevive(ctx context.Context, rid string) (int64, error) {
+	key := reviveCounterKey(rid)
+	n, err := h.Redis.Raw().Incr(ctx, key).Result()
+	if err != nil {
+		if delErr := h.Redis.Raw().Del(ctx, key).Err(); delErr != nil {
+			// Redis rejected both the INCR and the DEL: this is an outage, not a
+			// poisoned key. Keep the original error so the WARN names the cause.
+			return 0, err
+		}
+		n, err = h.Redis.Raw().Incr(ctx, key).Result()
+		if err != nil {
+			return 0, err
+		}
+	}
 	if n == 1 {
 		// TTL is set once, on creation: refreshing it on every increment would keep
 		// a permanently failing rid counted forever.
-		if err := h.Redis.Raw().Expire(cctx, key, ReviveTTL).Err(); err != nil && h.Logger != nil {
-			h.Logger.Warn(ctx, "prehold_revive_ttl_failed: "+err.Error(),
-				obslog.Fields{Stage: "P29", RequestID: rid})
+		if err := h.Redis.Raw().Expire(ctx, key, ReviveTTL).Err(); err != nil {
+			_ = h.Redis.Raw().Del(ctx, key).Err()
+			return 0, fmt.Errorf("recon: revive ttl: %w", err)
 		}
 	}
-	return n, n > MaxHangingRevives
+	return n, nil
 }
 
 func (h *Hanging) now() time.Time {

@@ -351,6 +351,129 @@ func TestHangingCappedNotifyRetriesAfterFailure(t *testing.T) {
 	}
 }
 
+// TestHangingReviveCapSurvivesPoisonedCounter is the falsifier for the fail-open
+// branch in countRevive.
+//
+// INCR fails on a key that is not an integer. The counter is the only thing
+// bounding the DEAD -> PENDING -> DEAD loop, and the old code answered "INCR
+// failed" with "not capped" — so a single poisoned key made the loop unbounded
+// forever: revives never advanced, so the cap never engaged, no TTL was ever set,
+// and each round burned the worker's five backoff attempts (~13 minutes) for a
+// request that cannot succeed. Measured independently on this repo: 10 rounds,
+// 10 revives, 0 capped.
+//
+// The fix heals the key (DEL + retry once) so the bound re-establishes itself.
+// This test fails on the old code: the task stays PENDING forever and the capped
+// notice never appears.
+func TestHangingReviveCapSurvivesPoisonedCounter(t *testing.T) {
+	ctx := context.Background()
+	rdb := redistest.NewClient(0)
+	t.Cleanup(func() { _ = rdb.Close() })
+
+	store := ledger.NewStore(testDB, clock.Real{})
+	clk := &mutableClock{t: time.Now().UTC()}
+	h := NewHanging(testDB, rdb, store, settle.NewEnqueuer(testDB, clock.Real{}), nil, clk)
+	h.Cost = func(context.Context, int64, int64, int64, time.Time) (int64, error) {
+		return 5000, nil
+	}
+	h.UserLo, h.UserHi = 900060, 900070
+
+	const (
+		user = int64(900061)
+		hold = int64(120000)
+	)
+	rid := rid("capE", 5)
+	expired := time.Now().UTC().Add(-10 * time.Minute)
+
+	deleteAccount(t, user)
+	t.Cleanup(func() {
+		deleteAccount(t, user)
+		_, _ = testDB.Exec(`DELETE FROM t_notification WHERE event_code = 'RECONCILE_MANUAL'`)
+		_ = rdb.Raw().Del(context.Background(),
+			redisx.HoldRecoverKey(rid), reviveCounterKey(rid)).Err()
+	})
+	_ = rdb.Raw().Del(ctx, reviveCounterKey(rid), redisx.HoldRecoverKey(rid)).Err()
+	_, _ = testDB.Exec(`DELETE FROM t_notification WHERE event_code = 'RECONCILE_MANUAL'`)
+
+	insertAccount(t, user, -hold, 0)
+	insertLedgerEntry(t, user, entryNo("CAPE", 1), ledger.BizTypeConsumePrehold,
+		ledger.DirectionDebit, 0, -hold, -hold, 0, -hold, "prehold:"+rid, &rid)
+	execFixture(t,
+		`INSERT INTO t_prehold_hold
+		   (request_id, user_id, api_key_id, hold_micro, estimated_micro, model_id,
+		    state, expires_at, node_id, created_at)
+		 VALUES (?,?,1,?,?,910001,'HELD',?, 'test-node', ?)`,
+		rid, user, hold, hold, expired, expired)
+	insertAttempt(t, rid, user, 910001, 910002, 1, "COMPLETE", "SUCCESS", "", expired)
+	execFixture(t, `UPDATE t_upstream_attempt SET tokens_in = 100, tokens_out = 50 WHERE request_id = ?`, rid)
+	insertUsage(t, rid, user, expired, "SUCCESS", 0)
+
+	// The poisoned key: a plain string INCR cannot parse, with no expiry.
+	if err := rdb.Raw().Set(ctx, reviveCounterKey(rid), "poisoned", 0).Err(); err != nil {
+		t.Fatalf("poison counter: %v", err)
+	}
+
+	taskState := func() string {
+		t.Helper()
+		var state string
+		if err := testDB.QueryRow(
+			`SELECT state FROM t_settle_task WHERE request_id = ? AND task_type = ?`,
+			rid, settle.TaskTypeSettle).Scan(&state); err != nil {
+			t.Fatalf("read task: %v", err)
+		}
+		return state
+	}
+	round := func() {
+		t.Helper()
+		execFixture(t,
+			`UPDATE t_settle_task SET state = ?, attempt_count = 5
+			  WHERE request_id = ? AND task_type = ?`,
+			settle.TaskStateDead, rid, settle.TaskTypeSettle)
+		if err := rdb.Raw().Del(ctx, redisx.HoldRecoverKey(rid)).Err(); err != nil {
+			t.Fatalf("clear K12: %v", err)
+		}
+		if _, err := h.Round(ctx); err != nil {
+			t.Fatalf("round: %v", err)
+		}
+	}
+
+	for i := 0; i < MaxHangingRevives; i++ {
+		round()
+		if got := taskState(); got != settle.TaskStatePending {
+			t.Fatalf("round %d: task state = %s; want PENDING (the healed counter "+
+				"must still allow the first %d revives)", i+1, got, MaxHangingRevives)
+		}
+	}
+
+	// The cap must engage on the crossing round. This is asserted before the
+	// counter's shape so that a regression reports the harm (an unbounded revive
+	// loop on a request that can never succeed) rather than the symptom (a
+	// non-integer key).
+	round()
+	if got := taskState(); got != settle.TaskStateDead {
+		t.Fatalf("task state after the crossing round = %s; want DEAD "+
+			"(an unincrementable counter must not mean 'uncapped')", got)
+	}
+	if got := countRows(t, `SELECT COUNT(*) FROM t_notification
+	                         WHERE event_code = 'RECONCILE_MANUAL' AND body LIKE ?`,
+		"%request_id="+rid+"%revive_capped=true%"); got != 1 {
+		t.Fatalf("capped notices = %d; want 1", got)
+	}
+
+	// The key must have been healed into an integer that carries a TTL, not left
+	// poisoned and never-expiring.
+	n, err := rdb.Raw().Get(ctx, reviveCounterKey(rid)).Int64()
+	if err != nil {
+		t.Fatalf("revive counter is still not an integer after healing: %v", err)
+	}
+	if want := int64(MaxHangingRevives) + 1; n != want {
+		t.Fatalf("revive counter = %d after %d revives; want %d", n, MaxHangingRevives+1, want)
+	}
+	if ttl, err := rdb.Raw().TTL(ctx, reviveCounterKey(rid)).Result(); err != nil || ttl <= 0 {
+		t.Fatalf("revive counter TTL = %s (err=%v); want 0 < ttl <= %s", ttl, err, ReviveTTL)
+	}
+}
+
 // mutableClock lets the test move "now" without sleeping, which the daily
 // rollover case needs.
 type mutableClock struct {
