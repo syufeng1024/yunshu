@@ -146,6 +146,7 @@ const (
 
 	CodeInvalidRequestBody    = "invalid_request_body"
 	CodeInvalidQueryParameter = "invalid_query_parameter"
+	CodeInvalidRequestID      = "invalid_request_id"
 	CodeInvalidMessages       = "invalid_messages"
 	CodeInvalidTemperature    = "invalid_temperature"
 	CodeMaxTokensExceeded     = "max_tokens_exceeded"
@@ -320,12 +321,22 @@ var specs = []Spec{
 		Hint:    "控制台 → 密钥设置页勾选模型",
 	},
 
-	// E.1.3 请求校验 (12)
+	// E.1.3 请求校验 (13)
 	{
 		Code: CodeInvalidRequestBody, Type: TypeInvalidRequest, HTTPStatus: 400,
 		RetryAfterSeconds: 0, Retry: RetryNo, Owner: OwnerBusiness, Stage: "P04",
 		Message: "请求体参数有误：%s",
 		Hint:    "按 message 中的字段路径修正请求体",
+	},
+	{
+		// P08 rather than P04: the header is read at the gateway entry, before
+		// any body is parsed. No interpolated value on purpose — the length is
+		// the caller's own input, and putting it in the message adds nothing an
+		// operator can act on (T50).
+		Code: CodeInvalidRequestID, Type: TypeInvalidRequest, HTTPStatus: 400,
+		RetryAfterSeconds: 0, Retry: RetryNo, Owner: OwnerBusiness, Stage: "P08",
+		Message: "X-Request-Id 超过 36 字节",
+		Hint:    "X-Request-Id 用 26 或 36 字节的 ULID/UUIDv7；每次请求生成一个新的",
 	},
 	{
 		Code: CodeInvalidQueryParameter, Type: TypeInvalidRequest, HTTPStatus: 400,

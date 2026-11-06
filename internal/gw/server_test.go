@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"yunshu.dev/core/internal/apierr"
 	"yunshu.dev/core/internal/jsonx"
 	"yunshu.dev/core/internal/ledger"
 	"yunshu.dev/core/internal/ratelimit"
@@ -318,5 +319,41 @@ func TestServerRateLimiterUnavailableIs503(t *testing.T) {
 	}
 	if errorBody(t, decoded)["code"] != "rate_limiter_unavailable" {
 		t.Fatalf("body = %v", decoded)
+	}
+}
+
+// T50: a client X-Request-Id wider than 36 bytes cannot reach the money path.
+//
+// t_prehold_hold.request_id and t_usage_record.request_id are char(36) (the
+// documented format is a ULID or UUIDv7), while the header sanitiser accepts up
+// to 128 bytes. Before this check the 37-128 range got through every stage and
+// died inside Prehold's INSERT as MySQL 1406, which P10 reports as
+// settlement_unavailable — a 503 carrying retry_after_seconds, so the client
+// retries a request that can never succeed.
+//
+// 36 bytes must keep working: this asserts the boundary, not just the rejection.
+func TestServeHTTPRejectsOverlongRequestID(t *testing.T) {
+	handler := NewHandler(serverDeps(basicCatalog(), authorizedAuth("sk-ok")), noopTerminal)
+
+	long := strings.Repeat("a", apierr.MaxStoredRequestIDLen+1)
+	rec, decoded := postChat(t, handler, "sk-ok", "qwen-plus", long)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status for a %d-byte id = %d, want 400 (body %s)",
+			len(long), rec.Code, rec.Body.String())
+	}
+	e := errorBody(t, decoded)
+	if e["code"] != apierr.CodeInvalidRequestID {
+		t.Fatalf("body code = %v, want %s", e["code"], apierr.CodeInvalidRequestID)
+	}
+	if got := rec.Header().Get("X-Request-Id"); got != long {
+		t.Fatalf("X-Request-Id echo = %q, want the client value %q", got, long)
+	}
+
+	// The widest storable id must still be accepted: a check that rejects 36 too
+	// would trade one broken population for another.
+	ok := strings.Repeat("a", apierr.MaxStoredRequestIDLen)
+	recOK, decodedOK := postChat(t, handler, "sk-ok", "qwen-plus", ok)
+	if recOK.Code == http.StatusBadRequest {
+		t.Fatalf("a %d-byte id was rejected: %v", len(ok), decodedOK)
 	}
 }

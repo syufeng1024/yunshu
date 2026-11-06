@@ -7,7 +7,7 @@
 | 优先级 | **P1**（不产生资损，但对合规客户端是 100% 不可用，且错误**可重试**） |
 | 依赖 | 无（独立于 `94d4885` / `0415fb0`） |
 | 交付根 | `internal/apierr/codes.go`、`internal/platform/httpsrv/middleware.go`、`internal/apierr/traceparent.go`、`internal/ledger/prehold.go`、`api/openapi.yaml` |
-| 状态 | 待实现 |
+| 状态 | **方案 A 已实现**（入口按 36 拒收，400 `invalid_request_id`）；方案 B 未做，仅在确认有客户端需要 >36 时才考虑 |
 | 分段 | 单段（无迁移） |
 
 ## 1. 事实（已核，勿重复调查）

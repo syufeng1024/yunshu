@@ -42,9 +42,10 @@ var prdE1Fixture = []fixtureRow{
 	{CodeModelNotInGroup, TypeAuthorization, 403, 0, RetryNo, OwnerBusiness},
 	{CodeModelNotAuthorized, TypeAuthorization, 403, 0, RetryNo, OwnerBusiness},
 
-	// E.1.3 请求校验 (12; E-21 added invalid_query_parameter)
+	// E.1.3 请求校验 (13; E-21 added invalid_query_parameter, T50 added invalid_request_id)
 	{CodeInvalidRequestBody, TypeInvalidRequest, 400, 0, RetryNo, OwnerBusiness},
 	{CodeInvalidQueryParameter, TypeInvalidRequest, 400, 0, RetryNo, OwnerBusiness},
+	{CodeInvalidRequestID, TypeInvalidRequest, 400, 0, RetryNo, OwnerBusiness},
 	{CodeInvalidMessages, TypeInvalidRequest, 400, 0, RetryNo, OwnerBusiness},
 	{CodeInvalidTemperature, TypeInvalidRequest, 400, 0, RetryNo, OwnerBusiness},
 	{CodeMaxTokensExceeded, TypeInvalidRequest, 400, 0, RetryNo, OwnerBusiness},
@@ -126,19 +127,19 @@ var prdE1Fixture = []fixtureRow{
 	{CodeContentPolicyViolation, TypeInvalidRequest, 403, 0, RetryNo, OwnerBusiness},
 }
 
-func TestCodeCountIs76(t *testing.T) {
-	if got := len(Codes()); got != 76 {
-		t.Fatalf("len(Codes()) = %d, want 76", got)
+func TestCodeCountIs77(t *testing.T) {
+	if got := len(Codes()); got != 77 {
+		t.Fatalf("len(Codes()) = %d, want 77", got)
 	}
-	if got := len(Specs()); got != 76 {
-		t.Fatalf("len(Specs()) = %d, want 76", got)
+	if got := len(Specs()); got != 77 {
+		t.Fatalf("len(Specs()) = %d, want 77", got)
 	}
-	if got := len(prdE1Fixture); got != 76 {
-		t.Fatalf("fixture rows = %d, want 76", got)
+	if got := len(prdE1Fixture); got != 77 {
+		t.Fatalf("fixture rows = %d, want 77", got)
 	}
 	rows := strings.Split(strings.TrimSpace(MarkdownTable()), "\n")
-	if len(rows) != 2+76 {
-		t.Fatalf("markdown rows = %d, want 2 header + 76 = 78", len(rows))
+	if len(rows) != 2+77 {
+		t.Fatalf("markdown rows = %d, want 2 header + 77 = 79", len(rows))
 	}
 }
 
@@ -177,9 +178,9 @@ func countCodeConstants(t *testing.T) int {
 	return count
 }
 
-func TestCodeConstantsCountIs76(t *testing.T) {
-	if count := countCodeConstants(t); count != 76 {
-		t.Fatalf("Code* constants = %d, want 76", count)
+func TestCodeConstantsCountIs77(t *testing.T) {
+	if count := countCodeConstants(t); count != 77 {
+		t.Fatalf("Code* constants = %d, want 77", count)
 	}
 }
 

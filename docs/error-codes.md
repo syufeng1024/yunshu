@@ -33,6 +33,7 @@
 | `model_not_authorized` | `authorization_error` | 403 | 0 | no | BUSINESS | P07 |
 | `invalid_request_body` | `invalid_request_error` | 400 | 0 | no | BUSINESS | P04 |
 | `invalid_query_parameter` | `invalid_request_error` | 400 | 0 | no | BUSINESS | 控制台接口 |
+| `invalid_request_id` | `invalid_request_error` | 400 | 0 | no | BUSINESS | P08 |
 | `invalid_messages` | `invalid_request_error` | 400 | 0 | no | BUSINESS | P04 |
 | `invalid_temperature` | `invalid_request_error` | 400 | 0 | no | BUSINESS | P04 |
 | `max_tokens_exceeded` | `invalid_request_error` | 400 | 0 | no | BUSINESS | P04 |

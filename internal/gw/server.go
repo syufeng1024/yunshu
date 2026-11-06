@@ -95,6 +95,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer func() { h.observeRequest(c, sw.Status()) }()
 	}
 
+	// A client-supplied X-Request-Id is both the money idempotency key and a
+	// char(36) column (t_prehold_hold / t_usage_record), so anything wider than
+	// 36 bytes simply cannot be stored. Rejecting here — before the body read,
+	// before auth, before any hold, and before the failure-usage backfill below —
+	// keeps the answer a 400 the caller can act on.
+	//
+	// Letting it through is what T50 documents: the sanitiser accepts up to 128
+	// bytes, Prehold's INSERT then fails with MySQL 1406, and P10 classifies that
+	// as settlement_unavailable — a 503 carrying retry_after_seconds, i.e. an
+	// invitation to retry forever a request that can never succeed. The check is
+	// deliberately on the resolved id rather than the raw header: a generated id
+	// or a traceparent trace-id is never wider than this.
+	if len(rid) > apierr.MaxStoredRequestIDLen {
+		h.writeError(w, r.Context(), c, apierr.New(apierr.CodeInvalidRequestID))
+		return
+	}
+
 	// G23 backfills one usage row when the request dies before the terminal
 	// runs. terminalRan flips true just before terminal.Serve so the
 	// dispatcher's own emitUsage stays the only writer for terminal calls.

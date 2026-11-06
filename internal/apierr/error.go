@@ -18,6 +18,19 @@ const maxMessageRunes = 200
 // maxRequestIDLen matches the middleware's 128-byte cap.
 const maxRequestIDLen = 128
 
+// MaxStoredRequestIDLen is the widest request id the money tables can hold.
+// Both t_prehold_hold and t_usage_record declare request_id as char(36)
+// (0003_fund_usage_ops.sql:79, :273) because the documented format is a ULID or
+// UUIDv7 (TDS §1.3).
+//
+// It is deliberately separate from maxRequestIDLen: that one only decides
+// whether a header value is safe to echo back, while this one is the storage
+// contract. Without the gateway check, a 37-128 byte client id passes the
+// sanitiser, reaches the INSERT, and MySQL answers 1406 — which P10 classifies
+// as settlement_unavailable, i.e. a retryable 503 that the client is invited to
+// retry forever (T50).
+const MaxStoredRequestIDLen = 36
+
 // APIError is the single error representation for every inbound protocol.
 // OpenAI, Anthropic and Bailian share this body; only HTTP status and headers
 // differ.
