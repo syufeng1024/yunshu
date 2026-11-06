@@ -335,25 +335,51 @@ func checkR02(ctx context.Context, d *Daily, bizDate string, _, _ time.Time) ([]
 		return nil, err
 	}
 
-	const batchQ = `SELECT a.user_id,
-	                       a.balance_recharge_micro + a.balance_bonus_micro AS account_sum,
-	                       COALESCE(SUM(b.remaining_micro), 0) AS batch_sum
-	                  FROM t_credit_account a
-	                  LEFT JOIN t_credit_batch b ON b.user_id = a.user_id
-	                 WHERE a.user_id >= ? AND a.user_id < ?
-	                 GROUP BY a.user_id, a.balance_recharge_micro, a.balance_bonus_micro
-	                HAVING a.balance_recharge_micro + a.balance_bonus_micro
-	                       <> COALESCE(SUM(b.remaining_micro), 0)`
+	// The batch ledger must equal the account's two columns PLUS the credits
+	// that are currently held.
+	//
+	// A prehold does not touch the batches: prehold.go writes the ledger entry
+	// and calls acct.Apply(delta) on t_credit_account, while
+	// t_credit_batch.remaining_micro stays where it was. So for any user with a
+	// request in flight the batch sum is ahead of the account by exactly
+	// SUM(hold_micro) over the HELD rows, and comparing the two directly
+	// reports every in-flight request as a CRITICAL R-02 — which is every
+	// gateway request during business hours. The held amount is added back on
+	// the account side; the batch side is the untouched truth.
+	//
+	// With no HELD row the subquery yields 0 and the comparison, the reported
+	// values and the delta are byte-for-byte what the pre-fix query produced.
+	//
+	// SUSPENDED is excluded on purpose: no code path writes it today (settle.go
+	// rejects it on read, see ErrPreholdSuspended), so counting it would only add
+	// a dead branch. If a writer ever appears, this check must include it — those
+	// holds have the money deducted and the batches untouched, exactly like HELD.
+	const batchQ = `SELECT user_id, account_sum, batch_sum, hold_sum
+	                  FROM (
+	                        SELECT a.user_id,
+	                               a.balance_recharge_micro + a.balance_bonus_micro AS account_sum,
+	                               COALESCE(SUM(b.remaining_micro), 0) AS batch_sum,
+	                               COALESCE((SELECT SUM(h.hold_micro)
+	                                           FROM t_prehold_hold h
+	                                          WHERE h.user_id = a.user_id
+	                                            AND h.state = 'HELD'), 0) AS hold_sum
+	                          FROM t_credit_account a
+	                          LEFT JOIN t_credit_batch b ON b.user_id = a.user_id
+	                         WHERE a.user_id >= ? AND a.user_id < ?
+	                         GROUP BY a.user_id, a.balance_recharge_micro, a.balance_bonus_micro
+	                       ) t
+	                 WHERE account_sum + hold_sum <> batch_sum`
 	batchDiffs, err := d.scanDiffs(ctx, "t_credit_account", batchQ,
 		func(rows *sql.Rows) (Diff, error) {
-			var userID, accountSum, batchSum int64
-			if err := rows.Scan(&userID, &accountSum, &batchSum); err != nil {
+			var userID, accountSum, batchSum, holdSum int64
+			if err := rows.Scan(&userID, &accountSum, &batchSum, &holdSum); err != nil {
 				return Diff{}, err
 			}
+			comparable := accountSum + holdSum
 			return Diff{
 				BizDate: bizDate, DiffType: DiffAmountMismatch,
 				Subject:    "batch:" + strconv.FormatInt(userID, 10),
-				LocalValue: accountSum, UpstreamValue: batchSum, DeltaMicro: accountSum - batchSum,
+				LocalValue: comparable, UpstreamValue: batchSum, DeltaMicro: comparable - batchSum,
 				MatchMode: MatchModeInternal, Level: LevelCritical,
 			}, nil
 		})
