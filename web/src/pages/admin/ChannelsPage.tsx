@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { ApiError, errorHint, errorMessage } from '@/api/client'
 import {
   useChannel,
@@ -391,6 +392,7 @@ export default function ChannelsPage() {
   const drawerOpen = creating || editTarget !== null
 
   const detail = useChannel(editTarget?.id)
+  const queryClient = useQueryClient()
   const createChannel = useCreateChannel()
   const updateChannel = useUpdateChannel()
   const disableChannel = useDisableChannel()
@@ -493,7 +495,37 @@ export default function ChannelsPage() {
               input: result.payload,
             })
       toast.success(mode === 'create' ? '渠道已创建' : '渠道已更新')
-      resetDrawerState()
+      if (mode === 'create') {
+        // 建完不关抽屉：下一步多半就是「从上游获取模型名」，而那个按钮需要渠道 id
+        // 才能用它的密钥去查（见 channel_models.go:86 从 t_channel 读 base_url 与
+        // upstream_key_enc）。关掉再让用户回列表点编辑，等于把主路径拆成三步。
+        //
+        // 先把详情查询的缓存写满，再切编辑态：否则 useChannel(newId) 首帧没有数据、
+        // detailLoading 为真，抽屉正文会被整片换成「正在读取渠道详情…」，用户刚点完
+        // 保存就看到表单消失。queryKey 与 useChannel 严格一致
+        // （admin.ts:264-270：['admin','channels','detail', String(id)]），结构同为
+        // ChannelDetailResponse。
+        queryClient.setQueryData(['admin', 'channels', 'detail', String(response.channel.id)], {
+          channel: response.channel,
+        })
+        setCreating(false)
+        setEditTarget(response.channel)
+        // 新建时填过的密钥已经落库，UI 已切回掩码；置回 false 让后续保存走"留空即保留"
+        // 的既有语义（validateForm 只在该标记为真时才带 upstream_key）。
+        setUpstreamKeyTouched(false)
+        // 再清掉 state 里的明文。这一行当前不可观测：编辑态不渲染明文输入框（:858 只在
+        // upstreamKeyTouched 为真时挂载），「重新填写」的 onClick 自己也会清空（:887），
+        // validateForm 在 touched=false 时不读它——DOM 和请求体上都造不出断言来钉住这一
+        // 行，没有用例能保护它（实测：删掉后 ChannelsPage.test.tsx 9 条仍全绿）。
+        // 留着是因为它防的是一类具体改动：让编辑态恒挂载明文输入框——也就是去掉 :858
+        // 处的 `upstreamKeyTouched` 条件（例如要支持"允许运营查看/替换密钥"）。那种改动
+        // 一落地，这里不清就会把旧明文带进新表单。
+        // 触发条件就是 :858 的条件没了：届时**必须**补一条用例——切到编辑态后 DOM 中不得
+        // 出现明文（扫 input 的 value 不得含刚存的密钥），再回来更新这段注释。
+        updateField('upstreamKey', '')
+      } else {
+        resetDrawerState()
+      }
       openAudit('t_channel', response.channel.id)
     } catch (error) {
       setSaveError(readableChannelError(error))
@@ -993,6 +1025,12 @@ export default function ChannelsPage() {
                   从上游获取模型名
                 </Button>
               </div>
+              {/* 灰按钮不派发鼠标事件，title 弹不出来，理由必须写在页面上。 */}
+              {editTarget === null ? (
+                <p className="text-xs text-ink-muted">
+                  新建渠道需先保存一次：按钮要用这条渠道自己的密钥向上游查询，保存后即可点击。
+                </p>
+              ) : null}
               {/*
                 这是渠道级「逻辑映射」，不是必填项：按平台模型名覆盖路由上的默认上游名。
                 一个平台名在不同渠道发成不同的上游名（官方直连 deepseek-flash、某云
