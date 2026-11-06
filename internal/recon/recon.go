@@ -154,18 +154,37 @@ func (r *Recorder) Record(ctx context.Context, d Diff) (bool, error) {
 
 // Notify writes one t_notification row. user_id 0 is the operations sentinel:
 // t_notification has no role column and the ops console reads event_code.
+//
+// It is idempotent per (event_code, body). The hanging scanner runs every 60s
+// and re-derives exactly the same body for the same stuck request — the same
+// request_id, the same token counters — so a bare INSERT wrote 1,440 rows per
+// day per hung request and buried the rest of the operations inbox. Duplicate
+// means the same document: a genuinely different finding carries a different
+// body (the tokens/consumed values are part of it).
+//
+// t_notification has no unique key usable for this: body is varchar(1024) and
+// an index over it exceeds InnoDB's 3072-byte limit under utf8mb4. The check is
+// therefore part of the statement (INSERT ... SELECT ... WHERE NOT EXISTS).
+// jobsd owns each reconciliation task through K21/K22, so there is no
+// concurrent writer racing this read within one round.
 func (r *Recorder) Notify(ctx context.Context, eventCode, title, body string, channelMask int) error {
 	if r == nil || r.DB == nil {
 		return fmt.Errorf("recon: recorder requires a database")
 	}
 	now := r.now()
+	noticeTitle := truncate(title, 128)
+	noticeBody := truncate(body, 1024)
 	_, err := r.DB.ExecContext(ctx,
 		`INSERT INTO t_notification
 		   (user_id, event_code, title, body, channel_mask, send_state,
 		    created_at, expired_at)
-		 VALUES (0,?,?,?,?,?,?,?)`,
-		eventCode, truncate(title, 128), truncate(body, 1024), channelMask,
+		 SELECT 0, ?, ?, ?, ?, ?, ?, ? FROM DUAL
+		  WHERE NOT EXISTS (
+		        SELECT 1 FROM t_notification
+		         WHERE user_id = 0 AND event_code = ? AND body = ?)`,
+		eventCode, noticeTitle, noticeBody, channelMask,
 		[]byte(`{"inbox":"SENT"}`), now, now.AddDate(0, 0, 180),
+		eventCode, noticeBody,
 	)
 	if err != nil {
 		return fmt.Errorf("recon: notify %s: %w", eventCode, err)

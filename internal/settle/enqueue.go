@@ -65,8 +65,28 @@ func NewEnqueuer(db *sql.DB, clk clock.Clock) *Enqueuer {
 	return &Enqueuer{DB: db, Clock: clk}
 }
 
-// Enqueue writes the task. The unique key (request_id, task_type) makes a
-// duplicate enqueue a no-op: a replay cannot create a second settlement.
+// Enqueue writes the task.
+//
+// The unique key (request_id, task_type) normally makes a duplicate enqueue a
+// no-op: a replay cannot create a second settlement. The one exception is a
+// DEAD row. A DEAD task still occupies the key, so a plain
+// `ON DUPLICATE KEY UPDATE updated_at = ...` would leave it DEAD forever; the
+// hanging scanner now excludes DEAD from "a task exists" (which is what lets an
+// expired hold be reclassified at all), and the worker only claims PENDING
+// rows. Without revival the re-enqueue would be a silent no-op, the task would
+// stay DEAD and the prehold would stay HELD for good. So a DEAD row is put back
+// in the dispatch queue with a fresh attempt budget and the new payload.
+//
+// MySQL applies ON DUPLICATE KEY assignments left to right, and each expression
+// sees the values already assigned, so every `state` test below would read
+// PENDING if `state` were assigned first. `state` is therefore assigned last;
+// the rest read the row's old state.
+//
+// last_error is cleared on revival for the same reason it exists: it names why
+// the previous attempt died. The worker already cleared locked_by/locked_at
+// when it marked the row DEAD; leaving the old cause behind would show a
+// finished, unrelated failure on a row that is queued again (and, if the retry
+// succeeds, on a DONE row).
 func (e *Enqueuer) Enqueue(ctx context.Context, p EnqueueParams) error {
 	if e == nil || e.DB == nil {
 		return fmt.Errorf("settle: enqueue without database")
@@ -87,14 +107,21 @@ func (e *Enqueuer) Enqueue(ctx context.Context, p EnqueueParams) error {
 		return fmt.Errorf("settle: encode payload: %w", err)
 	}
 	now := e.now()
-	_, err = e.DB.ExecContext(ctx,
-		`INSERT INTO t_settle_task
+	const q = `INSERT INTO t_settle_task
 		   (request_id, user_id, task_type, payload, state, attempt_count,
 		    next_retry_at, created_at, updated_at)
 		 VALUES (?,?,?,?,?,0,?,?,?)
-		 ON DUPLICATE KEY UPDATE updated_at = VALUES(updated_at)`,
+		 ON DUPLICATE KEY UPDATE
+		   payload       = IF(state = ?, VALUES(payload), payload),
+		   attempt_count = IF(state = ?, 0, attempt_count),
+		   next_retry_at = IF(state = ?, VALUES(next_retry_at), next_retry_at),
+		   last_error    = IF(state = ?, NULL, last_error),
+		   state         = IF(state = ?, VALUES(state), state),
+		   updated_at    = VALUES(updated_at)`
+	_, err = e.DB.ExecContext(ctx, q,
 		p.RequestID, p.UserID, TaskTypeSettle, []byte(payload), TaskStatePending,
 		now, now, now,
+		TaskStateDead, TaskStateDead, TaskStateDead, TaskStateDead, TaskStateDead,
 	)
 	if err != nil {
 		return fmt.Errorf("settle: insert task: %w", err)

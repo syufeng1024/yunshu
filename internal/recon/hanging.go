@@ -365,9 +365,15 @@ func (h *Hanging) resolve(ctx context.Context, rid string) (hangingFacts, string
 		f.usageTokensIn, f.usageTokensOut = usageTokensIn.Int64, usageTokensOut.Int64
 	}
 
+	// DEAD tasks are excluded on purpose: a task that exhausted its retries
+	// still has a row, and counting it would short-circuit classifyHanging
+	// forever ("a settlement task exists, nothing to do") while the prehold
+	// stays HELD. Excluding them lets the row reach the classifier, which
+	// either releases it (A/B) or re-enqueues and alerts (C).
 	err = h.DB.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM t_settle_task WHERE request_id = ? AND task_type = ?`,
-		rid, settle.TaskTypeSettle).Scan(&f.hasSettleTask)
+		`SELECT COUNT(*) FROM t_settle_task
+		  WHERE request_id = ? AND task_type = ? AND state <> ?`,
+		rid, settle.TaskTypeSettle, settle.TaskStateDead).Scan(&f.hasSettleTask)
 	if err != nil {
 		return f, "", fmt.Errorf("recon: read settle task %s: %w", rid, err)
 	}
@@ -438,9 +444,67 @@ func (h *Hanging) recoverB(ctx context.Context, rid string, f hangingFacts) erro
 }
 
 // recoverC enqueues settlement and alerts operations. It returns false when a
-// settlement task already exists (nothing new to do).
+// settlement task already exists (nothing new to do) or when the request has
+// already been revived too often.
 func (h *Hanging) recoverC(ctx context.Context, rid string, f hangingFacts) (bool, error) {
 	if f.hasSettleTask {
+		return false, nil
+	}
+
+	// A DEAD task that is reclassified becomes PENDING again with a fresh attempt
+	// budget, and the worker's retries take ~13 minutes to exhaust. Nothing stops
+	// the next scan from doing it again, so a deterministic failure (an
+	// ErrInsufficientBatches from a data problem, for instance) would loop
+	// forever, one operator notification per round, while DEAD — the "this needs
+	// a human" signal — silently stops meaning anything. The counter caps it;
+	// the durable equivalent (t_settle_task.revive_count) belongs with the
+	// suppressed-usage migration, not here.
+	revives, capped := h.countRevive(ctx, rid)
+	if capped {
+		// The notification is attempted across a short retry window, NOT once at the
+		// crossing round. `capped` stays true for the whole 24h TTL and this branch
+		// runs once per K12 window (300s), so pinning Notify to
+		// `revives == MaxHangingRevives+1` turned at-least-once into at-most-once:
+		// one transient error at that single round lost the operator hand-off for
+		// the rest of the day, because the next round sees revives=5 and never
+		// matches again. This branch is the only hand-off there is (no Enqueue
+		// below, by design), so a lost notification means a DEAD request nobody
+		// ever hears about. Notify is idempotent per body, so the retries collapse
+		// onto one row rather than producing three.
+		//
+		// The ERROR alert stays pinned to the crossing round: an unconditional one
+		// would emit ~288 lines per day per stuck request — the log equivalent of
+		// the notification flood, and enough to bury real alerts. Rounds after the
+		// window log nothing, deliberately: "still capped" is not new information,
+		// it is exactly `t_settle_task.state='DEAD' AND revive_count > 3`, which the
+		// table can answer and the notification row already reports.
+		// The ERROR line is emitted BEFORE the notification and independently of its
+		// outcome. It is the channel that cannot be lost: if Notify fails, returning
+		// early would drop both the durable row and the log line, which is the
+		// original bug in a new place. Pinned to the crossing round so it fires
+		// exactly once — an unconditional one would emit ~288 lines per day per
+		// stuck request, the log equivalent of the notification flood.
+		if revives == int64(MaxHangingRevives)+1 && h.Logger != nil {
+			h.Logger.Error(ctx, fmt.Sprintf("prehold_revive_capped rid=%s user=%d revives=%d",
+				rid, f.userID, revives), obslog.Fields{Stage: "P29", RequestID: rid})
+		}
+		if revives <= int64(MaxHangingRevives)+3 {
+			// The body carries the UTC day, so a request that is still stuck
+			// tomorrow produces exactly one more notice — a daily reminder rather
+			// than a silent permanent failure — while every round inside the same
+			// day collapses onto the same row (Notify is idempotent per body). The
+			// live counter is deliberately NOT in the body: it changes every round
+			// and would defeat that collapse. Expect one row per request per day,
+			// not one per lifetime: ReviveTTL expires daily.
+			body := fmt.Sprintf("request_id=%s user_id=%d manual=true revive_capped=true revive_limit=%d revive_day=%s",
+				rid, f.userID, MaxHangingRevives, h.now().Format("2006-01-02"))
+			if err := h.Recorder.Notify(ctx, "RECONCILE_MANUAL",
+				"悬挂预扣复活次数超限，需人工处理", body, 3); err != nil {
+				return false, fmt.Errorf("recon: notify revive-capped %s: %w", rid, err)
+			}
+		}
+		// Deliberately no Enqueue: the task stays DEAD, which is the signal that a
+		// retry will not help. The notification above is the hand-off.
 		return false, nil
 	}
 
@@ -477,17 +541,70 @@ func (h *Hanging) recoverC(ctx context.Context, rid string, f hangingFacts) (boo
 		return false, fmt.Errorf("recon: enqueue half-completed %s: %w", rid, err)
 	}
 
-	body := fmt.Sprintf("request_id=%s user_id=%d tokens_in=%d tokens_out=%d consumed_micro=%d manual=%t",
-		rid, f.userID, tokensIn, tokensOut, consumed, manual)
+	body := fmt.Sprintf("request_id=%s user_id=%d tokens_in=%d tokens_out=%d consumed_micro=%d manual=%t revive=%d",
+		rid, f.userID, tokensIn, tokensOut, consumed, manual, revives)
 	if err := h.Recorder.Notify(ctx, "RECONCILE_MANUAL",
 		"悬挂预扣半完成，需要人工核查", body, 3); err != nil {
 		return false, fmt.Errorf("recon: notify half-completed %s: %w", rid, err)
 	}
 	if h.Logger != nil {
-		h.Logger.Error(ctx, fmt.Sprintf("prehold_half_completed rid=%s user=%d tokens_in=%d tokens_out=%d consumed=%d manual=%t",
-			rid, f.userID, tokensIn, tokensOut, consumed, manual), obslog.Fields{Stage: "P29", RequestID: rid})
+		h.Logger.Error(ctx, fmt.Sprintf("prehold_half_completed rid=%s user=%d tokens_in=%d tokens_out=%d consumed=%d manual=%t revive=%d",
+			rid, f.userID, tokensIn, tokensOut, consumed, manual, revives),
+			obslog.Fields{Stage: "P29", RequestID: rid})
 	}
 	return true, nil
+}
+
+// MaxHangingRevives is how many times one request_id may be put back in the
+// settlement queue before recon stops trying and hands it to an operator.
+//
+// Three is enough for the transient causes (a failover, a lock timeout) and far
+// too many for the deterministic ones: a batch/account mismatch fails
+// identically on every attempt, so the fourth revive only spends ~13 minutes of
+// worker time and one notification. The counter lives in Redis with a TTL so a
+// rid is never locked out for good.
+const MaxHangingRevives = 3
+
+// ReviveTTL bounds how long revive attempts are remembered. After it expires the
+// rid starts from zero, which is the right behaviour for a long-lived process:
+// yesterday's failures should not block today's recovery.
+const ReviveTTL = 24 * time.Hour
+
+// reviveCounterKey is the per-request revive counter. It is separate from K12
+// (hold:recover:{rid}, 300s) on purpose: K12 serialises replicas within one
+// window, this counts across windows.
+func reviveCounterKey(requestID string) string { return "recon:revive:" + requestID }
+
+// countRevive increments and returns the revive counter for one request, and
+// reports whether the cap has been reached.
+//
+// Redis being unavailable is treated as "not capped": the money path must not
+// stall on a counter, and the K12 claim that guards this call already requires a
+// working Redis, so a failure here is a narrow window rather than a mode.
+func (h *Hanging) countRevive(ctx context.Context, rid string) (int64, bool) {
+	if h == nil || h.Redis == nil {
+		return 0, false
+	}
+	cctx, cancel := h.Redis.CommandContext(ctx)
+	defer cancel()
+	key := reviveCounterKey(rid)
+	n, err := h.Redis.Raw().Incr(cctx, key).Result()
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Warn(ctx, "prehold_revive_count_failed: "+err.Error(),
+				obslog.Fields{Stage: "P29", RequestID: rid})
+		}
+		return 0, false
+	}
+	if n == 1 {
+		// TTL is set once, on creation: refreshing it on every increment would keep
+		// a permanently failing rid counted forever.
+		if err := h.Redis.Raw().Expire(cctx, key, ReviveTTL).Err(); err != nil && h.Logger != nil {
+			h.Logger.Warn(ctx, "prehold_revive_ttl_failed: "+err.Error(),
+				obslog.Fields{Stage: "P29", RequestID: rid})
+		}
+	}
+	return n, n > MaxHangingRevives
 }
 
 func (h *Hanging) now() time.Time {
