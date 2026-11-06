@@ -421,6 +421,8 @@ export interface AdminModel {
   protocol: string
   primary_channel_id?: number | null
   context_length: number
+  /** 模型自身输出上限；0 = 未配置，网关按 min(context_length, 32768) 兜底。 */
+  max_output_tokens: number
   capability_mask: number
   capabilities: ModelCapabilities
   listing_state: ListingState
@@ -458,6 +460,8 @@ export interface ModelCreateInput {
   protocol_id: number
   primary_channel_id?: number
   context_length?: number
+  /** 0 = 未配置；> 0 时不得超过 context_length（后端 400）。 */
+  max_output_tokens?: number
   listing_state?: ListingState
   recommend_weight?: number
   aliases?: string[]
@@ -473,6 +477,8 @@ export interface ModelPatchInput {
   protocol_id?: number
   primary_channel_id?: number
   context_length?: number
+  /** 0 = 未配置；与同一次 patch 里的 context_length 一起校验。 */
+  max_output_tokens?: number
   listing_state?: ListingState
   recommend_weight?: number
   aliases?: string[]

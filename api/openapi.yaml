@@ -4590,6 +4590,18 @@ components:
         protocol_id: {type: integer, format: int64, minimum: 1}
         primary_channel_id: {type: integer, format: int64, minimum: 1, description: 给出 upstream_model_name 时必填，否则 400 invalid_request_body}
         context_length: {type: integer, format: int64, minimum: 0, maximum: 100000000}
+        max_output_tokens:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 100000000
+          description: |
+            模型自身的输出上限（对应 `t_model.max_output_tokens`）。
+            `0` = 未配置，网关按 `min(context_length, 32768)` 兜底估算。
+            与平台输出上限（32768，客户端 `max_tokens` 的硬上限）不是同一个量，
+            不要混用。`context_length > 0` 时不得超过 `context_length`，越界返回
+            400 `invalid_request_body`（message 为 `max_output_tokens`）；
+            `context_length` 为 0（未知）时只要求 `>= 0`。
         listing_state: {type: string, enum: [LISTED, CATALOG_ONLY, DELISTED], default: CATALOG_ONLY}
         recommend_weight: {type: integer, format: int64, minimum: 0, maximum: 1000}
         aliases:
@@ -4613,6 +4625,48 @@ components:
           type: boolean
           default: true
           description: T45。默认路由是否支持流式；仅在创建默认路由时生效
+    # T46: `PATCH /api/admin/models/{id}` 的请求体形状。该路径的 operation 尚未
+    # 在本文件登记（与 GET /api/admin/models 同样属于未登记面），这里先把 schema
+    # 固定下来，让 max_output_tokens 的写入口径有唯一出处，并供前端生成类型。
+    # 字段全部可选；至少给一个，否则 400 invalid_request_body（message 为 body）。
+    AdminModelPatchRequest:
+      type: object
+      minProperties: 1
+      properties:
+        model_name: {type: string, minLength: 1, maxLength: 128, description: 唯一改名入口（PRD F22-1）；与其它模型的名称或别名冲突时 400}
+        display_name: {type: string, minLength: 1, maxLength: 128}
+        region: {type: string, enum: [DOMESTIC, OVERSEAS], description: V1.0 只接受 DOMESTIC}
+        model_type: {type: string, enum: [TEXT, IMAGE, EMBEDDING]}
+        protocol_id: {type: integer, format: int64, minimum: 1}
+        primary_channel_id: {type: integer, format: int64, minimum: 1, description: 必须是境内渠道}
+        context_length: {type: integer, format: int64, minimum: 0, maximum: 100000000}
+        max_output_tokens:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 100000000
+          description: |
+            模型自身的输出上限（对应 `t_model.max_output_tokens`）。
+            `0` = 未配置，网关按 `min(context_length, 32768)` 兜底估算。
+            与平台输出上限（32768，客户端 `max_tokens` 的硬上限）不是同一个量。
+            校验用「本次请求生效后的 context_length」：同一次 PATCH 里同时抬高
+            两者是允许的；`max_output_tokens > context_length`（`context_length > 0`
+            时）返回 400 `invalid_request_body`（message 为 `max_output_tokens`）。
+        listing_state: {type: string, enum: [LISTED, CATALOG_ONLY, DELISTED], description: 转为 LISTED 时必须有生效中的价格}
+        recommend_weight: {type: integer, format: int64, minimum: 0, maximum: 1000, description: 仅 LISTED 可非 0，离开 LISTED 自动归零}
+        aliases:
+          type: array
+          maxItems: 20
+          items: {type: string, maxLength: 128}
+        capabilities:
+          type: object
+          additionalProperties: {type: boolean}
+          properties:
+            stream: {type: boolean}
+            tool_call: {type: boolean}
+            vision: {type: boolean}
+            json_mode: {type: boolean}
+        reason: {type: string, description: 写审计用的变更原因}
     AdminOverviewToday:
       type: object
       required: [requests, consumed_micro, success_rate_bp]

@@ -18,6 +18,7 @@ vi.mock('@/api/client', async (importOriginal) => {
 
 const mockedGet = vi.mocked(api.get)
 const mockedPost = vi.mocked(api.post)
+const mockedPatch = vi.mocked(api.patch)
 
 const pricing: AdminModel['pricing'] = {
   price_rule_id: 701,
@@ -39,6 +40,7 @@ function model(overrides: Partial<AdminModel> = {}): AdminModel {
     protocol: 'OPENAI_COMPAT',
     primary_channel_id: 2,
     context_length: 65536,
+    max_output_tokens: 4096,
     capability_mask: 1,
     capabilities: { stream: true, tool_call: false, vision: false, json_mode: null },
     listing_state: 'CATALOG_ONLY',
@@ -114,9 +116,11 @@ function lastModelsQuery(): URLSearchParams {
 beforeEach(() => {
   mockedGet.mockReset()
   mockedPost.mockReset()
+  mockedPatch.mockReset()
   useToastStore.setState({ toasts: [] })
   installGet([unpricedModel])
   mockedPost.mockResolvedValue({ model: listedModel })
+  mockedPatch.mockResolvedValue({ model: listedModel })
 })
 
 afterEach(cleanup)
@@ -217,5 +221,52 @@ describe('ModelsPage', () => {
       await screen.findByText(/推荐权重不能超过 4294967295/),
     ).toBeInTheDocument()
     expect(mockedPost).not.toHaveBeenCalled()
+  })
+
+  // T46: max_output_tokens 是模型自身的输出上限（0 = 未配置）。列表要能看到它，
+  // 编辑弹窗要能改它，提交体要带上它，超上下文长度要在字段上拦截。
+  it('T46: 列表展示输出上限，编辑弹窗可改并随提交体下发', async () => {
+    installGet([unpricedModel])
+    const user = userEvent.setup()
+    renderWithProviders(<AdminModelsPage />)
+    await screen.findByText('DeepSeek Chat')
+
+    const table = screen.getByRole('table', { name: '模型主数据列表' })
+    const row = within(table).getByText('DeepSeek Chat').closest('tr') as HTMLElement
+    expect(within(row).getByText('4,096 tokens')).toBeInTheDocument()
+
+    await user.click(within(row).getByRole('button', { name: '编辑' }))
+    const input = await screen.findByLabelText('输出上限（tokens）')
+    expect(input).toHaveValue('4096')
+
+    await user.clear(input)
+    await user.type(input, '2048')
+    await user.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => expect(mockedPatch).toHaveBeenCalledTimes(1))
+    const [path, body] = mockedPatch.mock.calls[0]
+    expect(path).toBe('/api/admin/models/12')
+    expect(body).toMatchObject({ max_output_tokens: 2048, context_length: 65536 })
+  })
+
+  it('T46: 输出上限超过上下文长度时在字段上拦截', async () => {
+    installGet([unpricedModel])
+    const user = userEvent.setup()
+    renderWithProviders(<AdminModelsPage />)
+    await screen.findByText('DeepSeek Chat')
+
+    const table = screen.getByRole('table', { name: '模型主数据列表' })
+    const row = within(table).getByText('DeepSeek Chat').closest('tr') as HTMLElement
+    await user.click(within(row).getByRole('button', { name: '编辑' }))
+
+    const input = await screen.findByLabelText('输出上限（tokens）')
+    await user.clear(input)
+    await user.type(input, '70000')
+    await user.click(screen.getByRole('button', { name: '保存' }))
+
+    expect(
+      await screen.findByText('输出上限不能超过上下文长度（当前 65536）。'),
+    ).toBeInTheDocument()
+    expect(mockedPatch).not.toHaveBeenCalled()
   })
 })

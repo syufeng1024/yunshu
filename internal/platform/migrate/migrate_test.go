@@ -6,12 +6,13 @@ import (
 	"testing/fstest"
 )
 
-// wantMigrationCount is the delivered T02 + T03 + 0020 … 0029 set:
-// 0001-0006 (6) + 0009 (1) + 0010-0019 (10) + 0020 (1) + 0021 (1) + 0022 (1) + 0023 (1) + 0024 (1) + 0025 (1) + 0026 (1) + 0027 (1) + 0028 (1) + 0029 (1) = 27.
+// wantMigrationCount is the delivered T02 + T03 + 0020 … 0031 set:
+// 0001-0006 (6) + 0009 (1) + 0010-0019 (10) + 0020 (1) + 0021 (1) + 0022 (1) + 0023 (1) + 0024 (1) + 0025 (1) + 0026 (1) + 0027 (1) + 0028 (1) + 0029 (1) + 0030 (1) + 0031 (1) = 29.
 // 0007 / 0008 are permanent gaps; 0022 carries t_request_body (T25), 0026 carries t_integration (T33),
 // 0027 adds t_user.username (INC-admin-bootstrap), 0028 adds t_user.password_is_initial,
-// 0029 adds t_phone_claim (INC-phone-claim).
-const wantMigrationCount = 28
+// 0029 adds t_phone_claim (INC-phone-claim), 0030 adds t_api_key.key_enc,
+// 0031 adds t_model.max_output_tokens (T46).
+const wantMigrationCount = 29
 
 func loadEmbedded(t *testing.T) []Migration {
 	t.Helper()
@@ -135,6 +136,7 @@ func TestMigrationCountMatchesFiles(t *testing.T) {
 		"0001", "0002", "0003", "0004", "0005", "0006", "0009",
 		"0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020",
 		"0021", "0022", "0023", "0024", "0025", "0026", "0027", "0028", "0029", "0030",
+		"0031",
 	}
 	if len(migrations) != len(want) {
 		t.Fatalf("版本数量 = %d，期望 %d", len(migrations), len(want))

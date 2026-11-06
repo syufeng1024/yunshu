@@ -61,15 +61,20 @@ type modelPricingView struct {
 }
 
 type modelView struct {
-	ID              int64             `json:"id"`
-	ModelName       string            `json:"model_name"`
-	DisplayName     string            `json:"display_name"`
-	Region          string            `json:"region"`
-	ModelType       string            `json:"model_type"`
-	ProtocolID      int64             `json:"protocol_id"`
-	Protocol        string            `json:"protocol"`
-	PrimaryChannel  *int64            `json:"primary_channel_id,omitempty"`
-	ContextLength   int64             `json:"context_length"`
+	ID             int64  `json:"id"`
+	ModelName      string `json:"model_name"`
+	DisplayName    string `json:"display_name"`
+	Region         string `json:"region"`
+	ModelType      string `json:"model_type"`
+	ProtocolID     int64  `json:"protocol_id"`
+	Protocol       string `json:"protocol"`
+	PrimaryChannel *int64 `json:"primary_channel_id,omitempty"`
+	ContextLength  int64  `json:"context_length"`
+	// MaxOutputTokens is the model's own output ceiling. 0 means "not
+	// configured" — the gateway then falls back to min(context_length,
+	// PlatformMaxOutputTokens). It is the operator's input for that fallback,
+	// not the platform cap the client's max_tokens is clamped to.
+	MaxOutputTokens int64             `json:"max_output_tokens"`
 	CapabilityMask  int64             `json:"capability_mask"`
 	Capabilities    modelCapabilities `json:"capabilities"`
 	ListingState    string            `json:"listing_state"`
@@ -101,6 +106,7 @@ type modelCreateRequest struct {
 	ProtocolID       *int64           `json:"protocol_id"`
 	PrimaryChannelID *int64           `json:"primary_channel_id"`
 	ContextLength    *int64           `json:"context_length"`
+	MaxOutputTokens  *int64           `json:"max_output_tokens"`
 	ListingState     *string          `json:"listing_state"`
 	RecommendWeight  *int64           `json:"recommend_weight"`
 	Aliases          *[]string        `json:"aliases"`
@@ -123,6 +129,7 @@ type modelPatchRequest struct {
 	ProtocolID       *int64           `json:"protocol_id"`
 	PrimaryChannelID *int64           `json:"primary_channel_id"`
 	ContextLength    *int64           `json:"context_length"`
+	MaxOutputTokens  *int64           `json:"max_output_tokens"`
 	ListingState     *string          `json:"listing_state"`
 	RecommendWeight  *int64           `json:"recommend_weight"`
 	Aliases          *[]string        `json:"aliases"`
@@ -142,8 +149,9 @@ type recommendWeightRequest struct {
 
 const modelSelectColumns = `
 	m.id, m.model_name, m.display_name, m.region, m.model_type, m.protocol_id, p.code,
-	m.primary_channel_id, m.context_length, m.capability_mask, m.listing_state,
-	m.recommend_weight, m.published_at, m.delisted_at, m.created_at, m.updated_at`
+	m.primary_channel_id, m.context_length, m.max_output_tokens, m.capability_mask,
+	m.listing_state, m.recommend_weight, m.published_at, m.delisted_at, m.created_at,
+	m.updated_at`
 
 // ListModels implements GET /api/admin/models.
 func (s *Service) ListModels(w http.ResponseWriter, r *http.Request) {
@@ -329,11 +337,11 @@ func (s *Service) CreateModel(w http.ResponseWriter, r *http.Request) {
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO t_model
 			(model_name, display_name, region, model_type, protocol_id, primary_channel_id,
-			 context_length, capability_mask, listing_state, recommend_weight,
+			 context_length, max_output_tokens, capability_mask, listing_state, recommend_weight,
 			 published_at, delisted_at, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		in.modelName, in.displayName, in.region, in.modelType, in.protocolID,
-		nullableInt64(in.primaryChannelID), in.contextLength, in.capabilityMask,
+		nullableInt64(in.primaryChannelID), in.contextLength, in.maxOutputTokens, in.capabilityMask,
 		in.listingState, in.recommendWeight, publishedAt, delistedAt, now, now)
 	if err != nil {
 		s.logError(ctx, "ops_model_insert_failed: "+err.Error())
@@ -621,6 +629,19 @@ func (s *Service) updateModel(w http.ResponseWriter, r *http.Request, id int64, 
 		}
 		add("context_length", *req.ContextLength)
 	}
+	if req.MaxOutputTokens != nil {
+		// Validate against the context length this request will leave behind:
+		// a PATCH may raise the ceiling and the context length together.
+		nextContextLength := before.ContextLength
+		if req.ContextLength != nil {
+			nextContextLength = *req.ContextLength
+		}
+		if apiErr := validateMaxOutputTokens(*req.MaxOutputTokens, nextContextLength); apiErr != nil {
+			mw.WriteError(w, r, apiErr)
+			return
+		}
+		add("max_output_tokens", *req.MaxOutputTokens)
+	}
 	if req.Capabilities != nil {
 		mask, apiErr := capabilityMask(*req.Capabilities)
 		if apiErr != nil {
@@ -807,6 +828,7 @@ type modelInput struct {
 	protocolID       int64
 	primaryChannelID *int64
 	contextLength    int64
+	maxOutputTokens  int64
 	listingState     string
 	recommendWeight  int64
 	aliases          []string
@@ -876,6 +898,15 @@ func (s *Service) validateCreateModel(r *http.Request, req *modelCreateRequest) 
 		}
 		contextLength = *req.ContextLength
 	}
+	// max_output_tokens defaults to 0 (= "not configured"), which keeps the
+	// gateway's third-level fallback min(context_length, 32768) in charge.
+	maxOutputTokens := int64(0)
+	if req.MaxOutputTokens != nil {
+		if apiErr := validateMaxOutputTokens(*req.MaxOutputTokens, contextLength); apiErr != nil {
+			return in, apiErr
+		}
+		maxOutputTokens = *req.MaxOutputTokens
+	}
 	var aliases []string
 	if req.Aliases != nil {
 		var e *apierr.APIError
@@ -919,6 +950,7 @@ func (s *Service) validateCreateModel(r *http.Request, req *modelCreateRequest) 
 		protocolID:        *req.ProtocolID,
 		primaryChannelID:  req.PrimaryChannelID,
 		contextLength:     contextLength,
+		maxOutputTokens:   maxOutputTokens,
 		listingState:      state,
 		recommendWeight:   weight,
 		aliases:           aliases,
@@ -934,6 +966,35 @@ func (s *Service) validateCreateModel(r *http.Request, req *modelCreateRequest) 
 		return in, apiErr
 	}
 	return in, nil
+}
+
+// maxOutputTokensCeiling bounds max_output_tokens when the model's
+// context_length is unknown (0). It matches the context_length ceiling above so
+// the console cannot store a value the column type never expects.
+const maxOutputTokensCeiling int64 = 100_000_000
+
+// validateMaxOutputTokens enforces 0 <= value <= contextLength.
+//
+// Semantics copied from t_model.max_output_tokens itself: 0 means "not
+// configured", so it is always accepted. When context_length is known (> 0) the
+// output ceiling may not exceed it — context_length is input + output, and a
+// ceiling above it would make the gateway reserve more output than the model can
+// ever produce. When context_length is 0 (unknown) only the sign is checked:
+// refusing there would force operators to record a context length they may not
+// have yet.
+//
+// Deliberately NOT bounded by the platform cap (32768, PlatformMaxOutputTokens
+// in internal/gw): that constant clamps the client's max_tokens request, while
+// this column records a model capability. Conflating the two would silently
+// flatten every long-output model to the platform ceiling.
+func validateMaxOutputTokens(value, contextLength int64) *apierr.APIError {
+	if value < 0 || value > maxOutputTokensCeiling {
+		return mw.InvalidField("max_output_tokens")
+	}
+	if contextLength > 0 && value > contextLength {
+		return mw.InvalidField("max_output_tokens")
+	}
+	return nil
 }
 
 func validateListingState(raw string) (string, *apierr.APIError) {
@@ -1079,6 +1140,7 @@ func primaryChannelValid(ctx context.Context, q interface {
 func hasModelPatch(req *modelPatchRequest) bool {
 	return req.ModelName != nil || req.DisplayName != nil || req.Region != nil || req.ModelType != nil ||
 		req.ProtocolID != nil || req.PrimaryChannelID != nil || req.ContextLength != nil ||
+		req.MaxOutputTokens != nil ||
 		req.ListingState != nil || req.RecommendWeight != nil ||
 		req.Aliases != nil || req.Capabilities != nil
 }
@@ -1098,7 +1160,7 @@ func scanModel(row rowScanner) (modelView, error) {
 	)
 	if err := row.Scan(
 		&v.ID, &v.ModelName, &v.DisplayName, &v.Region, &v.ModelType,
-		&v.ProtocolID, &v.Protocol, &primary, &v.ContextLength,
+		&v.ProtocolID, &v.Protocol, &primary, &v.ContextLength, &v.MaxOutputTokens,
 		&v.CapabilityMask, &v.ListingState, &v.RecommendWeight,
 		&published, &delisted, &createdAt, &updatedAt,
 	); err != nil {
@@ -1410,19 +1472,20 @@ func listingAnnouncementCopy(m modelView, nextState string) (string, string) {
 
 func modelAuditView(v modelView) map[string]any {
 	return map[string]any{
-		"model_name":       v.ModelName,
-		"display_name":     v.DisplayName,
-		"region":           v.Region,
-		"model_type":       v.ModelType,
-		"protocol_id":      v.ProtocolID,
-		"primary_channel":  v.PrimaryChannel,
-		"context_length":   v.ContextLength,
-		"capability_mask":  v.CapabilityMask,
-		"listing_state":    v.ListingState,
-		"recommend_weight": v.RecommendWeight,
-		"aliases":          v.Aliases,
-		"published_at":     v.PublishedAt,
-		"delisted_at":      v.DelistedAt,
+		"model_name":        v.ModelName,
+		"display_name":      v.DisplayName,
+		"region":            v.Region,
+		"model_type":        v.ModelType,
+		"protocol_id":       v.ProtocolID,
+		"primary_channel":   v.PrimaryChannel,
+		"context_length":    v.ContextLength,
+		"max_output_tokens": v.MaxOutputTokens,
+		"capability_mask":   v.CapabilityMask,
+		"listing_state":     v.ListingState,
+		"recommend_weight":  v.RecommendWeight,
+		"aliases":           v.Aliases,
+		"published_at":      v.PublishedAt,
+		"delisted_at":       v.DelistedAt,
 	}
 }
 

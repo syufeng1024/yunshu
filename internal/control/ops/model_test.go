@@ -440,3 +440,105 @@ func TestRecommendWeightWritesAudit(t *testing.T) {
 		t.Fatalf("after_json=%s, want recommend_weight 10", after)
 	}
 }
+
+// T46: max_output_tokens is the model's own output ceiling. POST and PATCH must
+// carry it, GET must return it, and it may not exceed context_length — otherwise
+// the snapshot publishes a ceiling the model cannot reach and the gateway
+// reserves more output than the model can ever produce.
+func TestModelMaxOutputTokensCreateReadPatch(t *testing.T) {
+	svc := newTestService(t)
+	uid := newTestUser(t, "OPS")
+	body := modelBody(t, "t46-model-output-"+uniqueSuffix(), "CATALOG_ONLY")
+	body["context_length"] = int64(8192)
+	body["max_output_tokens"] = int64(4096)
+	m := createTestModel(t, svc, uid, body)
+	if m.ContextLength != 8192 || m.MaxOutputTokens != 4096 {
+		t.Fatalf("create 返回 context_length=%d max_output_tokens=%d，期望 8192/4096（两列相邻，赋值错位会串值）",
+			m.ContextLength, m.MaxOutputTokens)
+	}
+
+	// GET must read the same pair back; the two int64 columns are adjacent in
+	// the SELECT and the scan, so a swap here would be silent.
+	rec := call(t, svc.GetModel, http.MethodGet, "/api/admin/models/1", nil,
+		testCallOptions{uid: uid, role: "OPS", pathVal: map[string]string{"id": itoa(m.ID)}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var detail modelDetailResponse
+	decodeBody(t, rec, &detail)
+	if detail.Model.ContextLength != 8192 || detail.Model.MaxOutputTokens != 4096 {
+		t.Fatalf("detail context_length=%d max_output_tokens=%d，期望 8192/4096",
+			detail.Model.ContextLength, detail.Model.MaxOutputTokens)
+	}
+
+	// PATCH may lower it to a value inside the context window.
+	rec = call(t, svc.UpdateModel, http.MethodPatch, "/api/admin/models/1",
+		map[string]any{"max_output_tokens": int64(2048)},
+		testCallOptions{uid: uid, role: "OPS", pathVal: map[string]string{"id": itoa(m.ID)}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	decodeBody(t, rec, &detail)
+	if detail.Model.MaxOutputTokens != 2048 {
+		t.Fatalf("patch 后 max_output_tokens=%d，期望 2048", detail.Model.MaxOutputTokens)
+	}
+
+	// 0 means "not configured" and stays writable.
+	rec = call(t, svc.UpdateModel, http.MethodPatch, "/api/admin/models/1",
+		map[string]any{"max_output_tokens": int64(0)},
+		testCallOptions{uid: uid, role: "OPS", pathVal: map[string]string{"id": itoa(m.ID)}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch to 0 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Above context_length is refused, as is a negative value.
+	for _, value := range []int64{8193, -1} {
+		rec = call(t, svc.UpdateModel, http.MethodPatch, "/api/admin/models/1",
+			map[string]any{"max_output_tokens": value},
+			testCallOptions{uid: uid, role: "OPS", pathVal: map[string]string{"id": itoa(m.ID)}})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("max_output_tokens=%d status=%d body=%s, want 400", value, rec.Code, rec.Body.String())
+		}
+		eb := errorBody(t, rec)
+		if eb.Error.Code != "invalid_request_body" || !strings.Contains(eb.Error.Message, "max_output_tokens") {
+			t.Fatalf("max_output_tokens=%d body=%+v, want invalid_request_body 指向 max_output_tokens", value, eb.Error)
+		}
+	}
+}
+
+// T46: a create request may not record a ceiling above the context length it
+// ships in the same body, and an unknown context_length (0) only requires the
+// value to be non-negative.
+func TestModelMaxOutputTokensCreateValidation(t *testing.T) {
+	svc := newTestService(t)
+	uid := newTestUser(t, "OPS")
+
+	tooBig := modelBody(t, "t46-model-output-big-"+uniqueSuffix(), "CATALOG_ONLY")
+	tooBig["context_length"] = int64(4096)
+	tooBig["max_output_tokens"] = int64(8192)
+	rec := call(t, svc.CreateModel, http.MethodPost, "/api/admin/models", tooBig,
+		testCallOptions{uid: uid, role: "OPS"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("create 超上下文 status=%d body=%s, want 400", rec.Code, rec.Body.String())
+	}
+	if eb := errorBody(t, rec); !strings.Contains(eb.Error.Message, "max_output_tokens") {
+		t.Fatalf("body=%+v, want message 指向 max_output_tokens", eb.Error)
+	}
+
+	negative := modelBody(t, "t46-model-output-neg-"+uniqueSuffix(), "CATALOG_ONLY")
+	negative["max_output_tokens"] = int64(-1)
+	rec = call(t, svc.CreateModel, http.MethodPost, "/api/admin/models", negative,
+		testCallOptions{uid: uid, role: "OPS"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("create 负数 status=%d body=%s, want 400", rec.Code, rec.Body.String())
+	}
+
+	// context_length unset (=0, "unknown") accepts any non-negative ceiling.
+	unknown := modelBody(t, "t46-model-output-unknown-"+uniqueSuffix(), "CATALOG_ONLY")
+	unknown["max_output_tokens"] = int64(65536)
+	created := createTestModel(t, svc, uid, unknown)
+	if created.MaxOutputTokens != 65536 || created.ContextLength != 0 {
+		t.Fatalf("context_length 未知时 max_output_tokens=%d context_length=%d，期望 65536/0",
+			created.MaxOutputTokens, created.ContextLength)
+	}
+}

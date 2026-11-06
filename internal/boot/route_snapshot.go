@@ -218,10 +218,35 @@ func (b *RouteSnapshot) Publish(ctx context.Context) (RouteStats, *config.Publis
 	return stats, result, nil
 }
 
+// modelEntryColumns is the t_model projection consumed by scanModelEntry, in
+// the exact order the scan reads it. Keep the two in step: context_length and
+// max_output_tokens are both 64-bit integers and sit next to each other, so a
+// mis-ordered scan swaps the two values silently instead of failing.
+// TestModelSelectColumnsMatchScanOrder guards the alignment.
+//
+// max_output_tokens must be projected at all: before T46 it was declared on
+// modelEntry but never selected, so every snapshot carried 0 and the gateway's
+// second-level output fallback (model's own ceiling) could never fire.
+const modelEntryColumns = `id, model_name, region, model_type, context_length,
+		       max_output_tokens, default_price_rule_id, capability_mask, listing_state`
+
+// scanModelEntry fills one modelEntry from the modelEntryColumns projection.
+// The destination order below is the contract the const above documents.
+func scanModelEntry(m *modelEntry, scan func(dest ...any) error) error {
+	var priceRef sql.NullInt64
+	if err := scan(&m.ID, &m.ModelName, &m.Region, &m.ModelType, &m.ContextLength,
+		&m.MaxOutputTokens, &priceRef, &m.CapabilityMask, &m.ListingState); err != nil {
+		return err
+	}
+	if priceRef.Valid {
+		m.DefaultPriceRuleID = priceRef.Int64
+	}
+	return nil
+}
+
 func (b *RouteSnapshot) loadModels(ctx context.Context) ([]modelEntry, map[string]string, error) {
 	rows, err := b.DB.QueryContext(ctx, `
-		SELECT id, model_name, region, model_type, context_length,
-		       default_price_rule_id, capability_mask, listing_state
+		SELECT `+modelEntryColumns+`
 		  FROM t_model
 		 WHERE deleted_at IS NULL
 		 ORDER BY id`)
@@ -233,13 +258,8 @@ func (b *RouteSnapshot) loadModels(ctx context.Context) ([]modelEntry, map[strin
 	models := make([]modelEntry, 0, 64)
 	for rows.Next() {
 		var m modelEntry
-		var priceRef sql.NullInt64
-		if err := rows.Scan(&m.ID, &m.ModelName, &m.Region, &m.ModelType,
-			&m.ContextLength, &priceRef, &m.CapabilityMask, &m.ListingState); err != nil {
+		if err := scanModelEntry(&m, rows.Scan); err != nil {
 			return nil, nil, fmt.Errorf("boot: scan model: %w", err)
-		}
-		if priceRef.Valid {
-			m.DefaultPriceRuleID = priceRef.Int64
 		}
 		models = append(models, m)
 	}

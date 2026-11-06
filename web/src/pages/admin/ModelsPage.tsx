@@ -72,6 +72,7 @@ interface ModelFormState {
   protocolId: string
   primaryChannelId: string
   contextLength: string
+  maxOutputTokens: string
   capabilities: Record<CapabilityKey, boolean>
   aliasesText: string
 }
@@ -84,6 +85,7 @@ const EMPTY_FORM: ModelFormState = {
   protocolId: '',
   primaryChannelId: '',
   contextLength: '0',
+  maxOutputTokens: '0',
   capabilities: { stream: false, tool_call: false, vision: false, json_mode: false },
   aliasesText: '',
 }
@@ -100,6 +102,7 @@ function formFromModel(model: AdminModel): ModelFormState {
         ? ''
         : String(model.primary_channel_id),
     contextLength: String(model.context_length),
+    maxOutputTokens: String(model.max_output_tokens ?? 0),
     capabilities: {
       stream: model.capabilities.stream === true,
       tool_call: model.capabilities.tool_call === true,
@@ -314,6 +317,16 @@ export default function AdminModelsPage() {
       nextErrors.contextLength = '上下文长度需为 0–100000000 的整数。'
     }
 
+    // max_output_tokens: 0 = 未配置（网关按 min(context_length, 32768) 兜底）。
+    // 与后端同一口径：context_length > 0 时不得越过它；= 0（未知）时只看正负。
+    const maxOutputTokensRaw = form.maxOutputTokens.trim()
+    const maxOutputTokens = maxOutputTokensRaw === '' ? 0 : parseInteger(maxOutputTokensRaw)
+    if (maxOutputTokens === null || maxOutputTokens < 0 || maxOutputTokens > 100_000_000) {
+      nextErrors.maxOutputTokens = '输出上限需为 0–100000000 的整数，0 表示未配置。'
+    } else if (contextLength !== null && contextLength > 0 && maxOutputTokens > contextLength) {
+      nextErrors.maxOutputTokens = `输出上限不能超过上下文长度（当前 ${contextLength}）。`
+    }
+
     const aliases = creating ? parseAliases(form.aliasesText) : []
     if (creating && aliases === null) {
       nextErrors.aliasesText = '别名最多 20 个，每个不超过 128 个字符。'
@@ -330,6 +343,7 @@ export default function AdminModelsPage() {
       Object.keys(nextErrors).length > 0 ||
       protocolID === null ||
       contextLength === null ||
+      maxOutputTokens === null ||
       (creating && aliases === null)
     ) {
       return { errors: nextErrors, createInput: null, patchInput: null }
@@ -343,6 +357,7 @@ export default function AdminModelsPage() {
         model_type: form.modelType,
         protocol_id: protocolID,
         context_length: contextLength,
+        max_output_tokens: maxOutputTokens,
         capabilities,
         aliases: aliases as string[],
       }
@@ -357,6 +372,7 @@ export default function AdminModelsPage() {
       model_type: form.modelType,
       protocol_id: protocolID,
       context_length: contextLength,
+      max_output_tokens: maxOutputTokens,
       capabilities,
     }
     if (primaryChannelID !== undefined) patch.primary_channel_id = primaryChannelID
@@ -532,6 +548,18 @@ export default function AdminModelsPage() {
       render: (model) => (
         <span className="tabular-nums text-xs text-ink-secondary">
           {formatTokens(model.context_length)}
+        </span>
+      ),
+    },
+    {
+      key: 'maxOutput',
+      header: '输出上限',
+      align: 'right',
+      // 0 = 未配置：显示「—」，不冒充一个真实的 0 上限（网关会按
+      // min(context_length, 32768) 兜底）。
+      render: (model) => (
+        <span className="tabular-nums text-xs text-ink-secondary">
+          {model.max_output_tokens > 0 ? formatTokens(model.max_output_tokens) : '—'}
         </span>
       ),
     },
@@ -779,6 +807,14 @@ export default function AdminModelsPage() {
               value={form.contextLength}
               error={errors.contextLength}
               onChange={(event) => updateField('contextLength', event.target.value)}
+            />
+            <Input
+              label="输出上限（tokens）"
+              inputMode="numeric"
+              value={form.maxOutputTokens}
+              error={errors.maxOutputTokens}
+              hint="0 或留空表示未配置，按 min(上下文长度, 32768) 兜底。"
+              onChange={(event) => updateField('maxOutputTokens', event.target.value)}
             />
             <Input
               label="主渠道编号"
