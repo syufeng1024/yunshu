@@ -42,6 +42,12 @@ const backendEnv: Record<string, string> = {
   CONTROL_HTTP_ADDR: ':8081',
   CHANNEL_KEY_KEK: E2E_CHANNEL_KEY_KEK,
   FP_HMAC_KEY: 'e2e-only-fp-hmac-key',
+  // Registration hashes the phone with this key and treats its absence as a
+  // server configuration fault (internal/control/auth/register.go:80), so a
+  // run without it fails every spec that calls /auth/register with a 500.
+  // scripts/e2e-backend.sh has always passed it; this list did not, which is
+  // why the browser suite could not create an account on a fresh machine.
+  PHONE_HMAC_KEY: 'e2e-only-phone-hmac-key-change-before-use',
   EXPORT_HMAC_KEY: 'e2e-only-export-hmac-key',
   // The security specs create their accounts through POST /auth/register and
   // have no mailbox to read a code from. "off" is the documented mode for
