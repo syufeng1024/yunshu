@@ -15,6 +15,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -155,9 +156,6 @@ func uniquePhone(t *testing.T) string {
 func seedPhone(t *testing.T, phone, phoneMAC string, deleted bool) int64 {
 	t.Helper()
 	now := time.Now().UTC()
-	var b [4]byte
-	_, _ = rand.Read(b[:])
-	userNo := fmt.Sprintf("Q%s%03d", now.Format("20060102"), (int(b[0])<<8|int(b[1]))%1000)
 	var phoneVal, macVal, delVal any
 	if phone != "" {
 		phoneVal = phone
@@ -168,18 +166,36 @@ func seedPhone(t *testing.T, phone, phoneMAC string, deleted bool) int64 {
 	if deleted {
 		delVal = now
 	}
-	res, err := qaDB.ExecContext(context.Background(), `
+	// user_no is Q<date><000-999>: 1000 buckets shared by this run's 13 seeds.
+	// Uniform sampling therefore collides about 7% of runs (birthday: sum over
+	// i=1..12 of i/1000), and a collision is a fixture artefact, not a product
+	// defect — the QA tests are about exit codes, not about user_no. Retry on the
+	// unique-key violation the way production's insertUserRow does, instead of
+	// failing a test that has nothing to do with the number.
+	var uid int64
+	for attempt := 0; ; attempt++ {
+		var b [4]byte
+		_, _ = rand.Read(b[:])
+		userNo := fmt.Sprintf("Q%s%03d", now.Format("20060102"), (int(b[0])<<8|int(b[1]))%1000)
+		res, err := qaDB.ExecContext(context.Background(), `
 		INSERT INTO t_user
 			(user_no, phone, phone_hmac, password_hash, password_algo, password_updated_at,
 			 nickname, role, status, created_at, updated_at, deleted_at)
 		VALUES (?,?,?,'not-a-real-hash','bcrypt',?,'qa','PERSONAL','NORMAL',?,?,?)`,
-		userNo, phoneVal, macVal, now, now, now, delVal)
-	if err != nil {
-		t.Fatalf("seed user: %v", err)
-	}
-	uid, err := res.LastInsertId()
-	if err != nil {
-		t.Fatalf("seed id: %v", err)
+			userNo, phoneVal, macVal, now, now, now, delVal)
+		if err != nil {
+			var me *mysql.MySQLError
+			if errors.As(err, &me) && me.Number == 1062 && strings.Contains(me.Message, "uk_user_no") && attempt < 8 {
+				continue
+			}
+			t.Fatalf("seed user: %v", err)
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			t.Fatalf("seed id: %v", err)
+		}
+		uid = id
+		break
 	}
 	t.Cleanup(func() {
 		_, _ = qaDB.ExecContext(context.Background(), `DELETE FROM t_user WHERE id = ?`, uid)
