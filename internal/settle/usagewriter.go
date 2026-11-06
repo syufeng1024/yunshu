@@ -461,15 +461,74 @@ volume_basis, created_at`
 
 const usageColumnCount = 46
 
+// usageUpdateSet is the SET clause of the A-12 overwrite, derived from
+// usageColumns so the INSERT and the overwrite can never drift apart: a column
+// added to one and forgotten in the other leaves a mixed row (`result='SUCCESS'`
+// with tokens_in=0) that is harder to diagnose than the row it replaced.
+//
+// Two columns are deliberately excluded:
+//   - request_id is the WHERE key;
+//   - created_at keeps the first-write value. R-05 compares the day's
+//     t_user_daily_quota.used_total_micro with the day's
+//     SUM(t_usage_record.consumed_micro); moving created_at across midnight (a
+//     long stream settled just after 00:00 is exactly this scenario) would
+//     evaporate that day's usage and invent it on the next, producing an R-05
+//     diff that no amount of "the overwrite failed" explains.
+var usageUpdateSet = buildUsageUpdateSet(usageColumns)
+
+// buildUsageUpdateSet renders "col = ?, col = ?" for every column except
+// request_id and created_at.
+func buildUsageUpdateSet(columns string) string {
+	parts := strings.Split(columns, ",")
+	sets := make([]string, 0, len(parts))
+	for _, p := range parts {
+		col := strings.TrimSpace(p)
+		switch {
+		case col == "":
+			continue
+		case col == "request_id" || col == "created_at":
+			continue
+		}
+		sets = append(sets, col+" = ?")
+	}
+	return strings.Join(sets, ", ")
+}
+
+// usageOverwritePredicate is the old-row half of the A-12 overwrite. Both
+// conditions are required and mean different things:
+//
+//   - result = 'FAILED': the row records a request that did not complete, so it
+//     is not the accounting truth for this request_id. Deliberately not
+//     `result <> 'SUCCESS'`: PARTIAL/0 and SUCCESS/0 both come from the
+//     zero-price (internal) group, so overwriting either would turn a legitimate
+//     0-amount record into a charged one whose money belongs to a different
+//     execution — the same class of error as A-12, only inverted. A zero-cost
+//     SUCCESS row does exist (t_price_group.internal = 0); it is not poison.
+//   - consumed_micro = 0: the row never spent money. Without this conjunct a
+//     second settlement could rewrite a row that already carried a charge.
+//
+// The new-row half lives at the call site: only a row with consumed_micro > 0
+// may overwrite, so a PARTIAL settlement (which did consume) still wins as the
+// replacement, while a zero-consumption write never triggers the UPDATE.
+//
+// If the row states above ever change, `TestUsageOverwritePredicateP1` is the
+// tripwire that forces this decision to be revisited (comment and test point at
+// each other on purpose).
+const usageOverwritePredicate = `result = 'FAILED' AND consumed_micro = 0`
+
 func (w *UsageWriter) insertUsage(ctx context.Context, rows []UsageRecord) error {
 	if len(rows) == 0 {
 		return nil
 	}
-	args := make([]any, 0, len(rows)*usageColumnCount)
+	// rowArgs keeps one slice per row instead of one flat slice: the overwrite
+	// below needs a single row's values, and deriving them from the same slice
+	// is what guarantees the UPDATE and the INSERT share column order.
+	rowArgs := make([][]any, len(rows))
 	created := make([]time.Time, len(rows))
+	args := make([]any, 0, len(rows)*usageColumnCount)
 	for i, r := range rows {
 		created[i] = w.createdAt(r.CreatedAt)
-		args = append(args,
+		row := []any{
 			cut(r.RequestID, 36), r.UserID, r.APIKeyID, cut(r.APIKeyName, 64),
 			nullID(r.ModelID), cut(r.ModelName, 128), cut(r.RequestModel, 128), cut(r.InboundProto, 24),
 			nullID(r.ChannelID), nullableString(cut(r.ChannelName, 64)),
@@ -488,20 +547,142 @@ func (w *UsageWriter) insertUsage(ctx context.Context, rows []UsageRecord) error
 			clampInt(r.TotalMS, 0, 4294967295), clampInt(r.UpstreamMS, 0, 4294967295),
 			nullBytes(r.ClientIP), nullableString(cut(r.UserAgent, 255)),
 			boolInt(r.ClientAborted), boolInt(r.FullLogSaved), "meta", created[i].UTC(),
-		)
+		}
+		rowArgs[i] = row
+		args = append(args, row...)
 	}
+	// The conflict clause stays a pure no-op on purpose. It is what keeps the
+	// unique key stable AND keeps RowsAffected <= len(rows): a fresh row counts
+	// 1, a suppressed row counts 0, so `len(rows) - RowsAffected` remains the
+	// suppression count any caller may rely on. Folding the overwrite below into
+	// this clause would return 2 for a replaced row and silently break that
+	// invariant — do not merge the two steps.
 	q := "INSERT INTO t_usage_record (" + usageColumns + ") VALUES " +
 		placeholders(len(rows), usageColumnCount) +
 		" ON DUPLICATE KEY UPDATE request_id = VALUES(request_id)"
-	_, err := w.DB.ExecContext(ctx, q, args...)
+
+	// INSERT runs in autocommit: the ordinary batch (no conflict) must not pay for
+	// a transaction it does not need. The overwrite below gets its own transaction,
+	// opened only when the INSERT actually hit a duplicate, so the ordinary path
+	// stays one statement per batch.
+	res, err := w.DB.ExecContext(ctx, q, args...)
 	if err != nil {
 		return fmt.Errorf("settle: insert usage rows: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("settle: usage rows affected: %w", err)
+	}
+	// affected == len(rows) means every row was new: nothing was suppressed, so no
+	// key can have been stolen and there is nothing to overwrite. Skipping here
+	// keeps the normal path at one statement per batch instead of 1 + N.
+	//
+	// This relies on clientFoundRows being false (the DSN does not set it): with
+	// found-rows semantics affected would count matched rows and a duplicate would
+	// report 1, making the skip wrong. If that DSN flag ever changes, this
+	// condition must become an explicit duplicate count.
+	if int(affected) < len(rows) {
+		if err := w.overwriteStaleFailuresTx(ctx, rows, rowArgs); err != nil {
+			// The rows are already committed and the ledger is the authority on
+			// money; a failed overwrite must not turn a written batch into a
+			// "failed" one (flush would log usage_insert_failed and drop the
+			// batch's counters). Record it and keep going.
+			//
+			// This line is the batch-level half only: it fires when BEGIN or COMMIT
+			// fails, which is why it carries no RequestID — the batch is the unit
+			// that broke. A failure to UPDATE one row is reported inside
+			// overwriteStaleFailures, where the request_id is known, and that is the
+			// line to grep when reconciling a specific charge.
+			if w.Logger != nil {
+				w.Logger.Warn(ctx, "usage_overwrite_aborted: "+err.Error(), obslog.Fields{Stage: "P28"})
+			}
+		}
 	}
 	// Request-level log lines are emitted only after the row is durable, so a
 	// dropped batch never leaves a log line for a row that was not written.
 	if w.Logger != nil {
 		for i, r := range rows {
 			w.Logger.WriteRequest(ctx, requestLogRecord(r, created[i]))
+		}
+	}
+	return nil
+}
+
+// overwriteStaleFailuresTx applies the A-12 overwrite for one conflicting batch
+// inside a single transaction.
+//
+// The INSERT has already committed, so this transaction cannot make the batch
+// atomic — it makes the OVERWRITE atomic, which is what matters: the N UPDATEs
+// either all land or none do, instead of leaving a batch half-corrected. The
+// remaining window (INSERT committed, transaction not yet started) leaves A-12
+// unfixed for that batch, and the WARN in insertUsage is what makes it visible.
+//
+// A transaction is worth it only here: it is opened for conflicting batches
+// alone, which is a rounding error of the traffic.
+func (w *UsageWriter) overwriteStaleFailuresTx(ctx context.Context, rows []UsageRecord, rowArgs [][]any) error {
+	tx, err := w.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("settle: begin usage overwrite: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // commit decides
+	if err := w.overwriteStaleFailures(ctx, tx, rows, rowArgs); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("settle: commit usage overwrite: %w", err)
+	}
+	return nil
+}
+
+// overwriteStaleFailures lets the row that actually spent money win the
+// request_id.
+//
+// t_usage_record's only unique key is request_id, and the batch INSERT above
+// resolves a conflict with a deliberate no-op, so whichever row lands first owns
+// the key forever — including a FAILED/0 row written moments earlier by a
+// duplicate rejection (409), a quota rejection (402) or a rate-limit rejection
+// (429) that carried the same client-supplied id. The request that really ran
+// then settles, its row is swallowed, and the customer's invoice says "failed,
+// 0 credits" while the ledger shows a charge (A-12).
+//
+// The fix is not to change the key and not to enumerate the error codes that
+// may poison it (P06/P06.5/P07/P09/P10/P11 all can). It is the ownership rule:
+// a row that consumed credits may replace a row that did not.
+//
+// No lookup, no lock, no retry: the WHERE clause is the CAS. There may well be
+// another writer for the same request_id (a settlement retried on another
+// gatewayd replica has its own UsageWriter), which is exactly why the predicate
+// is a CAS rather than a read-then-write: whoever matches the predicate wins,
+// and the loser's UPDATE simply affects 0 rows.
+func (w *UsageWriter) overwriteStaleFailures(ctx context.Context, tx *sql.Tx, rows []UsageRecord, rowArgs [][]any) error {
+	for i, r := range rows {
+		if r.ConsumedMicro <= 0 {
+			continue
+		}
+		// Column order: rowArgs[i] follows usageColumns, so everything after
+		// request_id (index 0) except the trailing created_at feeds the SET
+		// clause in the same order usageUpdateSet renders. This slice and
+		// buildUsageUpdateSet are mirrors of each other — changing the column
+		// list means changing both (they are derived from one source for order,
+		// but the head/tail exclusion is spelled out in two places).
+		set := make([]any, 0, len(rowArgs[i])-2)
+		set = append(set, rowArgs[i][1:len(rowArgs[i])-1]...)
+		set = append(set, cut(r.RequestID, 36))
+		q := "UPDATE t_usage_record SET " + usageUpdateSet +
+			" WHERE request_id = ? AND " + usageOverwritePredicate
+		if _, err := tx.ExecContext(ctx, q, set...); err != nil {
+			// Logged here rather than only at the batch level because this is the
+			// one place that knows which request_id was left un-overwritten. The
+			// row is already durable, so this is a WARN and not an error return:
+			// the batch as a whole succeeded, only the A-12 correction did not.
+			// Without the id the operator has a counter they cannot act on —
+			// a FAILED/0 row still owning a paid request is exactly the A-12
+			// symptom, and finding it by hand means joining the whole table.
+			if w.Logger != nil {
+				w.Logger.Warn(ctx, "usage_overwrite_failed: "+err.Error(),
+					obslog.Fields{Stage: "P28", RequestID: r.RequestID})
+			}
+			return fmt.Errorf("settle: overwrite stale usage row %s: %w", r.RequestID, err)
 		}
 	}
 	return nil
