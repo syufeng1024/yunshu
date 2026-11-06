@@ -69,9 +69,11 @@ sort -n /tmp/times.txt | awk '{a[NR]=$1*1000} END {n=NR; printf "n=%d min=%.1fms
 
 | 项 | 指标或要求 | 实测值或证据 | 结论 |
 | :--- | :--- | :--- | :--- |
-| 备份 / 恢复脚本与 DR 计划（§9.9、T22 段 4） | `scripts/backup.sh`、`scripts/restore.sh`、`docs/dr-plan.md` | 三者均不存在：`ls scripts/` 只有 `deploy.sh`、`rollback.sh`、`stack.sh` 等，无 backup / restore；`docs/dr-plan.md` 不存在。`go-live.md` 门槛 7 = ❌，`open-issues.md` OI-09 | ❌ 未验证 |
-| RPO / RTO（§9.9） | RPO ≤ 5 分钟；RTO ≤ 1 小时；每日全量 + 每 5 分钟增量 | 无备份任务、无 binlog / 增量配置、无恢复计时记录 | ❌ 未验证 |
-| 演练与抽检（§9.9） | 每季度全量恢复演练、每月可读性抽检、记录留存 365 天 | 无演练报告、无抽检记录；8 条对账断言只在单测与新库回归中通过，没有「全量恢复后 0 差异」记录（`go-live.md` 门槛 4） | ❌ 未验证 |
+| 备份 / 恢复脚本与 DR 计划（§9.9、T22 段 4） | `scripts/backup.sh`、`scripts/restore.sh`、`docs/dr-plan.md` | **2026-11-06 复核：三者均存在** —— `scripts/backup.sh`（12 KB）、`scripts/restore.sh`（13 KB）、`docs/dr-plan.md`（17 KB），均创建于 2026-10-29 14:30–14:40，晚于本表生成。已用它跑通一次完整演练：备份 `yunshu`（56562 B、sha256 `1bae3744…`、schema 0031、62 表）→ `restore.sh` 强制校验 sha256 通过 → 恢复到独立库 `yunshu_drill`，62 表、schema 0031、6 张关键表行数与 manifest 逐项相等，耗时 15s。记录见 `e2e-drill-2026-11-06.md` §2。**原文「三者均不存在」是本表 2026-10-29 生成时的状态，现已过期** | ✅ 通过（2026-11-06 重测） |
+| RPO / RTO（§9.9） | RPO ≤ 5 分钟；RTO ≤ 1 小时；每日全量 + 每 5 分钟增量 | **2026-11-06 实测：全量恢复到独立库 15s，但不构成 RTO 证据** —— 数据量仅 55.7 KiB / 62 表 / 7 行业务行，生产量级下 `DROP+CREATE+INSERT` 的耗时曲线完全不同，15s 不可外推。RPO 侧仍无证据：仓库内没有 binlog / 增量备份机制，也没有「最近一次全量 + 增量重放」的演练。另缺异地副本投递与故障注入（主库宕机 / 磁盘满 / 备份中断） | ❌ 未验证 |
+| 演练与抽检（§9.9） | 每季度全量恢复演练、每月可读性抽检、记录留存 365 天 | **2026-11-06：已完成一次人工全量恢复演练并留证**（`e2e-drill-2026-11-06.md` §2，含完整命令、真实输出、行数与 sha256 比对）。但「按季度 / 按月为制度」不成立：这是首次留档演练，无周期计划、无 365 天记录链；且本次只比对了 6 张关键表的行数，**没有做业务级「全量恢复后 0 差异」比对**（原 `go-live.md` 门槛 4 要求的口径） | ⚠️ 有条件通过（一次演练，非制度） |
+
+> **版本注记（2026-11-06 补，不改上方原文事实）**：§5 的三行原结论来自 2026-10-29 的核查。第一行在生成当时成立——三个文件是同日 14:30 之后才创建的，晚于本表。本轮按原文逐项复核并实跑演练，故分别更新为 ✅ / ❌ / ⚠️；旧结论以「原文…已过期」的形式保留在单元格内，未删除。**RPO / RTO 仍未验证，不得因为「脚本能跑通」而判通过**——这正是本次演练最容易产生的误读。
 
 ## 6. 降级可解释
 
@@ -99,9 +101,9 @@ sort -n /tmp/times.txt | awk '{a[NR]=$1*1000} END {n=NR; printf "n=%d min=%.1fms
 
 | 结论 | 条数 | 条目 |
 | :--- | ---: | :--- |
-| ✅ | 11 | 429 契约、正常请求放行、上游 Key 密封、平台 Key 一次展示、CSRF、越权 403、日志脱敏、上游不可达提示、资金审计、正文 180 天、元数据 365 天 |
-| ⚠️ | 5 | 对内成功率、网关附加延迟、无可用上游、Redis / 配置降级、请求可定位 |
-| ❌ | 11 | 月可用性、业务拒绝率、上游依赖可用性、非流式超时、流式超时、首屏 2.5s、误杀率、TLS、备份 / RPO / 演练三行 |
+| ✅ | 12 | 429 契约、正常请求放行、上游 Key 密封、平台 Key 一次展示、CSRF、越权 403、日志脱敏、上游不可达提示、资金审计、正文 180 天、元数据 365 天、**备份 / 恢复脚本与 DR 计划（2026-11-06 重测）** |
+| ⚠️ | 6 | 对内成功率、网关附加延迟、无可用上游、Redis / 配置降级、请求可定位、**演练与抽检（一次演练，非制度）** |
+| ❌ | 9 | 月可用性、业务拒绝率、上游依赖可用性、非流式超时、流式超时、首屏 2.5s、误杀率、TLS、**RPO / RTO** |
 
 ## 本轮复跑记录
 
@@ -116,6 +118,9 @@ sort -n /tmp/times.txt | awk '{a[NR]=$1*1000} END {n=NR; printf "n=%d min=%.1fms
 | `TestA10CredentialsNeverReachTheLine` | PASS | <0.01s |
 | `go test ./internal/obs/metrics -run TestA8` | PASS | 0.018s |
 | `TestReviewApproveIsIdempotent` / `TestBalanceAdjustApproveKeepsLedgerBalanced` | PASS | 0.09s / 0.08s |
+| `scripts/backup.sh`（默认两库） | 备份成功；`yunshu` 56562 B / 62 表 / schema 0031；`yunshu_log` 0 表（触发新增 WARN） | 未计时 |
+| `scripts/restore.sh --db yunshu_drill` | sha256 校验通过；62 表 / schema 0031 / 6 张关键表行数与 manifest 逐项相等 | 15s |
+| `npx playwright test`（`web/e2e`，6 spec） | 22/22 PASS | `22 passed (31.2s)` |
 
 复跑前置处置（只影响测试库；以下为 **2026-10-29 当时**的情形，该库现已改为容器 13306）：原生 MySQL `127.0.0.1:3306` 的 `yunshu_test.schema_migrations` 残留 `0022 success=0` 且 `t_request_body` 已建，导致所有引用该库的 TestMain 在迁移阶段直接退出。按 `open-issues.md` OI-10 的处置删行并 `DROP TABLE yunshu_test.t_request_body`，0022 重放成功；此后上述用例才可执行。
 
