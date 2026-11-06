@@ -152,6 +152,112 @@ func TestExpireBatchClearsOnlyExpiredBonus(t *testing.T) {
 		res.Cleared, res.ClearedMicro, bizType, amount, bonus, broken)
 }
 
+// B3: every bonus-family batch type expires, not just BONUS. REDEEM,
+// COMPENSATION and PLAN_GRANT all carry an expire_at (grant.go, adjust.go,
+// redeem.go) and all land in balance_bonus_micro, but only BONUS was scanned.
+// Their remaining balance therefore stayed in the account while deduct.go
+// refused to spend it — admission passed and settlement failed with
+// ErrInsufficientBatches.
+//
+// The trailing RECHARGE row with a past expire_at is deliberate: it must never
+// be selected, because its validity rule is not time-based.
+func TestExpireBatchClearsEveryExpiringBatchType(t *testing.T) {
+	ctx := context.Background()
+	const user = int64(940002)
+	cleanupExpireUser(t, user)
+	t.Cleanup(func() { cleanupExpireUser(t, user) })
+
+	now := time.Now().UTC()
+	past := now.Add(-24 * time.Hour)
+	future := now.Add(24 * time.Hour)
+	// bonus = 700 + 800 + 900 (expired) + 400 (still valid) = 2800.
+	if _, err := testDB.Exec(
+		`INSERT INTO t_credit_account
+		   (user_id, balance_recharge_micro, balance_bonus_micro, balance_micro,
+		    overdraft_limit_micro, version, created_at, updated_at)
+		 VALUES (?,600,2800,3400,500000,0,?,?)`, user, now, now); err != nil {
+		t.Fatalf("insert account: %v", err)
+	}
+
+	batch := func(no, typ string, face, remaining, consumed int64, expire time.Time, refundable int) int64 {
+		t.Helper()
+		res, err := testDB.Exec(
+			`INSERT INTO t_credit_batch
+			   (user_id, batch_no, batch_type, face_value_micro, remaining_micro,
+			    consumed_micro, refundable, effective_at, expire_at, created_at, updated_at)
+			 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+			user, no, typ, face, remaining, consumed, refundable, past, expire, now, now)
+		if err != nil {
+			t.Fatalf("insert batch %s: %v", no, err)
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			t.Fatalf("batch id: %v", err)
+		}
+		return id
+	}
+
+	redeemID := batch("20261020000000000011", "REDEEM", 700, 700, 0, past, 0)
+	compID := batch("20261020000000000012", "COMPENSATION", 800, 800, 0, past, 0)
+	planID := batch("20261020000000000013", "PLAN_GRANT", 900, 900, 0, past, 0)
+	rechargeID := batch("20261020000000000014", "RECHARGE", 600, 600, 0, past, 1)
+	futureID := batch("20261020000000000015", "REDEEM", 400, 400, 0, future, 0)
+
+	// BatchSize 2 forces the paging loop to run twice over three eligible rows:
+	// a row that scan selects but clearOne rejects would spin there forever.
+	task := NewExpireBatch(testDB, &stubExpireLocker{ok: true}, nil, clock.Real{}, "n1")
+	task.BatchSize = 2
+	res, err := task.Run(ctx)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.Cleared != 3 || res.ClearedMicro != 2400 || res.Skipped != 0 {
+		t.Fatalf("run = %+v; want cleared=3 micro=2400 skipped=0", res)
+	}
+	for name, id := range map[string]int64{
+		"REDEEM": redeemID, "COMPENSATION": compID, "PLAN_GRANT": planID,
+	} {
+		if got := batchRemaining(t, id); got != 0 {
+			t.Fatalf("%s remaining = %d; want 0", name, got)
+		}
+	}
+	if got := batchRemaining(t, rechargeID); got != 600 {
+		t.Fatalf("RECHARGE remaining = %d; want 600 (never expires)", got)
+	}
+	if got := batchRemaining(t, futureID); got != 400 {
+		t.Fatalf("future REDEEM remaining = %d; want 400", got)
+	}
+
+	var bonus, recharge, balance int64
+	if err := testDB.QueryRow(
+		`SELECT balance_bonus_micro, balance_recharge_micro, balance_micro
+		   FROM t_credit_account WHERE user_id = ?`, user,
+	).Scan(&bonus, &recharge, &balance); err != nil {
+		t.Fatalf("read account: %v", err)
+	}
+	if bonus != 400 || recharge != 600 || balance != 1000 {
+		t.Fatalf("account bonus=%d recharge=%d balance=%d; want 400/600/1000", bonus, recharge, balance)
+	}
+
+	var broken int
+	if err := testDB.QueryRow(
+		`SELECT COUNT(*) FROM t_credit_batch
+		  WHERE user_id = ? AND remaining_micro <> face_value_micro - consumed_micro`, user,
+	).Scan(&broken); err != nil {
+		t.Fatalf("R04 check: %v", err)
+	}
+	if broken != 0 {
+		t.Fatalf("R-04 broken rows = %d after expiry", broken)
+	}
+
+	if res, err := task.Run(ctx); err != nil {
+		t.Fatalf("second run: %v", err)
+	} else if res.Cleared != 0 {
+		t.Fatalf("second run cleared = %d; want 0", res.Cleared)
+	}
+	t.Logf("B3 cleared=%d micro=%d account_bonus=%d replenished_batches=3", res.Cleared, res.ClearedMicro, bonus)
+}
+
 func batchRemaining(t *testing.T, id int64) int64 {
 	t.Helper()
 	var n int64

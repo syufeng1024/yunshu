@@ -23,9 +23,9 @@ type ExpireLocker interface {
 	RenewExpireBatch(ctx context.Context, owner string) (bool, error)
 }
 
-// ExpireBatch clears expired BONUS batches. RECHARGE batches have no expiry and
-// are never selected; the two validity rules are deliberately separate
-// (T09 hard constraint 16 / PRD §3.2.1).
+// ExpireBatch clears expired non-refundable ("bonus family") batches.
+// RECHARGE batches have no expiry and are never selected; the two validity
+// rules are deliberately separate (T09 hard constraint 16 / PRD §3.2.1).
 //
 // The clearing is a DEBIT ledger entry plus remaining_micro=0. consumed_micro
 // is increased by the same amount so R-04
@@ -124,17 +124,60 @@ func (e *ExpireBatch) Run(ctx context.Context) (ExpireResult, error) {
 	return out, nil
 }
 
+// expiringBatchTypes is the explicit allow-list of batch families that carry an
+// expire_at. Every one of them is a non-refundable credit that lands in
+// t_credit_account.balance_bonus_micro, so all of them must be cleared on
+// expiry: skipping them would leave the account balance holding credits that
+// deduct.go refuses to spend (it filters expire_at > now) while admission still
+// counts them, and every settlement would then fail with
+// ErrInsufficientBatches.
+//
+// It is an allow-list on purpose. `batch_type <> 'RECHARGE'` would look
+// equivalent today and become wrong the moment a new permanent batch type is
+// added: the default has to be "keep the user's credits", so a type must opt
+// in to being cleared.
+func expiringBatchTypes() []string {
+	return []string{
+		ledger.BatchTypeBonus,
+		ledger.BatchTypeRedeem,
+		ledger.BatchTypeCompensation,
+		ledger.BatchTypePlanGrant,
+	}
+}
+
+// expiringBatchTypeFilter renders the allow-list as an IN (...) clause plus its
+// bind arguments. scan and clearOne must agree on it: a row selected by scan
+// but rejected by clearOne would never be cleared, and the paging loop in Run
+// would rescan it forever.
+func expiringBatchTypeFilter() (string, []any) {
+	types := expiringBatchTypes()
+	clause := "("
+	args := make([]any, 0, len(types))
+	for i, t := range types {
+		if i > 0 {
+			clause += ","
+		}
+		clause += "?"
+		args = append(args, t)
+	}
+	return clause + ")", args
+}
+
 func (e *ExpireBatch) scan(ctx context.Context) ([]int64, error) {
-	rows, err := e.DB.QueryContext(ctx,
-		`SELECT id FROM t_credit_batch
-		  WHERE batch_type = 'BONUS'
-		    AND expire_at IS NOT NULL
-		    AND expire_at <= UTC_TIMESTAMP(3)
-		    AND remaining_micro > 0
-		  ORDER BY expire_at ASC
-		  LIMIT ?`, e.BatchSize)
+	typeClause, typeArgs := expiringBatchTypeFilter()
+	q := `SELECT id FROM t_credit_batch
+	       WHERE batch_type IN ` + typeClause + `
+	         AND expire_at IS NOT NULL
+	         AND expire_at <= UTC_TIMESTAMP(3)
+	         AND remaining_micro > 0
+	       ORDER BY expire_at ASC
+	       LIMIT ?`
+	args := make([]any, 0, len(typeArgs)+1)
+	args = append(args, typeArgs...)
+	args = append(args, e.BatchSize)
+	rows, err := e.DB.QueryContext(ctx, q, args...)
 	if err != nil {
-		return nil, fmt.Errorf("jobs: scan expired bonus batches: %w", err)
+		return nil, fmt.Errorf("jobs: scan expired batches: %w", err)
 	}
 	defer rows.Close()
 	var ids []int64
@@ -156,15 +199,18 @@ func (e *ExpireBatch) clearOne(ctx context.Context, batchID int64) (int64, error
 	}
 	defer tx.Rollback() //nolint:errcheck // commit decides
 
+	typeClause, typeArgs := expiringBatchTypeFilter()
+	lockQ := `SELECT user_id, remaining_micro
+	            FROM t_credit_batch
+	           WHERE id = ? AND batch_type IN ` + typeClause + `
+	             AND expire_at IS NOT NULL AND expire_at <= UTC_TIMESTAMP(3)
+	             AND remaining_micro > 0
+	           FOR UPDATE`
+	lockArgs := make([]any, 0, len(typeArgs)+1)
+	lockArgs = append(lockArgs, batchID)
+	lockArgs = append(lockArgs, typeArgs...)
 	var userID, remaining int64
-	err = tx.QueryRowContext(ctx,
-		`SELECT user_id, remaining_micro
-		   FROM t_credit_batch
-		  WHERE id = ? AND batch_type = 'BONUS'
-		    AND expire_at IS NOT NULL AND expire_at <= UTC_TIMESTAMP(3)
-		    AND remaining_micro > 0
-		  FOR UPDATE`, batchID,
-	).Scan(&userID, &remaining)
+	err = tx.QueryRowContext(ctx, lockQ, lockArgs...).Scan(&userID, &remaining)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}
@@ -179,6 +225,10 @@ func (e *ExpireBatch) clearOne(ctx context.Context, batchID int64) (int64, error
 	before := acct.TotalMicro()
 	now := e.now()
 	batch := batchID
+	// "BONUS_EXPIRED" is the historical reason string and stays unchanged: the
+	// clear debits balance_bonus_micro for every one of expiringBatchTypes, so
+	// the value keeps naming the account column rather than the batch family.
+	// The exact batch (and therefore its batch_type) is in batch_id.
 	reason := "BONUS_EXPIRED"
 	entryID, err := ledger.AppendEntry(ctx, tx, e.Entries, now, ledger.Entry{
 		UserID:              userID,
