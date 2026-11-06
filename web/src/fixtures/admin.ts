@@ -132,7 +132,6 @@ const models: AdminModel[] = [
     listing_state: 'LISTED',
     recommend_weight: 100,
     published_at: '2026-10-01T08:00:00Z',
-    delisted_at: null,
     aliases: ['qwen-max-latest'],
     pricing: {
       price_rule_id: 701,
@@ -164,8 +163,6 @@ const models: AdminModel[] = [
     capabilities: { stream: true, tool_call: false, vision: false, json_mode: null },
     listing_state: 'CATALOG_ONLY',
     recommend_weight: 0,
-    published_at: null,
-    delisted_at: null,
     aliases: [],
     pricing: null,
     created_at: '2026-08-20T02:00:00Z',
@@ -187,7 +184,6 @@ const models: AdminModel[] = [
     listing_state: 'LISTED',
     recommend_weight: 60,
     published_at: '2026-09-25T08:00:00Z',
-    delisted_at: null,
     aliases: ['qwen-vl-plus-2026'],
     pricing: {
       price_rule_id: 702,
@@ -196,7 +192,6 @@ const models: AdminModel[] = [
       in_price_micro_per_k: 0,
       out_price_micro_per_k: 0,
       per_call_price_micro: 2400,
-      cost_per_call_micro: null,
     },
     created_at: '2026-09-25T02:00:00Z',
     updated_at: '2026-09-25T08:00:00Z',

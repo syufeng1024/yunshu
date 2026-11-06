@@ -1695,6 +1695,169 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/announcements:
+    get:
+      operationId: listAdminAnnouncements
+      tags: [admin]
+      summary: 公告分页列表（含草稿与已下线）
+      description: 只列未软删的行。`state` 的 `SCHEDULED` 是「到点自动发布」的内部标记，与普通草稿必须区分，否则定时任务会把没审过的草稿发出去。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: state
+          in: query
+          schema: {type: string, enum: [DRAFT, SCHEDULED, PUBLISHED, OFFLINE]}
+        - name: ann_type
+          in: query
+          schema: {type: string, enum: [NOTICE, MAINTENANCE, PROMOTION, PRICE_CHANGE]}
+        - name: pinned
+          in: query
+          schema: {type: string, enum: ['0', '1']}
+        - name: page
+          in: query
+          schema: {type: integer, minimum: 1, default: 1}
+        - name: page_size
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+        - name: sort
+          in: query
+          schema: {type: string, enum: [created_at, updated_at, effective_from, id]}
+        - name: order
+          in: query
+          schema: {type: string, enum: [asc, desc], default: desc}
+      responses:
+        '200':
+          description: 公告分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminAnnouncementList'
+        '400':
+          description: 分页或过滤参数非法（invalid_query_parameter）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 notice.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+    post:
+      operationId: createAdminAnnouncement
+      tags: [admin]
+      summary: 新建公告（publish_at 决定草稿 / 定时 / 立即发布）
+      description: |
+        `publish_at` 缺省 → `DRAFT`；给未来时间 → `SCHEDULED`；给当前或过去时间
+        → `PUBLISHED`。`position_mask` 是 1..15 的位图（四个展示位）。
+        `model_ids` 落 `t_announcement_model`，同时收窄 F16-4 的促销冲突检查；
+        空数组表示不关联，冲突检查覆盖全部模型。
+        `PROMOTION` 类公告若撞上任何模型 7 天涨价公示期，返回 400 并说明改类型或
+        等公示期结束。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminAnnouncementCreateRequest'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminAnnouncementDetail'
+        '400':
+          description: |
+            字段非法（invalid_request_body，message 指向 `title` / `content` /
+            `ann_type` / `position_mask` / `effective_from` / `model_ids`），
+            或活动类公告撞上涨价公示期
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 notice.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/announcements/{id}/publish:
+    post:
+      operationId: publishAdminAnnouncement
+      tags: [admin]
+      summary: 发布公告（可指定发布时间）
+      description: |
+        已是 `PUBLISHED` 的公告重复发布返回 409。请求体可省略；给了
+        `publish_at` 就按该时间发布。`PROMOTION` 类公告在发布时同样做涨价公示期
+        冲突检查。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminAnnouncementPublishRequest'
+      responses:
+        '200':
+          description: 已发布，返回公告
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminAnnouncementDetail'
+        '400':
+          description: 路径 id 或请求体非法，或活动类公告撞上涨价公示期（invalid_request_body）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 notice.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 公告不存在或已软删（resource_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: 公告已经是 PUBLISHED，无需重复发布（resource_state_conflict）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
   /api/admin/announcements/{id}:
     parameters:
       - $ref: '#/components/parameters/AnnouncementID'
@@ -2109,6 +2272,152 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/users/{id}/disable:
+    post:
+      operationId: disableAdminUser
+      tags: [admin]
+      summary: 运营禁用账号（需填写原因，写审计）
+      description: |
+        把 `t_user.status` 置为 `DISABLED`，同时写
+        `disable_source=OPS_MANUAL`、`disable_reason`、`disabled_at`、
+        `disabled_by`，并写一条 `USER/DISABLE` 审计（reason 落在审计的 reason 列）。
+        不能禁用当前登录账号（409）。禁用不会改动余额，也不会动该账号的 Key。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUserDisableRequest'
+      responses:
+        '200':
+          description: 已禁用，返回账号详情与最新余额
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserDetail'
+        '400':
+          description: 路径 id、请求体或 `reason` 非法（reason 必填且不超过 255 字，invalid_request_body）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 user.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 用户不存在或已删除（resource_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: 试图禁用当前登录账号（resource_state_conflict）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/users/{id}/enable:
+    post:
+      operationId: enableAdminUser
+      tags: [admin]
+      summary: 运营启用账号（无请求体）
+      description: |
+        把账号恢复为 `NORMAL` 并清空 `disable_*` / `disabled_at` / `disabled_by`，
+        写一条 `USER/ENABLE` 审计。**不接收请求体**：hint 与原因都不需要。
+        处于 `FROZEN_OVERDRAFT`（透支冻结）的账号拒绝启用——那是计费状态，
+        不是运营封禁，充值后由账务自动恢复。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      responses:
+        '200':
+          description: 已启用（或本来就不是被禁状态），返回账号详情与最新余额
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserDetail'
+        '400':
+          description: 路径 id 不是正整数（invalid_request_body，message 为 id）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 user.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 用户不存在或已删除（resource_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: 账号处于透支冻结（FROZEN_OVERDRAFT），运营启用无效（resource_state_conflict）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/whoami:
+    get:
+      operationId: getAdminWhoami
+      tags: [admin]
+      summary: 当前登录运营的身份与权限列表
+      description: |
+        `uid` 是字符串（避免前端把 int64 当浮点）。`permissions` 是角色到权限的
+        静态映射结果（`mw.PermissionsFor`），前端据此决定菜单与按钮的可见性；
+        真正的拦截仍在服务端每条路由的 `mw.Require` 上。
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: 当前会话身份
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminWhoami'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 admin.all（permission_denied）——whoami 只对 SUPER_ADMIN 开放
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
   /api/admin/channels:
     get:
       operationId: listAdminChannels
@@ -2156,6 +2465,409 @@ paths:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '403':
           description: 角色缺少 channel.read（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+    post:
+      operationId: createAdminChannel
+      tags: [admin]
+      summary: 新建上游渠道（密钥服务端加密存储）
+      description: |
+        `upstream_key` 只在这一层出现：服务端用 `CHANNEL_KEY_KEK` 封装成 v1
+        信封写入 `t_channel.upstream_key_enc`，响应只回 `upstream_key_mask`。
+        名重复（含软删行，`t_channel.name` 唯一）返回 400 `invalid_request_body`，
+        不是 409——这是代码当前的行为。`region` 不接受 OVERSEAS（V1.0 仅境内）。
+        新建渠道不会重发路由快照：新渠道还没有任何 `t_route`。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminChannelCreateRequest'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminChannelDetail'
+        '400':
+          description: |
+            字段非法（invalid_request_body，message 指向具体字段：`body` / `name` /
+            `protocol_id` / `region` / `base_url` / `upstream_key` /
+            `group_scope_mode` / `dedicated_scope_mode` / `dedicated_user_ids` /
+            `weight` / `priority` / `timeout_connect_ms` / `timeout_first_byte_ms` /
+            `timeout_total_ms` / `retry_max` / `stream_usage_mode` /
+            `upstream_model_name_map`）。渠道名重复也走 400。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 channel.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          description: 服务端缺少 `CHANNEL_KEY_KEK` 或封装失败（config_unavailable）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/channels/{id}:
+    get:
+      operationId: getAdminChannel
+      tags: [admin]
+      summary: 渠道详情
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      responses:
+        '200':
+          description: 渠道详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminChannelDetail'
+        '400':
+          description: 路径 id 不是正整数（invalid_request_body，message 为 id）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 channel.read（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 渠道不存在或已软删（channel_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+    patch:
+      operationId: updateAdminChannel
+      tags: [admin]
+      summary: 修改渠道（部分更新，未出现的字段保持原值）
+      description: |
+        先把请求体合并到当前行再整体校验，所以 `null` 与缺省不同：不给就是不动。
+        `upstream_key` 给了就重新加密并刷新掩码与 `key_rotation_at`。
+        影响分发（权重 / 优先级 / 启用 / 区域 / 协议 / 超时 / 上游模型名映射等）
+        时在提交后重发 `cfg:snap:ROUTING` 快照。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminChannelPatchRequest'
+      responses:
+        '200':
+          description: 已更新，返回更新后的渠道
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminChannelDetail'
+        '400':
+          description: 字段非法或一个可改字段都没给（invalid_request_body，message 为 `body` 或具体字段名；渠道名重复也是 400）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 channel.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 渠道不存在或已软删（channel_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          description: 缺少 `CHANNEL_KEY_KEK` / 封装失败 / 快照重发失败（config_unavailable）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+    delete:
+      operationId: deleteAdminChannel
+      tags: [admin]
+      summary: 软删渠道（仍被路由引用的渠道拒绝）
+      description: |
+        写 `deleted_at` 软删并清掉专用用户绑定，行本身留着。仍被 `t_route`
+        引用时返回 409 `channel_in_use`，hint 给出两条出路（先删路由，或改用
+        disable 停用）。渠道原本是启用状态时，提交后重发路由快照。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      responses:
+        '200':
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminChannelDeleteResult'
+        '400':
+          description: 路径 id 不是正整数（invalid_request_body，message 为 id）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 channel.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 渠道不存在或已软删（channel_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: 渠道仍被 t_route 引用（channel_in_use）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          description: 快照重发失败（config_unavailable）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/channels/{id}/disable:
+    post:
+      operationId: disableAdminChannel
+      tags: [admin]
+      summary: 停用渠道（幂等：本来就停用时不做任何写操作）
+      description: |
+        只把 `enabled` 置 0，不删行、不动路由。已停用时不重复写、不写审计，
+        直接返回当前状态。状态确实变了才重发 `cfg:snap:ROUTING`。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      responses:
+        '200':
+          description: 已停用（或本来就已停用），返回渠道当前状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminChannelDetail'
+        '400':
+          description: 路径 id 不是正整数（invalid_request_body，message 为 id）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 channel.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 渠道不存在或已软删（channel_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          description: 快照重发失败（config_unavailable）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/channels/{id}/upstream-models:
+    get:
+      operationId: listAdminChannelUpstreamModels
+      tags: [admin]
+      summary: 用渠道自己的密钥读取上游 /v1/models
+      description: |
+        服务端解密 `upstream_key_enc` 后直接请求上游的 OpenAI 兼容 `/v1/models`，
+        10 秒超时、响应体上限 1 MB。不走 `HTTPS_PROXY`（与控制面出口策略一致）。
+        结果按 `id` 升序，并用 `t_channel.upstream_model_name_map` 标注
+        `platform_model`。这是只读探测：不写库、不建模型。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      responses:
+        '200':
+          description: 上游模型清单
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUpstreamModelList'
+        '400':
+          description: 路径 id 不是正整数（invalid_request_body，message 为 id）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 channel.read（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 渠道不存在或已软删（channel_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '502':
+          description: 上游不可用、拒绝密钥或返回了无法解析的内容（upstream_all_failed / upstream_auth_failed / upstream_invalid_response）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          description: 缺少 `CHANNEL_KEY_KEK`（config_unavailable）或密钥信封解不开（upstream_key_unavailable）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/channels/{id}/register-upstream-models:
+    post:
+      operationId: registerAdminChannelUpstreamModels
+      tags: [admin]
+      summary: 把选中的上游模型登记为平台模型（CATALOG_ONLY）并建路由
+      description: |
+        服务端重新读一遍上游目录再落库，不信任请求里给的名字：`context_length`
+        取上游报的值，`display_name` 取上游的 `name`（为空时用 id）。
+        已登记（`t_model.model_name` 命中）的不重复建，但仍会补一条本渠道的
+        `t_route`，所以重复点击是幂等的收尾而不是报错——这类行进 `skipped`，
+        reason 为 `already_registered` 或 `already_registered_route_added`。
+        定价与上架不在这里做：新建模型恒为 `CATALOG_ONLY` 且无价目。
+        有新建行时提交后重发路由快照。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminRegisterUpstreamModelsRequest'
+      responses:
+        '200':
+          description: 登记结果（created 与 skipped 都是数组，可能为空）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRegisterUpstreamModelsResult'
+        '400':
+          description: |
+            路径 id、请求体、`model_ids`（空数组或超过 50 个）非法，或请求里有
+            上游目录中不存在的模型名（invalid_request_body，message 会列出这些名字）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 model.write（permission_denied）——该路由比渠道写权限更严
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 渠道不存在或已软删（channel_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '502':
+          description: 上游不可用、拒绝密钥或返回了无法解析的内容（upstream_all_failed / upstream_auth_failed / upstream_invalid_response）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          description: 缺少 `CHANNEL_KEY_KEK` / 信封解不开 / 快照重发失败（config_unavailable / upstream_key_unavailable）
           content:
             application/json:
               schema:
@@ -2398,6 +3110,76 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
   /api/admin/models:
+    get:
+      operationId: listAdminModels
+      tags: [admin]
+      summary: 模型主数据分页列表（运营与财务共用，含上游成本价）
+      description: |
+        只返回未软删（`deleted_at IS NULL`）的行，权限是 `admin.read` 而不是
+        `model.read`：该视图带上游成本价，`model.read` 留给客户端目录。
+        `q` 同时匹配 `model_name`、`display_name` 与启用中的别名（`t_model_alias`），
+        `!` 是 LIKE 转义符。
+        `model_type` / `listing_state` / `region` / `protocol` 入参先 trim 再转大写，
+        `text` 与 `TEXT` 等价。读操作不重发 `cfg:snap:ROUTING` 快照。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: q
+          in: query
+          schema: {type: string, maxLength: 128}
+          description: 按 rune 计数；超过 128 返回 400
+        - name: model_type
+          in: query
+          schema: {type: string, enum: [TEXT, IMAGE, EMBEDDING]}
+        - name: listing_state
+          in: query
+          schema: {type: string, enum: [LISTED, CATALOG_ONLY, DELISTED]}
+        - name: region
+          in: query
+          schema: {type: string, enum: [DOMESTIC, OVERSEAS]}
+        - name: protocol
+          in: query
+          schema: {type: string, maxLength: 32}
+          description: 协议 code（`t_protocol.code`）；超过 32 字符返回 400
+        - name: page
+          in: query
+          schema: {type: integer, minimum: 1, default: 1}
+        - name: page_size
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [created_at, updated_at, model_name, recommend_weight, published_at]
+        - name: order
+          in: query
+          schema: {type: string, enum: [asc, desc], default: desc}
+      responses:
+        '200':
+          description: 模型分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminModelList'
+        '400':
+          description: 分页或过滤参数非法（invalid_query_parameter，message 为具体参数名）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 admin.read（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
     post:
       operationId: createAdminModel
       tags: [admin]
@@ -2423,13 +3205,11 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  model:
-                    type: object
-                    additionalProperties: true
+                $ref: '#/components/schemas/AdminModelDetail'
         '400':
-          description: 字段非法（invalid_request_body）
+          description: |
+            字段非法（invalid_request_body）。注意 `model_name` 与已有模型重名也返回本码
+            （走 CreateModel 的重名预检），不走 409。
           content:
             application/json:
               schema:
@@ -2442,6 +3222,1685 @@ paths:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '403':
           description: 角色缺少 model.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: |
+            状态冲突（resource_state_conflict）。三种来源：
+            ① `aliases` 已被其它模型占用，或某个别名等于其它模型的 `model_name`；
+            ② `recommend_weight` 非 0 但 `listing_state` 不是 LISTED；
+            ③ `listing_state=LISTED` 但该模型没有当前生效的价目。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          description: |
+            快照重发失败（config_unavailable）。建了默认路由或 `listing_state=LISTED`
+            时提交后需重发 `cfg:snap:ROUTING`，失败即返回本码——数据已落库，
+            但网关短期内仍按旧快照路由。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/models/{id}:
+    get:
+      operationId: getAdminModel
+      tags: [admin]
+      summary: 模型详情
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      responses:
+        '200':
+          description: 模型详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminModelDetail'
+        '400':
+          description: 路径 id 不是正整数（invalid_request_body，message 为 id）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 admin.read（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 模型不存在或已软删（resource_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+    patch:
+      operationId: updateAdminModel
+      tags: [admin]
+      summary: 修改模型主数据（部分更新）
+      description: |
+        只更新请求体里出现的字段；一个可改字段都没给时返回 400
+        `invalid_request_body`（message 为 `body`）。
+        改名（`model_name`）只有在与当前值不同时才做唯一性检查：新名不得与其它
+        模型的 `model_name` 或别名冲突。`primary_channel_id` 必须是境内渠道。
+        转为 `LISTED` 时必须有当前生效价目；离开 `LISTED` 时
+        `recommend_weight` 自动归零。写操作按需重发 `cfg:snap:ROUTING` 快照。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminModelPatchRequest'
+      responses:
+        '200':
+          description: 已更新，返回更新后的模型
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminModelDetail'
+        '400':
+          description: |
+            字段非法（invalid_request_body，message 指向具体字段：`body` / `id` /
+            `model_name` / `display_name` / `region` / `model_type` / `protocol_id` /
+            `primary_channel_id` / `context_length` / `max_output_tokens` /
+            `listing_state` / `recommend_weight` / `aliases` / `capabilities`）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 model.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 模型不存在或已软删（resource_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: |
+            资源状态冲突（resource_state_conflict），三种来源：
+            ① 新 `model_name` 或新 `aliases` 与其它模型的名称/别名冲突
+               （与自身已有别名重复不算冲突，服务端静默去重）；
+            ② 转 `LISTED` 但没配生效价目；
+            ③ `recommend_weight` 非 0 而模型不是 `LISTED`。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          description: |
+            快照重发失败（config_unavailable）。**仅当**本次 PATCH 使 `listing_state`
+            实际发生变化时才重发 `cfg:snap:ROUTING`（updateModel 的 `stateChanged`
+            守卫）；失败即返回本码——数据已落库，但网关短期内仍按旧快照路由。
+            只改 `recommend_weight`、`aliases` 等字段不触发重发。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/models/{id}/listing-state:
+    post:
+      operationId: setAdminModelListingState
+      tags: [admin]
+      summary: 单独修改模型的上架状态（可带变更原因）
+      description: |
+        等价于只 PATCH `listing_state`：走同一条更新路径，因此同样的前置条件
+        生效（转 `LISTED` 需要生效价目；离开 `LISTED` 自动清零推荐权重），
+        审计的 `reason` 取请求体的 `reason`。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminModelListingStateRequest'
+      responses:
+        '200':
+          description: 已更新，返回更新后的模型
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminModelDetail'
+        '400':
+          description: 路径 id 或 `listing_state` 非法（invalid_request_body）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 model.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 模型不存在或已软删（resource_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: 转 `LISTED` 但模型没有生效价目（resource_state_conflict）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          description: |
+            快照重发失败（config_unavailable）。仅当状态**实际发生变化**时才重发
+            `cfg:snap:ROUTING`（本接口复用 updateModel，同受 `stateChanged` 守卫），
+            失败即返回本码——状态已落库，但网关短期内仍按旧快照路由。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/models/{id}/recommend-weight:
+    post:
+      operationId: setAdminModelRecommendWeight
+      tags: [admin]
+      summary: 单独修改模型的推荐权重
+      description: |
+        非 0 权重只对 `LISTED` 有意义：模型不在 `LISTED` 时返回 409
+        `resource_state_conflict`（message 会带出当前状态）。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminModelRecommendWeightRequest'
+      responses:
+        '200':
+          description: 已更新，返回更新后的模型
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminModelDetail'
+        '400':
+          description: 路径 id 或 `recommend_weight` 非法（0–1000 之外，invalid_request_body）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 model.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 模型不存在或已软删（resource_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: 模型不是 `LISTED` 却要设非 0 权重（resource_state_conflict）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/models/{id}/aliases:
+    get:
+      operationId: listAdminModelAliases
+      tags: [admin]
+      summary: 模型当前启用中的别名
+      description: 只返回 `enabled = 1` 的行，按 `alias_name` 升序。不分页。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      responses:
+        '200':
+          description: 别名列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminAliasList'
+        '400':
+          description: 路径 id 不是正整数（invalid_request_body，message 为 id）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 admin.read（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 模型不存在或已软删（resource_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+    post:
+      operationId: createAdminModelAlias
+      tags: [admin]
+      summary: 为模型新增一个别名
+      description: |
+        `source` 恒为 `OPS`（运营手工添加）。别名全局唯一：已被其它模型占用，
+        或与其它模型的 `model_name` 相同，都返回 409 `resource_state_conflict`，
+        message 会带出冲突模型的名称与 id。唯一键 `uk_alias_name` 没有
+        `deleted_at` 谓词，软删的模型仍然占着它的别名。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminAliasCreateRequest'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminAliasDetail'
+        '400':
+          description: 路径 id、请求体或 `alias_name` 非法（invalid_request_body）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 model.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 模型不存在或已软删（resource_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: 别名被占用或与其它模型的名称冲突（resource_state_conflict）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/models/{id}/aliases/{alias}:
+    delete:
+      operationId: deleteAdminModelAlias
+      tags: [admin]
+      summary: 删除模型的指定别名（物理删除）
+      description: |
+        删的是 `t_model_alias` 的行本身（不是置 `enabled=0`），并写一条
+        `MODEL_ALIAS_DELETE` 审计。别名不存在与模型不存在都返回 404，
+        不区分。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+        - name: alias
+          in: path
+          required: true
+          schema: {type: string, maxLength: 128}
+      responses:
+        '200':
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminAliasDeleteResult'
+        '400':
+          description: 路径 id 不是正整数（invalid_request_body，message 为 id）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 model.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 模型不存在、别名不存在或别名超长（resource_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/prices:
+    get:
+      operationId: listAdminPrices
+      tags: [admin]
+      summary: 模型价目分页列表（t_price_rule，scope_level=MODEL）
+      description: |
+        只列 `scope_level='MODEL'` 且模型未软删的行。`enabled` 过滤的是价目行
+        自己的开关，不是模型的上下架状态。排序默认 `created_at`，与 `id` 一起
+        作为次级排序键。权限是 `price.write`（OPS 与 FINANCE 之外的超管也持有）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: model_id
+          in: query
+          schema: {type: integer, format: int64, minimum: 1}
+        - name: model_type
+          in: query
+          schema: {type: string, enum: [TEXT, IMAGE, EMBEDDING]}
+        - name: enabled
+          in: query
+          schema: {type: string, enum: ['0', '1']}
+        - name: page
+          in: query
+          schema: {type: integer, minimum: 1, default: 1}
+        - name: page_size
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+        - name: sort
+          in: query
+          schema: {type: string, enum: [created_at, effective_from, version, id]}
+        - name: order
+          in: query
+          schema: {type: string, enum: [asc, desc]}
+      responses:
+        '200':
+          description: 价目分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminPriceRuleList'
+        '400':
+          description: 分页或过滤参数非法（invalid_query_parameter，message 为具体参数名）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 price.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+    post:
+      operationId: createAdminPrice
+      tags: [admin]
+      summary: 新增一版价目（版本号自增，冲突与毛利地板在事务内校验）
+      description: |
+        写一条新的 `t_price_rule`，`version` 取该模型现有最大版本 +1；行先插入
+        再查冲突，所以 409 能同时给出新行 id 与它撞上的那一行（A12）。
+        三道写时闸门，顺序固定：毛利地板（值）→ 7 天涨价公示（时间）→
+        窗口冲突（数据一致性）。
+        - 地板：`3×售价×倍率 ≥ 40000×成本`（整数运算）。任一维度没有成本价时
+          必须显式 `confirm_no_cost=true`，否则 400 并列出缺哪些成本价。
+        - 公示：涨价（只看对客售价）最早只能 7 天后生效，`effective_from` 更早
+          则 400；`effective_from` 缺省或早于服务端 now 时会被夹到 now。
+        - 冲突：同窗口内价格不同的行返回 409 `price_conflict`。
+        提交后重建 K19 价目快照，失败返回 503（价格已落库但网关还看不到）。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminPriceCreateRequest'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminPriceRuleDetail'
+        '400':
+          description: |
+            字段非法（invalid_request_body，message 指向具体字段：`body` /
+            `model_id` / `in_price_micro_per_k` / `out_price_micro_per_k` /
+            `per_call_price_micro` / `cache_hit_ratio_bp` / `cache_write_ratio_bp` /
+            `long_ctx_threshold_tokens` / `long_ctx_in_price_micro_per_k` /
+            `long_ctx_out_price_micro_per_k` / `cost_*` / `currency_cost` /
+            `effective_to` / `clear_fields` / `model_type`），或毛利地板/
+            涨价公示未通过
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 price.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: model_id 指向的模型不存在或已软删（resource_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: 生效窗口与已有价目冲突（price_conflict），message 列出冲突行 id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          description: 价目快照重建失败（config_unavailable），行已提交但网关尚未看到
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/prices/{id}:
+    patch:
+      operationId: updateAdminPrice
+      tags: [admin]
+      summary: 修改一版价目（不可改 model_id）
+      description: |
+        改的是这一行本身（不会自动生成新版本）。`model_id` 一律拒绝：把一条价目
+        挪到另一个模型会同时改掉两个模型的价格，正确做法是删掉重建。
+        字段缺省表示不改；`clear_fields` 用来把可空列显式置 NULL（可清字段见该
+        schema 的说明），同一个字段既赋值又出现在 `clear_fields` 里会 400。
+        校验与创建同一套（地板 → 公示 → 冲突），提交后重建 K19。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminPricePatchRequest'
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminPriceRuleDetail'
+        '400':
+          description: 字段非法、`model_id` 出现、无字段可改，或地板/公示未通过（invalid_request_body）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 price.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 价目行不存在（resource_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: 生效窗口与已有价目冲突（price_conflict）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          description: 价目快照重建失败（config_unavailable）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/groups:
+    get:
+      operationId: listAdminGroups
+      tags: [admin]
+      summary: 价格分组全量列表（不分页）
+      description: |
+        分组是配置项而不是数据集：这个接口一次返回全部行（`items` + `total`，
+        **没有** `page` / `page_size`），按 `ratio_bp` 降序、`id` 升序。
+        `model_ids` / `channel_ids` 是 `model_scope_mode` / `channel_scope_mode`
+        为 `SELECTED` 时的白名单成员。
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: 分组全量列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminGroupList'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 group.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/groups/{id}:
+    patch:
+      operationId: updateAdminGroup
+      tags: [admin]
+      summary: 修改价格分组（倍率、范围、毛利下限、启停）
+      description: |
+        倍率可以给 `ratio_bp`（整数万分比）或 `ratio`（十进制，最多 4 位小数），
+        两个都给时必须一致，否则 400。`ratio` = 0 只允许 `internal` 分组
+        （语义是「不计费」），其它分组必须 > 0。
+        `internal` 分组保存还额外要求：`confirm=true` + 非空 `reason`，且
+        `channel_scope_mode=SELECTED` 的白名单里不能包含当前权重最高的启用渠道。
+        改倍率（非 internal）会对范围内每个模型做毛利地板校验；范围内有无成本价
+        的模型时，需要 `confirm=true` 才继续，否则 400 并额外返回 `warnings[]`。
+        倍率真的变了才把新倍率下发给该分组用户的 Key，响应里的 `key_sync` 说明
+        同步结果。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminGroupPatchRequest'
+      responses:
+        '200':
+          description: 已更新，返回分组与 Key 同步结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminGroupDetail'
+        '400':
+          description: |
+            字段非法或无字段可改（invalid_request_body，message 为 `body` 或具体
+            字段名）；范围内有无成本价模型且未确认时，响应体额外带 `warnings[]`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminGroupUpdateError'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 group.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 分组不存在（resource_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/orders:
+    get:
+      operationId: listAdminOrders
+      tags: [admin]
+      summary: 全平台充值订单分页列表（财务核对线下打款用）
+      description: |
+        不按会话过滤：这个接口存在的意义就是让财务看到每一个客户的待付订单。
+        `state` 与 `q` 取交集：`q` 同时匹配订单号与付款账号邮箱（`!` 为 LIKE
+        转义符）。只读，不改订单状态。
+        注意 `state` 的取值是大小写不敏感的小写词，而非法时返回的
+        `invalid_query_parameter` message 是 `status`（实现读的键叫 `state`，
+        错误字段名沿用旧名；此处按实现如实登记，见 T49 报告）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: q
+          in: query
+          schema: {type: string, maxLength: 64}
+          description: 订单号或用户邮箱，按 rune 计超过 64 返回 400
+        - name: state
+          in: query
+          schema:
+            type: string
+            enum: ['', all, pending, paid, closed, refunding, refunded]
+          description: 缺省或 all = 不过滤；refunded 同时匹配 REFUNDED 与 PARTIAL_REFUNDED
+        - name: page
+          in: query
+          schema: {type: integer, minimum: 1, default: 1}
+        - name: page_size
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+        - name: sort
+          in: query
+          schema: {type: string, enum: [created_at, paid_at]}
+        - name: order
+          in: query
+          schema: {type: string, enum: [asc, desc], default: desc}
+      responses:
+        '200':
+          description: 订单分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminOrderList'
+        '400':
+          description: 分页、关键字或 state 非法（invalid_query_parameter）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 fund.approve（permission_denied）——OPS 不持有该权限
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/orders/{id}/confirm-payment:
+    post:
+      operationId: confirmAdminOrderPayment
+      tags: [admin]
+      summary: 运营确认线下到账（幂等：同一流水号重复提交不二次入账）
+      description: |
+        `bank_txn_no` 是运营手里的打款凭证号，必填且是幂等的锚点：同一流水号再次
+        提交同一订单返回 `replayed=true`、不写第二笔入账。入账（订单状态、账本
+        批次与流水、审计）在同一事务内完成。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminConfirmPaymentRequest'
+      responses:
+        '200':
+          description: 已确认到账（或幂等重放）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminConfirmPaymentResult'
+        '400':
+          description: 请求体或 `bank_txn_no` / `note` 非法（invalid_request_body；流水号须匹配 `^[A-Za-z0-9_-]{6,64}$`）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 fund.approve（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 订单不存在（resource_not_found；路径 id 非正整数同样返回 404）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: 订单当前状态不允许确认（resource_state_conflict，message 带出当前状态）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/orders/{id}/close:
+    post:
+      operationId: closeAdminOrder
+      tags: [admin]
+      summary: 关闭未支付订单（幂等：已关闭的重放返回 replayed=true）
+      description: |
+        关单后该订单不能再支付。`reason` 必填（2..100 字）并写入审计：一张没有
+        理由的作废单无法向客户与审计交代。已关闭时重复调用返回 `replayed=true`。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminCloseOrderRequest'
+      responses:
+        '200':
+          description: 已关闭（或幂等重放）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminCloseOrderResult'
+        '400':
+          description: 请求体或 `reason` 非法（2..100 字，invalid_request_body）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 fund.approve（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 订单不存在（resource_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: 订单当前状态不允许关闭（resource_state_conflict）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/redeem-codes:
+    get:
+      operationId: listAdminRedeemBatches
+      tags: [admin]
+      summary: 兑换码批次分页列表
+      description: 批次维度，不含明码：明文兑换码只在创建那一次的响应里出现。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: page
+          in: query
+          schema: {type: integer, minimum: 1, default: 1}
+        - name: page_size
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+        - name: sort
+          in: query
+          schema: {type: string, enum: [created_at, valid_to]}
+        - name: order
+          in: query
+          schema: {type: string, enum: [asc, desc], default: desc}
+      responses:
+        '200':
+          description: 批次分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRedeemBatchList'
+        '400':
+          description: 分页参数非法（invalid_query_parameter）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 fund.approve（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/redeem-codes/batch:
+    post:
+      operationId: createAdminRedeemBatch
+      tags: [admin]
+      summary: 生成一批兑换码（明码只返回这一次）
+      description: |
+        批次行、全部兑换码与审计在同一事务内写入：一批码插不进去就不会留下一个
+        「已发行数量」与实际不存在的码。`codes` 是明文唯一一次离开服务端的时机，
+        不落库、不写日志、不进审计。`credit_target` 缺省 `BONUS`
+        （兑换积分不计退款额度）。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminRedeemBatchCreateRequest'
+      responses:
+        '201':
+          description: 批次已创建，响应里带全部明文兑换码
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRedeemBatchCreateResult'
+        '400':
+          description: |
+            字段非法（invalid_request_body，message 指向具体字段：`body` /
+            `batch_name` / `face_value_fen` / `quantity` / `credit_target` /
+            `valid_days`）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 fund.approve（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/reviews:
+    get:
+      operationId: listAdminReviews
+      tags: [admin]
+      summary: 审核中心队列（默认只看 PENDING）
+      description: |
+        队列行来自 `t_review_task`，响应里补齐申请人名称与该单据的关键业务事实，
+        运营不必再开一页就能决策。`anomaly=true` 表示业务行已不存在；这种行不会
+        让列表失败，只做标记。排序固定 `created_at ASC, id ASC`，**不支持 sort
+        参数**（传了就是 400）。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: state
+          in: query
+          schema: {type: string, enum: [ALL, PENDING, APPROVED, REJECTED], default: PENDING}
+        - name: biz_type
+          in: query
+          schema:
+            type: string
+            enum: [QUOTA_APPLY, INVOICE_APPLY, REFUND_APPLY, REDEEM_BATCH, BALANCE_ADJUST]
+        - name: page
+          in: query
+          schema: {type: integer, minimum: 1, default: 1}
+        - name: page_size
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+      responses:
+        '200':
+          description: 审核队列分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminReviewList'
+        '400':
+          description: 分页或过滤参数非法（invalid_query_parameter；`sort` 不在白名单，传了也是 400）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 fund.approve（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/reviews/{id}/approve:
+    post:
+      operationId: approveAdminReview
+      tags: [admin]
+      summary: 通过一张单据（审批人与申请人不得是同一人）
+      description: |
+        请求体可省略（空体等于不给 reason）。审核 `INVOICE_APPLY` 时必须给
+        `invoice_url`：没有凭证的开票不允许被标记为已开具。
+        不变量优先于请求体形状：**审批人 = 申请人时一律 403 `permission_denied`**
+        （职责分离，不是参数错误），且这次拒绝会写一条拒审记录。队列行不是
+        PENDING 时返回 409。通过与对应业务状态的推进在同一事务内完成。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminReviewDecisionRequest'
+      responses:
+        '200':
+          description: 已通过，返回更新后的队列行
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminReviewDetail'
+        '400':
+          description: 请求体非法，或审核 INVOICE_APPLY 时缺 `invoice_url`（invalid_request_body）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 fund.approve，或审批人即申请人（permission_denied，职责分离）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 审核任务不存在（resource_not_found；路径 id 非正整数同样返回 404）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: 队列行已不是 PENDING（resource_state_conflict，message 带出当前状态）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/reviews/{id}/reject:
+    post:
+      operationId: rejectAdminReview
+      tags: [admin]
+      summary: 驳回一张单据（必须写原因）
+      description: |
+        `reason` 必填（≤255 字）：驳回不写钱，但单据与队列行必须在一个事务里一起
+        移动。职责分离先于请求体形状校验——审批人 = 申请人时即使原因空着也是
+        403，不能让自审者因为缺 reason 拿到不同的答案。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminReviewDecisionRequest'
+      responses:
+        '200':
+          description: 已驳回，返回更新后的队列行
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminReviewDetail'
+        '400':
+          description: 请求体非法或 `reason` 缺失/超长（invalid_request_body）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 fund.approve，或审批人即申请人（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 审核任务不存在（resource_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: 队列行已不是 PENDING（resource_state_conflict）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/risk/rules:
+    get:
+      operationId: listAdminRiskRules
+      tags: [admin]
+      summary: 风控规则分页列表
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: action
+          in: query
+          schema: {type: string, enum: [ALERT, THROTTLE, DISABLE]}
+        - name: scope
+          in: query
+          schema: {type: string, enum: [USER, KEY, IP, DEVICE]}
+        - name: enabled
+          in: query
+          schema: {type: string, enum: ['0', '1']}
+        - name: page
+          in: query
+          schema: {type: integer, minimum: 1, default: 1}
+        - name: page_size
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+        - name: sort
+          in: query
+          schema: {type: string, enum: [created_at, updated_at, rule_name, id]}
+        - name: order
+          in: query
+          schema: {type: string, enum: [asc, desc], default: desc}
+      responses:
+        '200':
+          description: 规则分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRiskRuleList'
+        '400':
+          description: 分页或过滤参数非法（invalid_query_parameter）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 risk.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+    post:
+      operationId: createAdminRiskRule
+      tags: [admin]
+      summary: 新建风控规则
+      description: |
+        `metric` / `operator` / `action` / `scope` 都必须命中枚举；`window_seconds`
+        取 1..2592000（30 天）。`action_param` 是透传的 JSON 对象，原样落库。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminRiskRuleCreateRequest'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRiskRuleDetail'
+        '400':
+          description: 字段非法（invalid_request_body，message 指向 `rule_name` / `metric` / `operator` / `window_seconds` / `action` / `action_param` / `scope` 等）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 risk.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/risk/rules/{id}:
+    patch:
+      operationId: updateAdminRiskRule
+      tags: [admin]
+      summary: 修改风控规则（部分更新）
+      description: 字段语义同创建，缺省表示不改；一个可改字段都没给时 400（message 为 `body`）。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminRiskRulePatchRequest'
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRiskRuleDetail'
+        '400':
+          description: 字段非法或无字段可改（invalid_request_body）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 risk.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 规则不存在（resource_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+    delete:
+      operationId: deleteAdminRiskRule
+      tags: [admin]
+      summary: 停用风控规则（置 enabled=0，不删行）
+      description: |
+        把 `enabled` 置 0 并写审计，行保留（命中历史仍要能指回规则）。本来就是
+        停用状态时不重复写。响应 `enabled` 恒为 false。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      responses:
+        '200':
+          description: 已停用
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRiskRuleDeleteResult'
+        '400':
+          description: 路径 id 不是正整数（invalid_request_body，message 为 id）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 risk.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 规则不存在（resource_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/risk/hits:
+    get:
+      operationId: listAdminRiskHits
+      tags: [admin]
+      summary: 风控命中记录分页列表
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: rule_id
+          in: query
+          schema: {type: integer, format: int64, minimum: 1}
+        - name: user_id
+          in: query
+          schema: {type: integer, format: int64, minimum: 1}
+        - name: scope_type
+          in: query
+          schema: {type: string, enum: [USER, KEY, IP, DEVICE]}
+        - name: action_taken
+          in: query
+          schema: {type: string, enum: [ALERT, THROTTLE, DISABLE]}
+        - name: page
+          in: query
+          schema: {type: integer, minimum: 1, default: 1}
+        - name: page_size
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+        - name: sort
+          in: query
+          schema: {type: string, enum: [created_at, id, metric_value]}
+        - name: order
+          in: query
+          schema: {type: string, enum: [asc, desc], default: desc}
+      responses:
+        '200':
+          description: 命中记录分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRiskHitList'
+        '400':
+          description: 分页或过滤参数非法（invalid_query_parameter）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 risk.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/risk/users/{id}/score:
+    post:
+      operationId: setAdminUserRiskScore
+      tags: [admin]
+      summary: 人工设定账号风险分（0–100）
+      description: |
+        直接覆盖 `t_user.risk_score` 并写审计（`reason` 进审计，不进用户表）。
+        响应回传旧值，便于运营确认改动的方向与幅度。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminRiskScoreRequest'
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRiskScoreResult'
+        '400':
+          description: 路径 id、请求体或 `risk_score` 非法（0–100 之外，invalid_request_body）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 risk.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 账号不存在（resource_not_found）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/config:
+    get:
+      operationId: getAdminConfig
+      tags: [admin]
+      summary: 运行时配置全量读取（含默认值回填）
+      description: |
+        列出注册表里的全部键；数据库没有行时用注册表默认值顶上，`source`
+        区分 `ROW` 与 `DEFAULT`。`runtime_writable` 标出可在线修改的键；
+        这 45 个键按设计不含任何密钥，所以不需要脱敏。
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: 配置项全量列表（不分页）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminConfigList'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 config.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+    put:
+      operationId: putAdminConfig
+      tags: [admin]
+      summary: 批量写入运行时配置并发布（部分键、原子生效）
+      description: |
+        `values` 是 key → 原始 JSON 值的映射，一次最多写
+        `RuntimeKeyCount` 个键。校验顺序：非空 → 键数上限 → 键是否可在线改 →
+        值是否通过该键自己的校验器。任一键不合法整批拒绝（`config_value_invalid`，
+        message 指出是哪个键）。写入后发布配置快照，发布失败返回 503——
+        已落库但网关还看不到。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminConfigUpdateRequest'
+      responses:
+        '200':
+          description: 已写入并发布
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminConfigUpdateResult'
+        '400':
+          description: values 为空（invalid_request_body）或某个键/值不合法（config_value_invalid）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 config.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          description: 配置中心不可用或快照发布失败（config_unavailable）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/integrations:
+    get:
+      operationId: listAdminIntegrations
+      tags: [admin]
+      summary: 第三方工具深链配置全量列表（五行固定）
+      description: 五条记录由迁移种子写入且固定：这个接口不会有第六行，也不能新增。
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: 集成配置全量列表（不分页）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminIntegrationList'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 config.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/integrations/{toolKey}:
+    patch:
+      operationId: updateAdminIntegration
+      tags: [admin]
+      summary: 修改某个工具的启用状态与深链模板
+      description: |
+        `tool_key` 与 `display_name` 不可改。`deep_link_template` 缺省或显式
+        `null` 都表示不动；传空串表示清空。启用一个没有模板的工具会被拒绝
+        （400）：空模板会让前端拼出坏链接。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - name: toolKey
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminIntegrationPatchRequest'
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminIntegrationDetail'
+        '400':
+          description: tool_key 非法、请求体非法，或「启用但没有深链模板」（invalid_request_body）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 config.write（permission_denied）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: 未知的 tool_key（resource_not_found）——五个工具是产品常量，不会按需新建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/admin/upstream-bills/import:
+    post:
+      operationId: importAdminUpstreamBills
+      tags: [admin]
+      summary: 手工导入上游账单（对账数据，按渠道 + 账期幂等 upsert）
+      description: |
+        `rows` 全部校验通过才开事务：第 N 行有问题时表不会被写进 1..N-1 行。
+        `bill_period` 只接受 `YYYY-MM-DD` 或 `YYYYMMDD` 两种按日账期——月度账期
+        虽然列注释允许，但对账按日读取，写进去也永远不会被看到，所以这里直接
+        400。每行原样存进 `raw_row`，未知上游列既不报错也不丢。
+        返回的 inserted / updated / unchanged 来自 upsert 的影响行数。
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUpstreamBillImportRequest'
+      responses:
+        '200':
+          description: 导入结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUpstreamBillImportResult'
+        '400':
+          description: |
+            请求体或字段非法（invalid_request_body，message 指向 `channel_id` /
+            `bill_period` / `rows` 或 `rows[i].<字段>`），或 rows 超过 5000 行，
+            或 channel_id 不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: 会话失效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 角色缺少 channel.write（permission_denied）
           content:
             application/json:
               schema:
@@ -4388,6 +6847,23 @@ components:
         decided_by: {type: integer, format: int64, nullable: true}
         decided_at: {type: string, format: date-time, nullable: true}
         created_at: {type: string, format: date-time}
+    AdminUserDisableRequest:
+      type: object
+      required: [reason]
+      description: 禁用必须给原因；原因同时写 `t_user.disable_reason` 与审计的 reason 列
+      properties:
+        reason: {type: string, minLength: 1, maxLength: 255, description: 去首尾空白后按 rune 计 1..255，空白串视为缺失}
+    AdminWhoami:
+      type: object
+      required: [uid, role, permissions]
+      description: handleAdminWhoami 的响应（定义在 internal/control/server.go，不在 ops 包）
+      properties:
+        uid: {type: string, description: 字符串形式的 t_user.id（int64 避免前端精度丢失）}
+        role: {type: string, enum: [PERSONAL, OPS, FINANCE, SUPER_ADMIN]}
+        permissions:
+          type: array
+          items: {type: string}
+          description: 该角色持有的权限常量列表（mw.PermissionsFor 的返回）
     AdminUserDetail:
       type: object
       required: [user, balance, latest_balance_adjust]
@@ -4519,6 +6995,777 @@ components:
         page: {type: integer}
         page_size: {type: integer}
         total: {type: integer, format: int64}
+    AdminChannelDetail:
+      type: object
+      required: [channel]
+      properties:
+        channel: {$ref: '#/components/schemas/AdminChannel'}
+    AdminChannelCreateRequest:
+      type: object
+      required: [name, protocol_id, region, base_url, upstream_key]
+      description: |
+        新建渠道。除五个必填项外全部有默认值；默认值与 `validateCreateChannel`
+        一致。`region` 只接受 `DOMESTIC`（V1.0 仅境内渠道），给 `OVERSEAS` 返回
+        400 并在 message 里说明这是产品限制而不是笔误。
+      properties:
+        name: {type: string, minLength: 1, maxLength: 64, description: 去首尾空白后按 rune 计 1..64；与软删行也算重复，重复返回 400}
+        protocol_id: {type: integer, format: int64, minimum: 1, description: 必须存在于 t_protocol}
+        region: {type: string, enum: [DOMESTIC], description: V1.0 仅境内；传 OVERSEAS 返回 400}
+        base_url: {type: string, description: https 任意主机；http 只允许私有/回环地址（与网关出口策略一致）}
+        upstream_key: {type: string, minLength: 1, maxLength: 512, description: 明文上游密钥，服务端用 CHANNEL_KEY_KEK 封装后入库；响应只回掩码}
+        group_scope_mode: {type: string, enum: [ALL, SELECTED], default: ALL}
+        dedicated_scope_mode: {type: string, enum: [ALL, SELECTED], default: ALL}
+        dedicated_user_ids:
+          type: array
+          items: {type: integer, format: int64}
+          description: 只有 dedicated_scope_mode=SELECTED 时才允许非空，否则 400
+        fallback_allowed: {type: boolean, default: false}
+        weight: {type: integer, format: int64, minimum: 0, maximum: 1000000, default: 100}
+        priority: {type: integer, format: int64, minimum: -32768, maximum: 32767, default: 100}
+        timeout_connect_ms: {type: integer, format: int64, minimum: 1, maximum: 600000, default: 3000}
+        timeout_first_byte_ms: {type: integer, format: int64, minimum: 1, maximum: 600000, default: 60000}
+        timeout_total_ms: {type: integer, format: int64, minimum: 1, maximum: 3600000, default: 120000}
+        retry_max: {type: integer, format: int64, minimum: 0, maximum: 2, default: 2, description: 上限 2 是硬约束}
+        stream_supported: {type: boolean, default: true}
+        stream_usage_mode: {type: string, enum: [NATIVE, STREAM_OPTIONS, ESTIMATE, UNKNOWN], default: UNKNOWN}
+        upstream_model_name_map:
+          type: object
+          additionalProperties: {type: string}
+          description: |
+            平台模型名/别名 → 上游真实模型名。键必须是已登记模型名或启用中的别名，
+            否则 400；最多 200 条，键与值都按 rune 计不超过 128。
+        enabled: {type: boolean, default: true}
+    AdminChannelPatchRequest:
+      type: object
+      minProperties: 1
+      description: |
+        与创建同名的字段同语义，但全部可选：缺省表示「不动」。合并到当前行后再
+        整体校验，因此单独发 `dedicated_scope_mode` 也可能因为存量
+        `dedicated_user_ids` 非法而被拒。
+      properties:
+        name: {type: string, minLength: 1, maxLength: 64, description: 与软删行也算重复，重复返回 400}
+        protocol_id: {type: integer, format: int64, minimum: 1}
+        region: {type: string, enum: [DOMESTIC]}
+        base_url: {type: string}
+        upstream_key: {type: string, minLength: 1, maxLength: 512, description: 给了就重新加密并刷新掩码与 key_rotation_at}
+        group_scope_mode: {type: string, enum: [ALL, SELECTED]}
+        dedicated_scope_mode: {type: string, enum: [ALL, SELECTED]}
+        dedicated_user_ids:
+          type: array
+          items: {type: integer, format: int64}
+          description: 缺省保留现有关系；[] 清空
+        fallback_allowed: {type: boolean}
+        weight: {type: integer, format: int64, minimum: 0, maximum: 1000000}
+        priority: {type: integer, format: int64, minimum: -32768, maximum: 32767}
+        timeout_connect_ms: {type: integer, format: int64, minimum: 1, maximum: 600000}
+        timeout_first_byte_ms: {type: integer, format: int64, minimum: 1, maximum: 600000}
+        timeout_total_ms: {type: integer, format: int64, minimum: 1, maximum: 3600000}
+        retry_max: {type: integer, format: int64, minimum: 0, maximum: 2}
+        stream_supported: {type: boolean}
+        stream_usage_mode: {type: string, enum: [NATIVE, STREAM_OPTIONS, ESTIMATE, UNKNOWN]}
+        upstream_model_name_map:
+          type: object
+          additionalProperties: {type: string}
+          description: 缺省保留现有映射；{} 清空
+        enabled: {type: boolean}
+    AdminChannelDeleteResult:
+      type: object
+      required: [id, deleted]
+      properties:
+        id: {type: integer, format: int64}
+        deleted: {type: boolean, description: 软删成功恒为 true（失败走 404/409）}
+    AdminUpstreamModel:
+      type: object
+      required: [id, registered]
+      description: 上游 `/v1/models` 的一条记录（`ops/upstreamModelItem`），外加平台侧标注
+      properties:
+        id: {type: string, description: 上游模型名，也是 `model_ids` 里要传的值}
+        name: {type: string, description: 上游给的展示名；上游没给时不返回}
+        context_window: {type: integer, format: int64, description: 上游报的上下文窗口；上游没给时不返回}
+        max_output_tokens: {type: integer, format: int64, description: 上游报的输出上限；上游没给时不返回}
+        registered: {type: boolean, description: 平台是否已有同名模型（t_model.model_name）}
+        platform_model: {type: string, description: 该上游名映射到的平台模型（t_channel.upstream_model_name_map）；没有映射时不返回}
+    AdminUpstreamModelList:
+      type: object
+      required: [items]
+      description: 不分页：上游一次给多少就是多少（响应体上限 1 MB）
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AdminUpstreamModel'}
+    AdminRegisterUpstreamModelsRequest:
+      type: object
+      required: [model_ids]
+      properties:
+        model_ids:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: {type: string}
+          description: 上游模型名（`AdminUpstreamModel.id`）；去空白后去重，空串忽略。上游目录里没有的名字使整批 400
+    AdminRegisterUpstreamModelsCreated:
+      type: object
+      required: [model_id, model_name, route_created]
+      description: 本次真的新建的平台模型（恒为 CATALOG_ONLY、无价目）
+      properties:
+        model_id: {type: integer, format: int64}
+        model_name: {type: string}
+        route_created: {type: boolean, description: 同一事务里是否也建了 t_route（唯一键冲突时为 false）}
+    AdminRegisterUpstreamModelsSkipped:
+      type: object
+      required: [model_name, reason]
+      description: 已登记过、因此没有新建行的条目
+      properties:
+        model_name: {type: string}
+        reason:
+          type: string
+          enum: [already_registered, already_registered_route_added]
+          description: already_registered_route_added = 模型早就有，但这次补了一条本渠道的路由
+    AdminRegisterUpstreamModelsResult:
+      type: object
+      required: [created, skipped]
+      properties:
+        created:
+          type: array
+          items: {$ref: '#/components/schemas/AdminRegisterUpstreamModelsCreated'}
+        skipped:
+          type: array
+          items: {$ref: '#/components/schemas/AdminRegisterUpstreamModelsSkipped'}
+    AdminPriceRule:
+      type: object
+      required: [id, scope_level, model_id, model_name, model_type, in_price_micro_per_k, out_price_micro_per_k, per_call_price_micro, currency_cost, version, effective_from, enabled, created_at]
+      description: 一条模型价目（`ops/priceRuleView`，对应 t_price_rule 的一行）
+      properties:
+        id: {type: integer, format: int64}
+        scope_level: {type: string, enum: [MODEL], description: 本接口只暴露 MODEL 级价目}
+        model_id: {type: integer, format: int64}
+        model_name: {type: string, description: 联查 t_model 得到；模型行不在了为空串}
+        model_type: {type: string, enum: [TEXT, IMAGE, EMBEDDING]}
+        in_price_micro_per_k: {type: integer, format: int64}
+        out_price_micro_per_k: {type: integer, format: int64}
+        per_call_price_micro: {type: integer, format: int64}
+        cache_hit_ratio_bp: {type: integer, format: int64, description: 未配置时不返回}
+        cache_write_ratio_bp: {type: integer, format: int64, description: 未配置时不返回}
+        long_ctx_threshold_tokens: {type: integer, format: int64, description: 长上下文档位起点；未配置时不返回}
+        long_ctx_in_price_micro_per_k: {type: integer, format: int64, description: 未配置时不返回}
+        long_ctx_out_price_micro_per_k: {type: integer, format: int64, description: 未配置时不返回}
+        cost_in_micro_per_k: {type: integer, format: int64, description: 未配置时不返回}
+        cost_out_micro_per_k: {type: integer, format: int64, description: 未配置时不返回}
+        cost_per_call_micro: {type: integer, format: int64, description: 未配置时不返回}
+        currency_cost: {type: string, description: 恒为 CNY（写入时也只接受 CNY）}
+        version: {type: integer, format: int64, description: 同一模型的版本号，创建时自增}
+        effective_from: {type: string, format: date-time}
+        effective_to: {type: string, format: date-time, description: 生效终点；未配置时不返回（表示长期有效）}
+        enabled: {type: boolean}
+        created_at: {type: string, format: date-time}
+    AdminPriceRuleList:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AdminPriceRule'}
+        page: {type: integer}
+        page_size: {type: integer}
+        total: {type: integer, format: int64}
+    AdminPriceRuleDetail:
+      type: object
+      required: [price]
+      properties:
+        price: {$ref: '#/components/schemas/AdminPriceRule'}
+    AdminPriceCreateRequest:
+      type: object
+      required: [model_id]
+      description: |
+        价格字段按模型类型分工：`TEXT` 要 `in/out_price_micro_per_k` > 0 且
+        `per_call_price_micro` 必须为 0；`IMAGE` 要 `per_call_price_micro` > 0 且
+        两个 token 价必须为 0；`EMBEDDING` 要 `in_price_micro_per_k` > 0，
+        `out_price_micro_per_k` 与 `per_call_price_micro` 必须为 0。
+        长上下文三件套是全有或全无：给了阈值就必须同时给两个长上下文价（都 > 0），
+        反之亦然。
+      properties:
+        model_id: {type: integer, format: int64, minimum: 1, description: 目标模型；不存在或已软删返回 404}
+        in_price_micro_per_k: {type: integer, format: int64, minimum: 0, description: 每千输入 token 的微积分价}
+        out_price_micro_per_k: {type: integer, format: int64, minimum: 0}
+        per_call_price_micro: {type: integer, format: int64, minimum: 0, description: 按次/按张计费价}
+        cache_hit_ratio_bp: {type: integer, format: int64, minimum: 0, maximum: 100000, description: 缓存命中计费比例，上限 100000（=100%）}
+        cache_write_ratio_bp: {type: integer, format: int64, minimum: 0, maximum: 100000}
+        long_ctx_threshold_tokens: {type: integer, format: int64, minimum: 1, description: 给了它就必须同时给两个 long_ctx_* 价格}
+        long_ctx_in_price_micro_per_k: {type: integer, format: int64, minimum: 1, description: 仅在与阈值同时给出时有效，且必须 > 0}
+        long_ctx_out_price_micro_per_k: {type: integer, format: int64, minimum: 1, description: 仅在与阈值同时给出时有效，且必须 > 0}
+        cost_in_micro_per_k: {type: integer, format: int64, minimum: 0, description: 上游成本；缺失时需要 confirm_no_cost=true}
+        cost_out_micro_per_k: {type: integer, format: int64, minimum: 0}
+        cost_per_call_micro: {type: integer, format: int64, minimum: 0}
+        currency_cost: {type: string, enum: [CNY], default: CNY, description: 只接受 CNY（大小写不敏感），其它值 400}
+        effective_from: {type: string, format: date-time, description: 缺省或早于服务端 now 时夹到 now；涨价必须 ≥ now+7 天}
+        effective_to: {type: string, format: date-time, description: 必须晚于 effective_from，否则 400}
+        enabled: {type: boolean, default: true}
+        clear_fields:
+          type: array
+          items:
+            type: string
+            enum: [cache_hit_ratio_bp, cache_write_ratio_bp, long_ctx_threshold_tokens, long_ctx_in_price_micro_per_k, long_ctx_out_price_micro_per_k, cost_in_micro_per_k, cost_out_micro_per_k, cost_per_call_micro, effective_to]
+          description: 把这些可空列置 NULL；白名单之外的值 400，与同名字段同时出现也 400
+        confirm_no_cost: {type: boolean, default: false, description: 售价值有、成本价缺失时的二次确认；不传则 400 并列出缺哪些成本价}
+    AdminPricePatchRequest:
+      type: object
+      minProperties: 1
+      description: |
+        与创建同名的价格字段同语义，全部可选（缺省 = 不改）。**不接受 `model_id`**：
+        出现即 400。`clear_fields` 与 `confirm_no_cost` 同创建。
+      properties:
+        in_price_micro_per_k: {type: integer, format: int64, minimum: 0}
+        out_price_micro_per_k: {type: integer, format: int64, minimum: 0}
+        per_call_price_micro: {type: integer, format: int64, minimum: 0}
+        cache_hit_ratio_bp: {type: integer, format: int64, minimum: 0, maximum: 100000}
+        cache_write_ratio_bp: {type: integer, format: int64, minimum: 0, maximum: 100000}
+        long_ctx_threshold_tokens: {type: integer, format: int64, minimum: 1}
+        long_ctx_in_price_micro_per_k: {type: integer, format: int64, minimum: 1}
+        long_ctx_out_price_micro_per_k: {type: integer, format: int64, minimum: 1}
+        cost_in_micro_per_k: {type: integer, format: int64, minimum: 0}
+        cost_out_micro_per_k: {type: integer, format: int64, minimum: 0}
+        cost_per_call_micro: {type: integer, format: int64, minimum: 0}
+        currency_cost: {type: string, enum: [CNY]}
+        effective_from: {type: string, format: date-time, description: 缺省时保留原计划；显式给出且早于 now 时夹到 now}
+        effective_to: {type: string, format: date-time, description: 必须晚于 effective_from}
+        enabled: {type: boolean}
+        clear_fields:
+          type: array
+          items:
+            type: string
+            enum: [cache_hit_ratio_bp, cache_write_ratio_bp, long_ctx_threshold_tokens, long_ctx_in_price_micro_per_k, long_ctx_out_price_micro_per_k, cost_in_micro_per_k, cost_out_micro_per_k, cost_per_call_micro, effective_to]
+        confirm_no_cost: {type: boolean}
+    AdminGroup:
+      type: object
+      required: [id, code, name, ratio_bp, model_scope_mode, channel_scope_mode, self_service, remark, enabled, model_ids, channel_ids, created_at, updated_at]
+      description: 价格分组（`ops/groupView`，对应 t_price_group + 两张范围表）
+      properties:
+        id: {type: integer, format: int64}
+        code: {type: string, description: 分组编码，internal 分组不可改名且倍率恒为 0}
+        name: {type: string, maxLength: 64}
+        ratio_bp: {type: integer, format: int64, description: 倍率（万分比）；10000 = 1.0 倍}
+        model_scope_mode: {type: string, enum: [ALL, SELECTED]}
+        channel_scope_mode: {type: string, enum: [ALL, SELECTED]}
+        self_service: {type: boolean}
+        min_margin_bp: {type: integer, format: int64, description: 该分组的最低毛利（万分比）；未配置时不返回}
+        remark: {type: string, maxLength: 255}
+        enabled: {type: boolean}
+        model_ids:
+          type: array
+          items: {type: integer, format: int64}
+          description: model_scope_mode=SELECTED 时的模型白名单
+        channel_ids:
+          type: array
+          items: {type: integer, format: int64}
+          description: channel_scope_mode=SELECTED 时的渠道白名单
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    AdminGroupList:
+      type: object
+      required: [items, total]
+      description: 分组不分页：只有 items + total（total = 返回条数），没有 page / page_size
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AdminGroup'}
+        total: {type: integer, format: int64}
+    AdminGroupKeySync:
+      type: object
+      required: [keys, ok]
+      properties:
+        keys: {type: integer, description: 受影响的 Key 数；倍率没变时为 0}
+        ok: {type: boolean, description: 一致化是否成功；false 时 note 说明原因，配置已生效但不保证所有 Key 已刷到}
+        note: {type: string, description: ok=false 时的说明}
+    AdminGroupDetail:
+      type: object
+      required: [group, key_sync]
+      properties:
+        group: {$ref: '#/components/schemas/AdminGroup'}
+        key_sync: {$ref: '#/components/schemas/AdminGroupKeySync'}
+        warnings:
+          type: array
+          items: {type: string}
+          description: 已确认保存、但范围内有无成本价模型时的提示；为空表示全部做了地板校验
+    AdminGroupUpdateError:
+      description: |
+        分组保存的 400。除了标准错误信封外，**顶层**多一个 `warnings[]`
+        （`writeGroupWarningError` 手写的信封，不是 apierr 的标准形状），
+        列出范围内没有成本价、地板无法校验的模型。
+      allOf:
+        - $ref: '#/components/schemas/ErrorEnvelope'
+        - type: object
+          properties:
+            warnings:
+              type: array
+              items: {type: string}
+    AdminGroupPatchRequest:
+      type: object
+      minProperties: 1
+      description: |
+        全部字段可选（缺省 = 不改）。`internal` 分组的保存必须带 `confirm=true`
+        与非空 `reason`；倍率改小会重算该分组用户 Key 上的倍率。
+      properties:
+        name: {type: string, minLength: 1, maxLength: 64}
+        ratio:
+          type: [number, string]
+          description: 十进制倍率（如 1.5、"0.8"）；最多 4 位小数，整数部分 ≤ 1000000。与 ratio_bp 同时给出时必须一致
+        ratio_bp: {type: integer, format: int64, minimum: 0, description: 万分比整数形式（15000 = 1.5 倍）}
+        model_scope_mode: {type: string, enum: [ALL, SELECTED]}
+        channel_scope_mode: {type: string, enum: [ALL, SELECTED]}
+        self_service: {type: boolean}
+        min_margin_bp: {type: integer, format: int64, minimum: 0, maximum: 10000}
+        remark: {type: string, maxLength: 255}
+        enabled: {type: boolean}
+        model_ids:
+          type: array
+          items: {type: integer, format: int64}
+          description: 缺省保留现有范围；[] 清空
+        channel_ids:
+          type: array
+          items: {type: integer, format: int64}
+          description: 缺省保留现有范围；[] 清空
+        confirm: {type: boolean, description: internal 保存与「范围含无成本价模型」两种场景的二次确认}
+        reason: {type: string, description: internal 保存必填，写入审计的 reason 列}
+    AdminOrder:
+      type: object
+      required: [id, order_no, order_type, pay_amount_fen, pay_amount_yuan, recharge_micro, bonus_micro, recharge, bonus, pay_channel, state, paid_at, expire_at, created_at, user_id, user_email, user_nickname]
+      description: 运营视角的充值订单（`fund/adminOrderView` = 账号侧 `orderView` + 客户身份）
+      properties:
+        id: {type: integer, format: int64}
+        order_no: {type: string}
+        order_type: {type: string}
+        plan_code: {type: string, description: 套餐 code；非套餐订单不返回}
+        pay_amount_fen: {type: integer, format: int64, description: 应付金额（分）}
+        pay_amount_yuan: {type: integer, format: int64, description: 应付金额（元，整数部分）}
+        recharge_micro: {type: integer, format: int64, description: 到账充值积分（微积分）}
+        bonus_micro: {type: integer, format: int64}
+        recharge: {type: integer, format: int64, description: 到账充值（元）}
+        bonus: {type: integer, format: int64}
+        pay_channel: {type: string}
+        state: {type: string, enum: [PENDING, PAID, CLOSED, REFUNDING, REFUNDED, PARTIAL_REFUNDED]}
+        paid_at:
+          type: string
+          format: date-time
+          description: 支付时间；未支付时为 null
+        expire_at: {type: string, format: date-time}
+        created_at: {type: string, format: date-time}
+        user_id: {type: integer, format: int64}
+        user_email: {type: string}
+        user_nickname: {type: string}
+        pay_txn_id: {type: string, description: 渠道支付时为平台 trade_no，运营确认时为银行流水号；未支付时不返回}
+    AdminOrderList:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AdminOrder'}
+        page: {type: integer}
+        page_size: {type: integer}
+        total: {type: integer, format: int64}
+    AdminConfirmPaymentRequest:
+      type: object
+      required: [bank_txn_no]
+      properties:
+        bank_txn_no:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{6,64}$'
+          description: 银行流水号，运营的打款凭证；幂等锚点，同一号码重复提交不会二次入账
+        note: {type: string, maxLength: 255, description: 运营备注，写审计}
+    AdminConfirmPaymentResult:
+      type: object
+      required: [order, credited, replayed]
+      properties:
+        order: {$ref: '#/components/schemas/AdminOrder'}
+        credited: {type: boolean, description: true = 钱已进账（幂等重放同样为 true）}
+        replayed: {type: boolean, description: true = 该流水号此前已结算过这单，本次未写任何东西}
+    AdminCloseOrderRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason: {type: string, minLength: 2, maxLength: 100, description: 作废理由，按 rune 计 2..100，写审计}
+    AdminCloseOrderResult:
+      type: object
+      required: [order, closed, replayed]
+      properties:
+        order: {$ref: '#/components/schemas/AdminOrder'}
+        closed: {type: boolean, description: true = 订单已不可支付}
+        replayed: {type: boolean, description: true = 本来就是 CLOSED，本次未写任何东西}
+    AdminRedeemBatch:
+      type: object
+      required: [id, batch_name, face_value_fen, face_value_yuan, quantity, generated_count, redeemed_count, valid_from, valid_to, credit_target, created_by, created_at]
+      description: 兑换码批次（`fund/redeemBatchView`）。批次维度，不含明码。
+      properties:
+        id: {type: integer, format: int64}
+        batch_name: {type: string, maxLength: 64}
+        face_value_fen: {type: integer, format: int64, description: 面额（分）}
+        face_value_yuan: {type: integer, format: int64, description: 面额（元，整数部分）}
+        quantity: {type: integer, format: int64, description: 计划生成数量}
+        generated_count: {type: integer, format: int64, description: 实际生成数量}
+        redeemed_count: {type: integer, format: int64, description: 已兑换数量}
+        valid_from: {type: string, format: date-time}
+        valid_to: {type: string, format: date-time}
+        credit_target: {type: string, enum: [RECHARGE, BONUS], description: 兑换后记入哪个余额（BONUS 不计退款额度）}
+        created_by: {type: integer, format: int64}
+        created_by_email: {type: string, description: 创建人邮箱；账号行缺失时不返回}
+        created_at: {type: string, format: date-time}
+    AdminRedeemBatchList:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AdminRedeemBatch'}
+        page: {type: integer}
+        page_size: {type: integer}
+        total: {type: integer, format: int64}
+    AdminRedeemBatchCreateRequest:
+      type: object
+      required: [batch_name, face_value_fen, quantity, valid_days]
+      properties:
+        batch_name: {type: string, minLength: 1, maxLength: 64}
+        face_value_fen: {type: integer, format: int64, minimum: 1, maximum: 65535, description: 面额（分），上限来自列类型}
+        quantity: {type: integer, format: int64, minimum: 1, maximum: 500, description: 一次最多生成 500 张}
+        credit_target: {type: string, enum: [RECHARGE, BONUS], default: BONUS}
+        valid_days: {type: integer, format: int64, minimum: 1, maximum: 3650}
+    AdminRedeemBatchCreateResult:
+      type: object
+      required: [batch, codes]
+      properties:
+        batch: {$ref: '#/components/schemas/AdminRedeemBatch'}
+        codes:
+          type: array
+          items: {type: string}
+          description: 明文兑换码，**唯一一次**返回；不落库、不写日志、不进审计，离开页面即丢失
+    AdminReview:
+      type: object
+      required: [id, biz_type, biz_id, applicant_id, applicant_name, summary, state, created_at, anomaly]
+      description: 审核队列行（`review/reviewItem`）+ 决策所需的业务事实
+      properties:
+        id: {type: integer, format: int64}
+        biz_type: {type: string, enum: [QUOTA_APPLY, INVOICE_APPLY, REFUND_APPLY, REDEEM_BATCH, BALANCE_ADJUST]}
+        biz_id: {type: integer, format: int64}
+        biz_no: {type: string, description: 业务单号；该类型没有单号时不返回}
+        applicant_id: {type: integer, format: int64}
+        applicant_name: {type: string}
+        amount_micro: {type: integer, format: int64, description: 涉及积分；该类型没有金额时不返回}
+        amount_fen: {type: integer, format: int64, description: 涉及金额（分）；该类型没有金额时不返回}
+        direction: {type: string, enum: [INCREASE, DECREASE], description: 仅 BALANCE_ADJUST 有，表示调额方向}
+        summary: {type: string, maxLength: 200, description: 申请摘要（截断到 200 字）}
+        business_state: {type: string, description: 业务单据自身状态；查不到时不返回}
+        state: {type: string, enum: [PENDING, APPROVED, REJECTED]}
+        assignee_id: {type: integer, format: int64, description: 处理人；未分配时不返回}
+        decision_note: {type: string, description: 决策备注；未决策时不返回}
+        decided_at: {type: string, format: date-time, description: 未决策时不返回}
+        created_at: {type: string, format: date-time}
+        anomaly: {type: boolean, description: true = 业务行已不存在；列表仍返回 200，只做标记}
+        anomaly_reason: {type: string, description: anomaly=true 时的说明}
+    AdminReviewList:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AdminReview'}
+        page: {type: integer}
+        page_size: {type: integer}
+        total: {type: integer, format: int64}
+    AdminReviewDetail:
+      type: object
+      required: [review]
+      properties:
+        review: {$ref: '#/components/schemas/AdminReview'}
+    AdminReviewDecisionRequest:
+      type: object
+      description: |
+        通过/驳回共用的请求体，整个 body 可省略。驳回必须给 `reason`；
+        通过时 `reason` 可选（存为 decision_note），但审核 `INVOICE_APPLY` 必须给
+        `invoice_url`。
+      properties:
+        reason: {type: string, maxLength: 255, description: 决策备注/驳回原因，超出 255 字截断}
+        invoice_url: {type: string, maxLength: 512, description: 审核 INVOICE_APPLY 时的发票文件地址，必填且 ≤512}
+    AdminRiskRule:
+      type: object
+      required: [id, rule_name, metric, operator, threshold, window_seconds, action, scope, enabled, created_by, created_at, updated_at]
+      properties:
+        id: {type: integer, format: int64}
+        rule_name: {type: string, maxLength: 64}
+        metric: {type: string, maxLength: 32, description: 指标名（自由字符串，≤32 字，由风控引擎解释）}
+        operator: {type: string, enum: [GTE, LTE, EQ, SUM_GTE]}
+        threshold: {type: integer, format: int64}
+        window_seconds: {type: integer, format: int64, minimum: 1, maximum: 2592000, description: 统计窗口，最长 30 天}
+        action: {type: string, enum: [ALERT, THROTTLE, DISABLE]}
+        action_param: {description: 动作参数，原样透传的 JSON}
+        scope: {type: string, enum: [USER, KEY, IP, DEVICE]}
+        enabled: {type: boolean}
+        created_by: {type: integer, format: int64}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    AdminRiskRuleList:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AdminRiskRule'}
+        page: {type: integer}
+        page_size: {type: integer}
+        total: {type: integer, format: int64}
+    AdminRiskRuleDetail:
+      type: object
+      required: [rule]
+      properties:
+        rule: {$ref: '#/components/schemas/AdminRiskRule'}
+    AdminRiskRuleCreateRequest:
+      type: object
+      required: [rule_name, metric, operator, action, scope]
+      properties:
+        rule_name: {type: string, minLength: 1, maxLength: 64}
+        metric: {type: string, minLength: 1, maxLength: 32}
+        operator: {type: string, enum: [GTE, LTE, EQ, SUM_GTE]}
+        threshold: {type: integer, format: int64, default: 0}
+        window_seconds: {type: integer, format: int64, minimum: 1, maximum: 2592000, default: 60}
+        action: {type: string, enum: [ALERT, THROTTLE, DISABLE]}
+        action_param: {description: 动作参数，任意 JSON；原样落库}
+        scope: {type: string, enum: [USER, KEY, IP, DEVICE]}
+        enabled: {type: boolean, default: true}
+    AdminRiskRulePatchRequest:
+      type: object
+      minProperties: 1
+      description: 字段语义同创建，全部可选；缺省表示不改。
+      properties:
+        rule_name: {type: string, minLength: 1, maxLength: 64}
+        metric: {type: string, minLength: 1, maxLength: 32}
+        operator: {type: string, enum: [GTE, LTE, EQ, SUM_GTE]}
+        threshold: {type: integer, format: int64}
+        window_seconds: {type: integer, format: int64, minimum: 1, maximum: 2592000}
+        action: {type: string, enum: [ALERT, THROTTLE, DISABLE]}
+        action_param: {description: 动作参数，任意 JSON}
+        scope: {type: string, enum: [USER, KEY, IP, DEVICE]}
+        enabled: {type: boolean}
+    AdminRiskRuleDeleteResult:
+      type: object
+      required: [id, deleted, enabled]
+      description: 规则是停用而不是删除，`enabled` 恒为 false
+      properties:
+        id: {type: integer, format: int64}
+        deleted: {type: boolean}
+        enabled: {type: boolean}
+    AdminRiskHit:
+      type: object
+      required: [id, rule_id, rule_name, scope_type, scope_value, metric_value, threshold, action_taken, action_result, created_at]
+      properties:
+        id: {type: integer, format: int64}
+        rule_id: {type: integer, format: int64}
+        rule_name: {type: string}
+        scope_type: {type: string, enum: [USER, KEY, IP, DEVICE]}
+        scope_value: {type: string}
+        user_id: {type: integer, format: int64, description: 命中关联的账号；无关联时不返回}
+        metric_value: {type: integer, format: int64, description: 触发时的指标实际值}
+        threshold: {type: integer, format: int64, description: 触发时的阈值快照}
+        action_taken: {type: string, enum: [ALERT, THROTTLE, DISABLE]}
+        action_result: {type: string, description: 动作执行结果}
+        created_at: {type: string, format: date-time}
+    AdminRiskHitList:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AdminRiskHit'}
+        page: {type: integer}
+        page_size: {type: integer}
+        total: {type: integer, format: int64}
+    AdminRiskScoreRequest:
+      type: object
+      required: [risk_score]
+      properties:
+        risk_score: {type: integer, format: int64, minimum: 0, maximum: 100}
+        reason: {type: string, description: 调整理由，写审计}
+    AdminRiskScoreResult:
+      type: object
+      required: [user_id, risk_score, previous_risk_score]
+      properties:
+        user_id: {type: integer, format: int64}
+        risk_score: {type: integer, format: int64, description: 本次写入的分值}
+        previous_risk_score: {type: integer, format: int64, description: 修改前的分值}
+    AdminConfigItem:
+      type: object
+      required: [key, namespace, value, runtime_writable, version, source]
+      description: 一个运行时配置键（`ops/configItemView`）
+      properties:
+        key: {type: string}
+        namespace: {type: string}
+        value: {description: 该键的当前值，原始 JSON（标量、数组或对象，由键自己定义）}
+        runtime_writable: {type: boolean, description: true = 可在线修改（PUT 只接受这类键）}
+        version: {type: integer, format: int64}
+        source: {type: string, enum: [ROW, DEFAULT], description: ROW = 库里有行；DEFAULT = 库里没有，用注册表默认值}
+    AdminConfigList:
+      type: object
+      required: [items, total]
+      description: 配置项不分页：只有 items + total
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AdminConfigItem'}
+        total: {type: integer}
+    AdminConfigUpdateRequest:
+      type: object
+      required: [values]
+      properties:
+        values:
+          type: object
+          additionalProperties: true
+          minProperties: 1
+          description: key → 原始 JSON 值；一次最多写 RuntimeKeyCount 个键，只接受可在线修改的键
+    AdminConfigUpdateResult:
+      type: object
+      required: [version, publish_id, namespaces, changed_keys]
+      properties:
+        version: {type: integer, format: int64, description: 写入后的配置版本}
+        publish_id: {type: string, description: 本次发布标识}
+        namespaces:
+          type: array
+          items: {type: string}
+          description: 受影响的命名空间
+        changed_keys:
+          type: array
+          items: {type: string}
+          description: 实际发生变化的键（值相同的键不算变化）
+    AdminIntegration:
+      type: object
+      required: [tool_key, display_name, enabled, deep_link_template]
+      description: 第三方工具深链配置（`ops/integrationView`）。五行由迁移种子写入，固定。
+      properties:
+        tool_key: {type: string, description: 工具标识，不可修改}
+        display_name: {type: string, description: 展示名，不可修改}
+        enabled: {type: boolean}
+        deep_link_template:
+          type: [string, "null"]
+          description: 深链模板，必须非空才能启用；null 表示未配置（handler 是 `*string` 且无 omitempty，键总是出现）
+    AdminIntegrationList:
+      type: object
+      required: [items, total]
+      description: 集成配置不分页：只有 items + total
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AdminIntegration'}
+        total: {type: integer, format: int64}
+    AdminIntegrationDetail:
+      type: object
+      required: [integration]
+      properties:
+        integration: {$ref: '#/components/schemas/AdminIntegration'}
+    AdminIntegrationPatchRequest:
+      type: object
+      minProperties: 1
+      description: |
+        只有两个可改字段。`deep_link_template` 缺省或显式 `null` 都表示不动，
+        传空串表示清空；启用一个没有模板的工具会被拒（400）。
+      properties:
+        enabled: {type: boolean}
+        deep_link_template: {type: [string, "null"], description: 深链模板；"" 清空，null/缺省 不动}
+    AdminAnnouncement:
+      type: object
+      required: [id, title, content, ann_type, position_mask, pinned, effective_from, state, model_ids, created_by, created_at, updated_at]
+      properties:
+        id: {type: integer, format: int64}
+        title: {type: string, maxLength: 128}
+        content: {type: string, maxLength: 20000}
+        ann_type: {type: string, enum: [NOTICE, MAINTENANCE, PROMOTION, PRICE_CHANGE]}
+        position_mask: {type: integer, format: int64, minimum: 1, maximum: 15, description: 展示位位图（1..15）}
+        pinned: {type: boolean}
+        effective_from: {type: string, format: date-time, description: 可见起始时间}
+        effective_to: {type: string, format: date-time, description: 可见结束时间；长期有效时不返回}
+        state: {type: string, enum: [DRAFT, SCHEDULED, PUBLISHED, OFFLINE], description: SCHEDULED = 到点自动发布的内部标记}
+        model_ids:
+          type: array
+          items: {type: integer, format: int64}
+          description: 关联模型（t_announcement_model）；无关联时为 []，不是 null
+        created_by: {type: integer, format: int64}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    AdminAnnouncementList:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AdminAnnouncement'}
+        page: {type: integer}
+        page_size: {type: integer}
+        total: {type: integer, format: int64}
+    AdminAnnouncementDetail:
+      type: object
+      required: [announcement]
+      properties:
+        announcement: {$ref: '#/components/schemas/AdminAnnouncement'}
+    AdminAnnouncementCreateRequest:
+      type: object
+      required: [title, content, ann_type, position_mask]
+      description: |
+        `publish_at` 决定新建后的状态：缺省 → DRAFT；未来时间 → SCHEDULED；
+        当前或过去时间 → PUBLISHED。给了 `publish_at` 时 `effective_from` 不得早于它。
+      properties:
+        title: {type: string, minLength: 1, maxLength: 128}
+        content: {type: string, minLength: 1, maxLength: 20000}
+        ann_type: {type: string, enum: [NOTICE, MAINTENANCE, PROMOTION, PRICE_CHANGE], description: PROMOTION 受 7 天涨价公示期约束}
+        position_mask: {type: integer, format: int64, minimum: 1, maximum: 15}
+        pinned: {type: boolean, default: false}
+        publish_at: {type: string, format: date-time, description: 发布时间；决定 DRAFT / SCHEDULED / PUBLISHED}
+        effective_from: {type: string, format: date-time, description: 可见起始；给了 publish_at 时不得早于它}
+        effective_to: {type: string, format: date-time}
+        model_ids:
+          type: array
+          items: {type: integer, format: int64}
+          description: 关联模型；[] = 不关联（促销冲突检查覆盖全部模型）
+    AdminAnnouncementPublishRequest:
+      type: object
+      description: 整个 body 可省略；给了 publish_at 就按该时间发布
+      properties:
+        publish_at: {type: string, format: date-time}
+    AdminUpstreamBillImportRequest:
+      type: object
+      required: [channel_id, bill_period, rows]
+      description: |
+        手工导入的上游账单。每行字段全部可选但会被逐个校验；未知上游列不报错、
+        不丢失（原样进 raw_row）。
+      properties:
+        channel_id: {type: integer, format: int64, minimum: 1}
+        bill_period:
+          type: string
+          description: 按日账期，只接受 `YYYY-MM-DD` 或 `YYYYMMDD`（月度账期对账读不到，直接 400）
+        rows:
+          type: array
+          minItems: 1
+          maxItems: 5000
+          items:
+            type: object
+            description: |
+              一行上游账单。以下 8 个是已知字段，全部可选、逐个校验；因 handler 用
+              `RawMessage` 接收，这里不限定类型。未知列不报错也不丢弃，原样进 `raw_row`
+              （见 `upstreamBillImportRawRow`）。
+            additionalProperties: true
+            properties:
+              bill_no: {description: 上游账单号}
+              request_id: {description: 关联的请求 ID}
+              upstream_trade_no: {description: 上游交易号}
+              model_name: {description: 上游模型名}
+              tokens_in: {description: 输入 token 数}
+              tokens_out: {description: 输出 token 数}
+              amount_micro: {description: 金额（微单位）}
+              currency: {description: 币种}
+    AdminUpstreamBillImportResult:
+      type: object
+      required: [channel_id, bill_period, received, inserted, updated, unchanged]
+      properties:
+        channel_id: {type: integer, format: int64}
+        bill_period: {type: string}
+        received: {type: integer, description: 收到的行数}
+        inserted: {type: integer, description: 新插入行数}
+        updated: {type: integer, description: 覆盖更新行数}
+        unchanged: {type: integer, description: 内容一致、未变动的行数}
     AdminRoute:
       type: object
       required: [id, model_id, model_name, channel_id, channel_name, protocol_id, protocol, upstream_model_name, region, weight, priority, stream_supported, max_tokens_ceiling, enabled, created_at, updated_at]
@@ -4639,7 +7886,20 @@ components:
         model_type: {type: string, enum: [TEXT, IMAGE, EMBEDDING]}
         protocol_id: {type: integer, format: int64, minimum: 1}
         primary_channel_id: {type: integer, format: int64, minimum: 1, description: 必须是境内渠道}
-        context_length: {type: integer, format: int64, minimum: 0, maximum: 100000000}
+        context_length:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 100000000
+          description: |
+            输入＋输出的总窗口；`0` = 未知（不做跨字段比较）。
+            **跨字段约束（T48）**：本次请求不带 `max_output_tokens` 时，新值不得
+            小于该行存量的 `max_output_tokens`，否则 400 `invalid_request_body`
+            且 message 指向 `context_length`（例：「上下文长度 100 不能小于当前
+            输出上限（1234）；如需下调请显式传入 max_output_tokens」）。
+            存量上限为 0（未配置）时任意下调都放行。
+            同一次请求里把两者一起下调是允许的——此时由 `max_output_tokens`
+            一侧校验「新上限 ≤ 新上下文」，与字段先后无关。
         max_output_tokens:
           type: integer
           format: int64
@@ -4667,6 +7927,150 @@ components:
             vision: {type: boolean}
             json_mode: {type: boolean}
         reason: {type: string, description: 写审计用的变更原因}
+    AdminModel:
+      type: object
+      required: [id, model_name, display_name, region, model_type, protocol_id, protocol, context_length, max_output_tokens, capability_mask, capabilities, listing_state, recommend_weight, aliases, pricing, created_at, updated_at]
+      description: |
+        模型主数据视图（`ops/modelView`）。字段直接对应 `modelSelectColumns`
+        选出的列与 `attachModelDetails` 补齐的别名/能力/价目。
+      properties:
+        id: {type: integer, format: int64}
+        model_name:
+          type: string
+          maxLength: 128
+          description: 客户端可见的唯一标识（`t_model.model_name`），改名走 PATCH 的 model_name
+        display_name: {type: string, maxLength: 128}
+        region: {type: string, enum: [DOMESTIC, OVERSEAS]}
+        model_type: {type: string, enum: [TEXT, IMAGE, EMBEDDING]}
+        protocol_id: {type: integer, format: int64}
+        protocol: {type: string, description: 协议 code（`t_protocol.code`）}
+        primary_channel_id:
+          type: integer
+          format: int64
+          description: 缺省主渠道；未指定时该字段不返回（Go 侧 `omitempty`）
+        context_length:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 输入＋输出的总窗口（`t_model.context_length`）；0 = 未知
+        max_output_tokens:
+          type: integer
+          format: int64
+          minimum: 0
+          description: |
+            模型自身的输出上限（`t_model.max_output_tokens`）。
+            `0` = 未配置，网关按 `min(context_length, 32768)` 兜底估算。
+            与平台输出上限（32768，客户端 `max_tokens` 的硬上限）不是同一个量，
+            不要混用；网关估算在该值 > 0 时直接采用它，不再裁剪到
+            `context_length`。
+        capability_mask: {type: integer, format: int64, description: 能力位图（bit0 STREAM / bit1 TOOL_CALL / bit2 VISION / bit3 JSON_MODE）}
+        capabilities: {$ref: '#/components/schemas/ModelCapabilities'}
+        listing_state: {type: string, enum: [LISTED, CATALOG_ONLY, DELISTED]}
+        recommend_weight:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 1000
+          description: 仅 LISTED 可为非 0；离开 LISTED 自动归零
+        published_at:
+          type: string
+          format: date-time
+          description: 首次上架时间；从未上架时不返回
+        delisted_at:
+          type: string
+          format: date-time
+          description: 转为 DELISTED 的时间；未下架时不返回
+        aliases:
+          type: array
+          items: {type: string}
+          description: 启用中的别名（`t_model_alias.alias_name`，`enabled = 1`）
+        pricing:
+          description: 当前生效价目（`t_price_rule`）；没有生效价目时为 null，不返回假的 0
+          anyOf: [{$ref: '#/components/schemas/AdminModelPricing'}, {type: "null"}]
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    AdminModelPricing:
+      type: object
+      required: [price_rule_id, version, effective_from, in_price_micro_per_k, out_price_micro_per_k, per_call_price_micro]
+      description: |
+        模型当前生效的价目行（`ops/modelPricingView`）。与客户端目录的
+        `ModelPricing` 不是同一个视图：这里没有换算成积分/人民币的展示字段，
+        多出上游成本字段（仅运营与财务可见）。
+      properties:
+        price_rule_id: {type: integer, format: int64}
+        version: {type: integer, format: int64}
+        effective_from: {type: string, format: date-time}
+        in_price_micro_per_k: {type: integer, format: int64, description: 每千输入 token 的微积分价}
+        out_price_micro_per_k: {type: integer, format: int64}
+        per_call_price_micro: {type: integer, format: int64, description: 按次计费价；0 = 不按次}
+        cache_hit_ratio_bp: {type: integer, format: int64, description: 缓存命中计费比例（万分比）；未配置时不返回}
+        cache_write_ratio_bp: {type: integer, format: int64, description: 未配置时不返回}
+        long_ctx_threshold_tokens: {type: integer, format: int64, description: 长上下文档位起点；未配置时不返回}
+        long_ctx_in_price_micro_per_k: {type: integer, format: int64, description: 未配置时不返回}
+        long_ctx_out_price_micro_per_k: {type: integer, format: int64, description: 未配置时不返回}
+        cost_in_micro_per_k: {type: integer, format: int64, description: 上游成本（每千输入 token）；未配置时不返回}
+        cost_out_micro_per_k: {type: integer, format: int64, description: 未配置时不返回}
+        cost_per_call_micro: {type: integer, format: int64, description: 未配置时不返回}
+    AdminModelList:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AdminModel'}
+        page: {type: integer}
+        page_size: {type: integer}
+        total: {type: integer, format: int64}
+    AdminModelDetail:
+      type: object
+      required: [model]
+      properties:
+        model: {$ref: '#/components/schemas/AdminModel'}
+    AdminModelListingStateRequest:
+      type: object
+      required: [listing_state]
+      properties:
+        listing_state: {type: string, enum: [LISTED, CATALOG_ONLY, DELISTED]}
+        reason: {type: string, description: 写审计用的变更原因；可为空串}
+    AdminModelRecommendWeightRequest:
+      type: object
+      required: [recommend_weight]
+      properties:
+        recommend_weight: {type: integer, format: int64, minimum: 0, maximum: 1000, description: 非 0 只允许在 LISTED 状态下设置}
+        reason: {type: string, description: 写审计用的变更原因；可为空串}
+    AdminAlias:
+      type: object
+      required: [alias_name, source, created_at]
+      description: 模型别名（`t_model_alias`），`enabled = 1` 的行才会出现在列表里
+      properties:
+        alias_name: {type: string, maxLength: 128, description: 全局唯一的别名（uk_alias_name）}
+        source: {type: string, description: 来源标记；运营手工创建恒为 OPS}
+        created_at: {type: string, format: date-time}
+    AdminAliasList:
+      type: object
+      required: [model_id, aliases]
+      description: 别名列表不分页（四件套只用于分页接口）
+      properties:
+        model_id: {type: integer, format: int64}
+        aliases:
+          type: array
+          items: {$ref: '#/components/schemas/AdminAlias'}
+    AdminAliasDetail:
+      type: object
+      required: [alias]
+      properties:
+        alias: {$ref: '#/components/schemas/AdminAlias'}
+    AdminAliasCreateRequest:
+      type: object
+      required: [alias_name]
+      properties:
+        alias_name: {type: string, minLength: 1, maxLength: 128, description: 去首尾空白后按 rune 计 1..128}
+    AdminAliasDeleteResult:
+      type: object
+      required: [deleted, alias_name]
+      properties:
+        deleted: {type: boolean, description: 删除成功恒为 true（失败走 404）}
+        alias_name: {type: string}
     AdminOverviewToday:
       type: object
       required: [requests, consumed_micro, success_rate_bp]

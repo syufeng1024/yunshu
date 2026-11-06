@@ -671,6 +671,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/announcements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 公告分页列表（含草稿与已下线）
+         * @description 只列未软删的行。`state` 的 `SCHEDULED` 是「到点自动发布」的内部标记，与普通草稿必须区分，否则定时任务会把没审过的草稿发出去。
+         */
+        get: operations["listAdminAnnouncements"];
+        put?: never;
+        /**
+         * 新建公告（publish_at 决定草稿 / 定时 / 立即发布）
+         * @description `publish_at` 缺省 → `DRAFT`；给未来时间 → `SCHEDULED`；给当前或过去时间
+         *     → `PUBLISHED`。`position_mask` 是 1..15 的位图（四个展示位）。
+         *     `model_ids` 落 `t_announcement_model`，同时收窄 F16-4 的促销冲突检查；
+         *     空数组表示不关联，冲突检查覆盖全部模型。
+         *     `PROMOTION` 类公告若撞上任何模型 7 天涨价公示期，返回 400 并说明改类型或
+         *     等公示期结束。
+         */
+        post: operations["createAdminAnnouncement"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/announcements/{id}/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 发布公告（可指定发布时间）
+         * @description 已是 `PUBLISHED` 的公告重复发布返回 409。请求体可省略；给了
+         *     `publish_at` 就按该时间发布。`PROMOTION` 类公告在发布时同样做涨价公示期
+         *     冲突检查。
+         */
+        post: operations["publishAdminAnnouncement"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/announcements/{id}": {
         parameters: {
             query?: never;
@@ -868,6 +919,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/users/{id}/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 运营禁用账号（需填写原因，写审计）
+         * @description 把 `t_user.status` 置为 `DISABLED`，同时写
+         *     `disable_source=OPS_MANUAL`、`disable_reason`、`disabled_at`、
+         *     `disabled_by`，并写一条 `USER/DISABLE` 审计（reason 落在审计的 reason 列）。
+         *     不能禁用当前登录账号（409）。禁用不会改动余额，也不会动该账号的 Key。
+         */
+        post: operations["disableAdminUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/users/{id}/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 运营启用账号（无请求体）
+         * @description 把账号恢复为 `NORMAL` 并清空 `disable_*` / `disabled_at` / `disabled_by`，
+         *     写一条 `USER/ENABLE` 审计。**不接收请求体**：hint 与原因都不需要。
+         *     处于 `FROZEN_OVERDRAFT`（透支冻结）的账号拒绝启用——那是计费状态，
+         *     不是运营封禁，充值后由账务自动恢复。
+         */
+        post: operations["enableAdminUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/whoami": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 当前登录运营的身份与权限列表
+         * @description `uid` 是字符串（避免前端把 int64 当浮点）。`permissions` 是角色到权限的
+         *     静态映射结果（`mw.PermissionsFor`），前端据此决定菜单与按钮的可见性；
+         *     真正的拦截仍在服务端每条路由的 `mw.Require` 上。
+         */
+        get: operations["getAdminWhoami"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/channels": {
         parameters: {
             query?: never;
@@ -878,7 +997,115 @@ export interface paths {
         /** 运营渠道列表（含近 15 分钟成功率 success_rate_bp） */
         get: operations["listAdminChannels"];
         put?: never;
+        /**
+         * 新建上游渠道（密钥服务端加密存储）
+         * @description `upstream_key` 只在这一层出现：服务端用 `CHANNEL_KEY_KEK` 封装成 v1
+         *     信封写入 `t_channel.upstream_key_enc`，响应只回 `upstream_key_mask`。
+         *     名重复（含软删行，`t_channel.name` 唯一）返回 400 `invalid_request_body`，
+         *     不是 409——这是代码当前的行为。`region` 不接受 OVERSEAS（V1.0 仅境内）。
+         *     新建渠道不会重发路由快照：新渠道还没有任何 `t_route`。
+         */
+        post: operations["createAdminChannel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/channels/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 渠道详情 */
+        get: operations["getAdminChannel"];
+        put?: never;
         post?: never;
+        /**
+         * 软删渠道（仍被路由引用的渠道拒绝）
+         * @description 写 `deleted_at` 软删并清掉专用用户绑定，行本身留着。仍被 `t_route`
+         *     引用时返回 409 `channel_in_use`，hint 给出两条出路（先删路由，或改用
+         *     disable 停用）。渠道原本是启用状态时，提交后重发路由快照。
+         */
+        delete: operations["deleteAdminChannel"];
+        options?: never;
+        head?: never;
+        /**
+         * 修改渠道（部分更新，未出现的字段保持原值）
+         * @description 先把请求体合并到当前行再整体校验，所以 `null` 与缺省不同：不给就是不动。
+         *     `upstream_key` 给了就重新加密并刷新掩码与 `key_rotation_at`。
+         *     影响分发（权重 / 优先级 / 启用 / 区域 / 协议 / 超时 / 上游模型名映射等）
+         *     时在提交后重发 `cfg:snap:ROUTING` 快照。
+         */
+        patch: operations["updateAdminChannel"];
+        trace?: never;
+    };
+    "/api/admin/channels/{id}/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 停用渠道（幂等：本来就停用时不做任何写操作）
+         * @description 只把 `enabled` 置 0，不删行、不动路由。已停用时不重复写、不写审计，
+         *     直接返回当前状态。状态确实变了才重发 `cfg:snap:ROUTING`。
+         */
+        post: operations["disableAdminChannel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/channels/{id}/upstream-models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 用渠道自己的密钥读取上游 /v1/models
+         * @description 服务端解密 `upstream_key_enc` 后直接请求上游的 OpenAI 兼容 `/v1/models`，
+         *     10 秒超时、响应体上限 1 MB。不走 `HTTPS_PROXY`（与控制面出口策略一致）。
+         *     结果按 `id` 升序，并用 `t_channel.upstream_model_name_map` 标注
+         *     `platform_model`。这是只读探测：不写库、不建模型。
+         */
+        get: operations["listAdminChannelUpstreamModels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/channels/{id}/register-upstream-models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 把选中的上游模型登记为平台模型（CATALOG_ONLY）并建路由
+         * @description 服务端重新读一遍上游目录再落库，不信任请求里给的名字：`context_length`
+         *     取上游报的值，`display_name` 取上游的 `name`（为空时用 id）。
+         *     已登记（`t_model.model_name` 命中）的不重复建，但仍会补一条本渠道的
+         *     `t_route`，所以重复点击是幂等的收尾而不是报错——这类行进 `skipped`，
+         *     reason 为 `already_registered` 或 `already_registered_route_added`。
+         *     定价与上架不在这里做：新建模型恒为 `CATALOG_ONLY` 且无价目。
+         *     有新建行时提交后重发路由快照。
+         */
+        post: operations["registerAdminChannelUpstreamModels"];
         delete?: never;
         options?: never;
         head?: never;
@@ -946,7 +1173,16 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * 模型主数据分页列表（运营与财务共用，含上游成本价）
+         * @description 只返回未软删（`deleted_at IS NULL`）的行，权限是 `admin.read` 而不是
+         *     `model.read`：该视图带上游成本价，`model.read` 留给客户端目录。
+         *     `q` 同时匹配 `model_name`、`display_name` 与启用中的别名（`t_model_alias`），
+         *     `!` 是 LIKE 转义符。
+         *     `model_type` / `listing_state` / `region` / `protocol` 入参先 trim 再转大写，
+         *     `text` 与 `TEXT` 等价。读操作不重发 `cfg:snap:ROUTING` 快照。
+         */
+        get: operations["listAdminModels"];
         put?: never;
         /**
          * 新建平台模型（可同时建默认路由）
@@ -957,6 +1193,595 @@ export interface paths {
          *     listing_state=LISTED 时提交后重发快照。
          */
         post: operations["createAdminModel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/models/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 模型详情 */
+        get: operations["getAdminModel"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * 修改模型主数据（部分更新）
+         * @description 只更新请求体里出现的字段；一个可改字段都没给时返回 400
+         *     `invalid_request_body`（message 为 `body`）。
+         *     改名（`model_name`）只有在与当前值不同时才做唯一性检查：新名不得与其它
+         *     模型的 `model_name` 或别名冲突。`primary_channel_id` 必须是境内渠道。
+         *     转为 `LISTED` 时必须有当前生效价目；离开 `LISTED` 时
+         *     `recommend_weight` 自动归零。写操作按需重发 `cfg:snap:ROUTING` 快照。
+         */
+        patch: operations["updateAdminModel"];
+        trace?: never;
+    };
+    "/api/admin/models/{id}/listing-state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 单独修改模型的上架状态（可带变更原因）
+         * @description 等价于只 PATCH `listing_state`：走同一条更新路径，因此同样的前置条件
+         *     生效（转 `LISTED` 需要生效价目；离开 `LISTED` 自动清零推荐权重），
+         *     审计的 `reason` 取请求体的 `reason`。
+         */
+        post: operations["setAdminModelListingState"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/models/{id}/recommend-weight": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 单独修改模型的推荐权重
+         * @description 非 0 权重只对 `LISTED` 有意义：模型不在 `LISTED` 时返回 409
+         *     `resource_state_conflict`（message 会带出当前状态）。
+         */
+        post: operations["setAdminModelRecommendWeight"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/models/{id}/aliases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 模型当前启用中的别名
+         * @description 只返回 `enabled = 1` 的行，按 `alias_name` 升序。不分页。
+         */
+        get: operations["listAdminModelAliases"];
+        put?: never;
+        /**
+         * 为模型新增一个别名
+         * @description `source` 恒为 `OPS`（运营手工添加）。别名全局唯一：已被其它模型占用，
+         *     或与其它模型的 `model_name` 相同，都返回 409 `resource_state_conflict`，
+         *     message 会带出冲突模型的名称与 id。唯一键 `uk_alias_name` 没有
+         *     `deleted_at` 谓词，软删的模型仍然占着它的别名。
+         */
+        post: operations["createAdminModelAlias"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/models/{id}/aliases/{alias}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * 删除模型的指定别名（物理删除）
+         * @description 删的是 `t_model_alias` 的行本身（不是置 `enabled=0`），并写一条
+         *     `MODEL_ALIAS_DELETE` 审计。别名不存在与模型不存在都返回 404，
+         *     不区分。
+         */
+        delete: operations["deleteAdminModelAlias"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/prices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 模型价目分页列表（t_price_rule，scope_level=MODEL）
+         * @description 只列 `scope_level='MODEL'` 且模型未软删的行。`enabled` 过滤的是价目行
+         *     自己的开关，不是模型的上下架状态。排序默认 `created_at`，与 `id` 一起
+         *     作为次级排序键。权限是 `price.write`（OPS 与 FINANCE 之外的超管也持有）。
+         */
+        get: operations["listAdminPrices"];
+        put?: never;
+        /**
+         * 新增一版价目（版本号自增，冲突与毛利地板在事务内校验）
+         * @description 写一条新的 `t_price_rule`，`version` 取该模型现有最大版本 +1；行先插入
+         *     再查冲突，所以 409 能同时给出新行 id 与它撞上的那一行（A12）。
+         *     三道写时闸门，顺序固定：毛利地板（值）→ 7 天涨价公示（时间）→
+         *     窗口冲突（数据一致性）。
+         *     - 地板：`3×售价×倍率 ≥ 40000×成本`（整数运算）。任一维度没有成本价时
+         *       必须显式 `confirm_no_cost=true`，否则 400 并列出缺哪些成本价。
+         *     - 公示：涨价（只看对客售价）最早只能 7 天后生效，`effective_from` 更早
+         *       则 400；`effective_from` 缺省或早于服务端 now 时会被夹到 now。
+         *     - 冲突：同窗口内价格不同的行返回 409 `price_conflict`。
+         *     提交后重建 K19 价目快照，失败返回 503（价格已落库但网关还看不到）。
+         */
+        post: operations["createAdminPrice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/prices/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * 修改一版价目（不可改 model_id）
+         * @description 改的是这一行本身（不会自动生成新版本）。`model_id` 一律拒绝：把一条价目
+         *     挪到另一个模型会同时改掉两个模型的价格，正确做法是删掉重建。
+         *     字段缺省表示不改；`clear_fields` 用来把可空列显式置 NULL（可清字段见该
+         *     schema 的说明），同一个字段既赋值又出现在 `clear_fields` 里会 400。
+         *     校验与创建同一套（地板 → 公示 → 冲突），提交后重建 K19。
+         */
+        patch: operations["updateAdminPrice"];
+        trace?: never;
+    };
+    "/api/admin/groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 价格分组全量列表（不分页）
+         * @description 分组是配置项而不是数据集：这个接口一次返回全部行（`items` + `total`，
+         *     **没有** `page` / `page_size`），按 `ratio_bp` 降序、`id` 升序。
+         *     `model_ids` / `channel_ids` 是 `model_scope_mode` / `channel_scope_mode`
+         *     为 `SELECTED` 时的白名单成员。
+         */
+        get: operations["listAdminGroups"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/groups/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * 修改价格分组（倍率、范围、毛利下限、启停）
+         * @description 倍率可以给 `ratio_bp`（整数万分比）或 `ratio`（十进制，最多 4 位小数），
+         *     两个都给时必须一致，否则 400。`ratio` = 0 只允许 `internal` 分组
+         *     （语义是「不计费」），其它分组必须 > 0。
+         *     `internal` 分组保存还额外要求：`confirm=true` + 非空 `reason`，且
+         *     `channel_scope_mode=SELECTED` 的白名单里不能包含当前权重最高的启用渠道。
+         *     改倍率（非 internal）会对范围内每个模型做毛利地板校验；范围内有无成本价
+         *     的模型时，需要 `confirm=true` 才继续，否则 400 并额外返回 `warnings[]`。
+         *     倍率真的变了才把新倍率下发给该分组用户的 Key，响应里的 `key_sync` 说明
+         *     同步结果。
+         */
+        patch: operations["updateAdminGroup"];
+        trace?: never;
+    };
+    "/api/admin/orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 全平台充值订单分页列表（财务核对线下打款用）
+         * @description 不按会话过滤：这个接口存在的意义就是让财务看到每一个客户的待付订单。
+         *     `state` 与 `q` 取交集：`q` 同时匹配订单号与付款账号邮箱（`!` 为 LIKE
+         *     转义符）。只读，不改订单状态。
+         *     注意 `state` 的取值是大小写不敏感的小写词，而非法时返回的
+         *     `invalid_query_parameter` message 是 `status`（实现读的键叫 `state`，
+         *     错误字段名沿用旧名；此处按实现如实登记，见 T49 报告）。
+         */
+        get: operations["listAdminOrders"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/orders/{id}/confirm-payment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 运营确认线下到账（幂等：同一流水号重复提交不二次入账）
+         * @description `bank_txn_no` 是运营手里的打款凭证号，必填且是幂等的锚点：同一流水号再次
+         *     提交同一订单返回 `replayed=true`、不写第二笔入账。入账（订单状态、账本
+         *     批次与流水、审计）在同一事务内完成。
+         */
+        post: operations["confirmAdminOrderPayment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/orders/{id}/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 关闭未支付订单（幂等：已关闭的重放返回 replayed=true）
+         * @description 关单后该订单不能再支付。`reason` 必填（2..100 字）并写入审计：一张没有
+         *     理由的作废单无法向客户与审计交代。已关闭时重复调用返回 `replayed=true`。
+         */
+        post: operations["closeAdminOrder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/redeem-codes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 兑换码批次分页列表
+         * @description 批次维度，不含明码：明文兑换码只在创建那一次的响应里出现。
+         */
+        get: operations["listAdminRedeemBatches"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/redeem-codes/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 生成一批兑换码（明码只返回这一次）
+         * @description 批次行、全部兑换码与审计在同一事务内写入：一批码插不进去就不会留下一个
+         *     「已发行数量」与实际不存在的码。`codes` 是明文唯一一次离开服务端的时机，
+         *     不落库、不写日志、不进审计。`credit_target` 缺省 `BONUS`
+         *     （兑换积分不计退款额度）。
+         */
+        post: operations["createAdminRedeemBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/reviews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 审核中心队列（默认只看 PENDING）
+         * @description 队列行来自 `t_review_task`，响应里补齐申请人名称与该单据的关键业务事实，
+         *     运营不必再开一页就能决策。`anomaly=true` 表示业务行已不存在；这种行不会
+         *     让列表失败，只做标记。排序固定 `created_at ASC, id ASC`，**不支持 sort
+         *     参数**（传了就是 400）。
+         */
+        get: operations["listAdminReviews"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/reviews/{id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 通过一张单据（审批人与申请人不得是同一人）
+         * @description 请求体可省略（空体等于不给 reason）。审核 `INVOICE_APPLY` 时必须给
+         *     `invoice_url`：没有凭证的开票不允许被标记为已开具。
+         *     不变量优先于请求体形状：**审批人 = 申请人时一律 403 `permission_denied`**
+         *     （职责分离，不是参数错误），且这次拒绝会写一条拒审记录。队列行不是
+         *     PENDING 时返回 409。通过与对应业务状态的推进在同一事务内完成。
+         */
+        post: operations["approveAdminReview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/reviews/{id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 驳回一张单据（必须写原因）
+         * @description `reason` 必填（≤255 字）：驳回不写钱，但单据与队列行必须在一个事务里一起
+         *     移动。职责分离先于请求体形状校验——审批人 = 申请人时即使原因空着也是
+         *     403，不能让自审者因为缺 reason 拿到不同的答案。
+         */
+        post: operations["rejectAdminReview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/risk/rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 风控规则分页列表 */
+        get: operations["listAdminRiskRules"];
+        put?: never;
+        /**
+         * 新建风控规则
+         * @description `metric` / `operator` / `action` / `scope` 都必须命中枚举；`window_seconds`
+         *     取 1..2592000（30 天）。`action_param` 是透传的 JSON 对象，原样落库。
+         */
+        post: operations["createAdminRiskRule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/risk/rules/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * 停用风控规则（置 enabled=0，不删行）
+         * @description 把 `enabled` 置 0 并写审计，行保留（命中历史仍要能指回规则）。本来就是
+         *     停用状态时不重复写。响应 `enabled` 恒为 false。
+         */
+        delete: operations["deleteAdminRiskRule"];
+        options?: never;
+        head?: never;
+        /**
+         * 修改风控规则（部分更新）
+         * @description 字段语义同创建，缺省表示不改；一个可改字段都没给时 400（message 为 `body`）。
+         */
+        patch: operations["updateAdminRiskRule"];
+        trace?: never;
+    };
+    "/api/admin/risk/hits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 风控命中记录分页列表 */
+        get: operations["listAdminRiskHits"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/risk/users/{id}/score": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 人工设定账号风险分（0–100）
+         * @description 直接覆盖 `t_user.risk_score` 并写审计（`reason` 进审计，不进用户表）。
+         *     响应回传旧值，便于运营确认改动的方向与幅度。
+         */
+        post: operations["setAdminUserRiskScore"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 运行时配置全量读取（含默认值回填）
+         * @description 列出注册表里的全部键；数据库没有行时用注册表默认值顶上，`source`
+         *     区分 `ROW` 与 `DEFAULT`。`runtime_writable` 标出可在线修改的键；
+         *     这 45 个键按设计不含任何密钥，所以不需要脱敏。
+         */
+        get: operations["getAdminConfig"];
+        /**
+         * 批量写入运行时配置并发布（部分键、原子生效）
+         * @description `values` 是 key → 原始 JSON 值的映射，一次最多写
+         *     `RuntimeKeyCount` 个键。校验顺序：非空 → 键数上限 → 键是否可在线改 →
+         *     值是否通过该键自己的校验器。任一键不合法整批拒绝（`config_value_invalid`，
+         *     message 指出是哪个键）。写入后发布配置快照，发布失败返回 503——
+         *     已落库但网关还看不到。
+         */
+        put: operations["putAdminConfig"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/integrations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 第三方工具深链配置全量列表（五行固定）
+         * @description 五条记录由迁移种子写入且固定：这个接口不会有第六行，也不能新增。
+         */
+        get: operations["listAdminIntegrations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/integrations/{toolKey}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * 修改某个工具的启用状态与深链模板
+         * @description `tool_key` 与 `display_name` 不可改。`deep_link_template` 缺省或显式
+         *     `null` 都表示不动；传空串表示清空。启用一个没有模板的工具会被拒绝
+         *     （400）：空模板会让前端拼出坏链接。
+         */
+        patch: operations["updateAdminIntegration"];
+        trace?: never;
+    };
+    "/api/admin/upstream-bills/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 手工导入上游账单（对账数据，按渠道 + 账期幂等 upsert）
+         * @description `rows` 全部校验通过才开事务：第 N 行有问题时表不会被写进 1..N-1 行。
+         *     `bill_period` 只接受 `YYYY-MM-DD` 或 `YYYYMMDD` 两种按日账期——月度账期
+         *     虽然列注释允许，但对账按日读取，写进去也永远不会被看到，所以这里直接
+         *     400。每行原样存进 `raw_row`，未知上游列既不报错也不丢。
+         *     返回的 inserted / updated / unchanged 来自 upsert 的影响行数。
+         */
+        post: operations["importAdminUpstreamBills"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2692,6 +3517,20 @@ export interface components {
             /** Format: date-time */
             created_at: string;
         };
+        /** @description 禁用必须给原因；原因同时写 `t_user.disable_reason` 与审计的 reason 列 */
+        AdminUserDisableRequest: {
+            /** @description 去首尾空白后按 rune 计 1..255，空白串视为缺失 */
+            reason: string;
+        };
+        /** @description handleAdminWhoami 的响应（定义在 internal/control/server.go，不在 ops 包） */
+        AdminWhoami: {
+            /** @description 字符串形式的 t_user.id（int64 避免前端精度丢失） */
+            uid: string;
+            /** @enum {string} */
+            role: "PERSONAL" | "OPS" | "FINANCE" | "SUPER_ADMIN";
+            /** @description 该角色持有的权限常量列表（mw.PermissionsFor 的返回） */
+            permissions: string[];
+        };
         AdminUserDetail: {
             user: components["schemas"]["AdminUser"];
             balance: components["schemas"]["AdminCreditBalance"];
@@ -2829,6 +3668,1073 @@ export interface components {
             page_size: number;
             /** Format: int64 */
             total: number;
+        };
+        AdminChannelDetail: {
+            channel: components["schemas"]["AdminChannel"];
+        };
+        /**
+         * @description 新建渠道。除五个必填项外全部有默认值；默认值与 `validateCreateChannel`
+         *     一致。`region` 只接受 `DOMESTIC`（V1.0 仅境内渠道），给 `OVERSEAS` 返回
+         *     400 并在 message 里说明这是产品限制而不是笔误。
+         */
+        AdminChannelCreateRequest: {
+            /** @description 去首尾空白后按 rune 计 1..64；与软删行也算重复，重复返回 400 */
+            name: string;
+            /**
+             * Format: int64
+             * @description 必须存在于 t_protocol
+             */
+            protocol_id: number;
+            /**
+             * @description V1.0 仅境内；传 OVERSEAS 返回 400
+             * @enum {string}
+             */
+            region: "DOMESTIC";
+            /** @description https 任意主机；http 只允许私有/回环地址（与网关出口策略一致） */
+            base_url: string;
+            /** @description 明文上游密钥，服务端用 CHANNEL_KEY_KEK 封装后入库；响应只回掩码 */
+            upstream_key: string;
+            /**
+             * @default ALL
+             * @enum {string}
+             */
+            group_scope_mode: "ALL" | "SELECTED";
+            /**
+             * @default ALL
+             * @enum {string}
+             */
+            dedicated_scope_mode: "ALL" | "SELECTED";
+            /** @description 只有 dedicated_scope_mode=SELECTED 时才允许非空，否则 400 */
+            dedicated_user_ids?: number[];
+            /** @default false */
+            fallback_allowed: boolean;
+            /**
+             * Format: int64
+             * @default 100
+             */
+            weight: number;
+            /**
+             * Format: int64
+             * @default 100
+             */
+            priority: number;
+            /**
+             * Format: int64
+             * @default 3000
+             */
+            timeout_connect_ms: number;
+            /**
+             * Format: int64
+             * @default 60000
+             */
+            timeout_first_byte_ms: number;
+            /**
+             * Format: int64
+             * @default 120000
+             */
+            timeout_total_ms: number;
+            /**
+             * Format: int64
+             * @description 上限 2 是硬约束
+             * @default 2
+             */
+            retry_max: number;
+            /** @default true */
+            stream_supported: boolean;
+            /**
+             * @default UNKNOWN
+             * @enum {string}
+             */
+            stream_usage_mode: "NATIVE" | "STREAM_OPTIONS" | "ESTIMATE" | "UNKNOWN";
+            /**
+             * @description 平台模型名/别名 → 上游真实模型名。键必须是已登记模型名或启用中的别名，
+             *     否则 400；最多 200 条，键与值都按 rune 计不超过 128。
+             */
+            upstream_model_name_map?: {
+                [key: string]: string;
+            };
+            /** @default true */
+            enabled: boolean;
+        };
+        /**
+         * @description 与创建同名的字段同语义，但全部可选：缺省表示「不动」。合并到当前行后再
+         *     整体校验，因此单独发 `dedicated_scope_mode` 也可能因为存量
+         *     `dedicated_user_ids` 非法而被拒。
+         */
+        AdminChannelPatchRequest: {
+            /** @description 与软删行也算重复，重复返回 400 */
+            name?: string;
+            /** Format: int64 */
+            protocol_id?: number;
+            /** @enum {string} */
+            region?: "DOMESTIC";
+            base_url?: string;
+            /** @description 给了就重新加密并刷新掩码与 key_rotation_at */
+            upstream_key?: string;
+            /** @enum {string} */
+            group_scope_mode?: "ALL" | "SELECTED";
+            /** @enum {string} */
+            dedicated_scope_mode?: "ALL" | "SELECTED";
+            /** @description 缺省保留现有关系；[] 清空 */
+            dedicated_user_ids?: number[];
+            fallback_allowed?: boolean;
+            /** Format: int64 */
+            weight?: number;
+            /** Format: int64 */
+            priority?: number;
+            /** Format: int64 */
+            timeout_connect_ms?: number;
+            /** Format: int64 */
+            timeout_first_byte_ms?: number;
+            /** Format: int64 */
+            timeout_total_ms?: number;
+            /** Format: int64 */
+            retry_max?: number;
+            stream_supported?: boolean;
+            /** @enum {string} */
+            stream_usage_mode?: "NATIVE" | "STREAM_OPTIONS" | "ESTIMATE" | "UNKNOWN";
+            /** @description 缺省保留现有映射；{} 清空 */
+            upstream_model_name_map?: {
+                [key: string]: string;
+            };
+            enabled?: boolean;
+        };
+        AdminChannelDeleteResult: {
+            /** Format: int64 */
+            id: number;
+            /** @description 软删成功恒为 true（失败走 404/409） */
+            deleted: boolean;
+        };
+        /** @description 上游 `/v1/models` 的一条记录（`ops/upstreamModelItem`），外加平台侧标注 */
+        AdminUpstreamModel: {
+            /** @description 上游模型名，也是 `model_ids` 里要传的值 */
+            id: string;
+            /** @description 上游给的展示名；上游没给时不返回 */
+            name?: string;
+            /**
+             * Format: int64
+             * @description 上游报的上下文窗口；上游没给时不返回
+             */
+            context_window?: number;
+            /**
+             * Format: int64
+             * @description 上游报的输出上限；上游没给时不返回
+             */
+            max_output_tokens?: number;
+            /** @description 平台是否已有同名模型（t_model.model_name） */
+            registered: boolean;
+            /** @description 该上游名映射到的平台模型（t_channel.upstream_model_name_map）；没有映射时不返回 */
+            platform_model?: string;
+        };
+        /** @description 不分页：上游一次给多少就是多少（响应体上限 1 MB） */
+        AdminUpstreamModelList: {
+            items: components["schemas"]["AdminUpstreamModel"][];
+        };
+        AdminRegisterUpstreamModelsRequest: {
+            /** @description 上游模型名（`AdminUpstreamModel.id`）；去空白后去重，空串忽略。上游目录里没有的名字使整批 400 */
+            model_ids: string[];
+        };
+        /** @description 本次真的新建的平台模型（恒为 CATALOG_ONLY、无价目） */
+        AdminRegisterUpstreamModelsCreated: {
+            /** Format: int64 */
+            model_id: number;
+            model_name: string;
+            /** @description 同一事务里是否也建了 t_route（唯一键冲突时为 false） */
+            route_created: boolean;
+        };
+        /** @description 已登记过、因此没有新建行的条目 */
+        AdminRegisterUpstreamModelsSkipped: {
+            model_name: string;
+            /**
+             * @description already_registered_route_added = 模型早就有，但这次补了一条本渠道的路由
+             * @enum {string}
+             */
+            reason: "already_registered" | "already_registered_route_added";
+        };
+        AdminRegisterUpstreamModelsResult: {
+            created: components["schemas"]["AdminRegisterUpstreamModelsCreated"][];
+            skipped: components["schemas"]["AdminRegisterUpstreamModelsSkipped"][];
+        };
+        /** @description 一条模型价目（`ops/priceRuleView`，对应 t_price_rule 的一行） */
+        AdminPriceRule: {
+            /** Format: int64 */
+            id: number;
+            /**
+             * @description 本接口只暴露 MODEL 级价目
+             * @enum {string}
+             */
+            scope_level: "MODEL";
+            /** Format: int64 */
+            model_id: number;
+            /** @description 联查 t_model 得到；模型行不在了为空串 */
+            model_name: string;
+            /** @enum {string} */
+            model_type: "TEXT" | "IMAGE" | "EMBEDDING";
+            /** Format: int64 */
+            in_price_micro_per_k: number;
+            /** Format: int64 */
+            out_price_micro_per_k: number;
+            /** Format: int64 */
+            per_call_price_micro: number;
+            /**
+             * Format: int64
+             * @description 未配置时不返回
+             */
+            cache_hit_ratio_bp?: number;
+            /**
+             * Format: int64
+             * @description 未配置时不返回
+             */
+            cache_write_ratio_bp?: number;
+            /**
+             * Format: int64
+             * @description 长上下文档位起点；未配置时不返回
+             */
+            long_ctx_threshold_tokens?: number;
+            /**
+             * Format: int64
+             * @description 未配置时不返回
+             */
+            long_ctx_in_price_micro_per_k?: number;
+            /**
+             * Format: int64
+             * @description 未配置时不返回
+             */
+            long_ctx_out_price_micro_per_k?: number;
+            /**
+             * Format: int64
+             * @description 未配置时不返回
+             */
+            cost_in_micro_per_k?: number;
+            /**
+             * Format: int64
+             * @description 未配置时不返回
+             */
+            cost_out_micro_per_k?: number;
+            /**
+             * Format: int64
+             * @description 未配置时不返回
+             */
+            cost_per_call_micro?: number;
+            /** @description 恒为 CNY（写入时也只接受 CNY） */
+            currency_cost: string;
+            /**
+             * Format: int64
+             * @description 同一模型的版本号，创建时自增
+             */
+            version: number;
+            /** Format: date-time */
+            effective_from: string;
+            /**
+             * Format: date-time
+             * @description 生效终点；未配置时不返回（表示长期有效）
+             */
+            effective_to?: string;
+            enabled: boolean;
+            /** Format: date-time */
+            created_at: string;
+        };
+        AdminPriceRuleList: {
+            items: components["schemas"]["AdminPriceRule"][];
+            page: number;
+            page_size: number;
+            /** Format: int64 */
+            total: number;
+        };
+        AdminPriceRuleDetail: {
+            price: components["schemas"]["AdminPriceRule"];
+        };
+        /**
+         * @description 价格字段按模型类型分工：`TEXT` 要 `in/out_price_micro_per_k` > 0 且
+         *     `per_call_price_micro` 必须为 0；`IMAGE` 要 `per_call_price_micro` > 0 且
+         *     两个 token 价必须为 0；`EMBEDDING` 要 `in_price_micro_per_k` > 0，
+         *     `out_price_micro_per_k` 与 `per_call_price_micro` 必须为 0。
+         *     长上下文三件套是全有或全无：给了阈值就必须同时给两个长上下文价（都 > 0），
+         *     反之亦然。
+         */
+        AdminPriceCreateRequest: {
+            /**
+             * Format: int64
+             * @description 目标模型；不存在或已软删返回 404
+             */
+            model_id: number;
+            /**
+             * Format: int64
+             * @description 每千输入 token 的微积分价
+             */
+            in_price_micro_per_k?: number;
+            /** Format: int64 */
+            out_price_micro_per_k?: number;
+            /**
+             * Format: int64
+             * @description 按次/按张计费价
+             */
+            per_call_price_micro?: number;
+            /**
+             * Format: int64
+             * @description 缓存命中计费比例，上限 100000（=100%）
+             */
+            cache_hit_ratio_bp?: number;
+            /** Format: int64 */
+            cache_write_ratio_bp?: number;
+            /**
+             * Format: int64
+             * @description 给了它就必须同时给两个 long_ctx_* 价格
+             */
+            long_ctx_threshold_tokens?: number;
+            /**
+             * Format: int64
+             * @description 仅在与阈值同时给出时有效，且必须 > 0
+             */
+            long_ctx_in_price_micro_per_k?: number;
+            /**
+             * Format: int64
+             * @description 仅在与阈值同时给出时有效，且必须 > 0
+             */
+            long_ctx_out_price_micro_per_k?: number;
+            /**
+             * Format: int64
+             * @description 上游成本；缺失时需要 confirm_no_cost=true
+             */
+            cost_in_micro_per_k?: number;
+            /** Format: int64 */
+            cost_out_micro_per_k?: number;
+            /** Format: int64 */
+            cost_per_call_micro?: number;
+            /**
+             * @description 只接受 CNY（大小写不敏感），其它值 400
+             * @default CNY
+             * @enum {string}
+             */
+            currency_cost: "CNY";
+            /**
+             * Format: date-time
+             * @description 缺省或早于服务端 now 时夹到 now；涨价必须 ≥ now+7 天
+             */
+            effective_from?: string;
+            /**
+             * Format: date-time
+             * @description 必须晚于 effective_from，否则 400
+             */
+            effective_to?: string;
+            /** @default true */
+            enabled: boolean;
+            /** @description 把这些可空列置 NULL；白名单之外的值 400，与同名字段同时出现也 400 */
+            clear_fields?: ("cache_hit_ratio_bp" | "cache_write_ratio_bp" | "long_ctx_threshold_tokens" | "long_ctx_in_price_micro_per_k" | "long_ctx_out_price_micro_per_k" | "cost_in_micro_per_k" | "cost_out_micro_per_k" | "cost_per_call_micro" | "effective_to")[];
+            /**
+             * @description 售价值有、成本价缺失时的二次确认；不传则 400 并列出缺哪些成本价
+             * @default false
+             */
+            confirm_no_cost: boolean;
+        };
+        /**
+         * @description 与创建同名的价格字段同语义，全部可选（缺省 = 不改）。**不接受 `model_id`**：
+         *     出现即 400。`clear_fields` 与 `confirm_no_cost` 同创建。
+         */
+        AdminPricePatchRequest: {
+            /** Format: int64 */
+            in_price_micro_per_k?: number;
+            /** Format: int64 */
+            out_price_micro_per_k?: number;
+            /** Format: int64 */
+            per_call_price_micro?: number;
+            /** Format: int64 */
+            cache_hit_ratio_bp?: number;
+            /** Format: int64 */
+            cache_write_ratio_bp?: number;
+            /** Format: int64 */
+            long_ctx_threshold_tokens?: number;
+            /** Format: int64 */
+            long_ctx_in_price_micro_per_k?: number;
+            /** Format: int64 */
+            long_ctx_out_price_micro_per_k?: number;
+            /** Format: int64 */
+            cost_in_micro_per_k?: number;
+            /** Format: int64 */
+            cost_out_micro_per_k?: number;
+            /** Format: int64 */
+            cost_per_call_micro?: number;
+            /** @enum {string} */
+            currency_cost?: "CNY";
+            /**
+             * Format: date-time
+             * @description 缺省时保留原计划；显式给出且早于 now 时夹到 now
+             */
+            effective_from?: string;
+            /**
+             * Format: date-time
+             * @description 必须晚于 effective_from
+             */
+            effective_to?: string;
+            enabled?: boolean;
+            clear_fields?: ("cache_hit_ratio_bp" | "cache_write_ratio_bp" | "long_ctx_threshold_tokens" | "long_ctx_in_price_micro_per_k" | "long_ctx_out_price_micro_per_k" | "cost_in_micro_per_k" | "cost_out_micro_per_k" | "cost_per_call_micro" | "effective_to")[];
+            confirm_no_cost?: boolean;
+        };
+        /** @description 价格分组（`ops/groupView`，对应 t_price_group + 两张范围表） */
+        AdminGroup: {
+            /** Format: int64 */
+            id: number;
+            /** @description 分组编码，internal 分组不可改名且倍率恒为 0 */
+            code: string;
+            name: string;
+            /**
+             * Format: int64
+             * @description 倍率（万分比）；10000 = 1.0 倍
+             */
+            ratio_bp: number;
+            /** @enum {string} */
+            model_scope_mode: "ALL" | "SELECTED";
+            /** @enum {string} */
+            channel_scope_mode: "ALL" | "SELECTED";
+            self_service: boolean;
+            /**
+             * Format: int64
+             * @description 该分组的最低毛利（万分比）；未配置时不返回
+             */
+            min_margin_bp?: number;
+            remark: string;
+            enabled: boolean;
+            /** @description model_scope_mode=SELECTED 时的模型白名单 */
+            model_ids: number[];
+            /** @description channel_scope_mode=SELECTED 时的渠道白名单 */
+            channel_ids: number[];
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /** @description 分组不分页：只有 items + total（total = 返回条数），没有 page / page_size */
+        AdminGroupList: {
+            items: components["schemas"]["AdminGroup"][];
+            /** Format: int64 */
+            total: number;
+        };
+        AdminGroupKeySync: {
+            /** @description 受影响的 Key 数；倍率没变时为 0 */
+            keys: number;
+            /** @description 一致化是否成功；false 时 note 说明原因，配置已生效但不保证所有 Key 已刷到 */
+            ok: boolean;
+            /** @description ok=false 时的说明 */
+            note?: string;
+        };
+        AdminGroupDetail: {
+            group: components["schemas"]["AdminGroup"];
+            key_sync: components["schemas"]["AdminGroupKeySync"];
+            /** @description 已确认保存、但范围内有无成本价模型时的提示；为空表示全部做了地板校验 */
+            warnings?: string[];
+        };
+        /**
+         * @description 分组保存的 400。除了标准错误信封外，**顶层**多一个 `warnings[]`
+         *     （`writeGroupWarningError` 手写的信封，不是 apierr 的标准形状），
+         *     列出范围内没有成本价、地板无法校验的模型。
+         */
+        AdminGroupUpdateError: components["schemas"]["ErrorEnvelope"] & {
+            warnings?: string[];
+        };
+        /**
+         * @description 全部字段可选（缺省 = 不改）。`internal` 分组的保存必须带 `confirm=true`
+         *     与非空 `reason`；倍率改小会重算该分组用户 Key 上的倍率。
+         */
+        AdminGroupPatchRequest: {
+            name?: string;
+            /** @description 十进制倍率（如 1.5、"0.8"）；最多 4 位小数，整数部分 ≤ 1000000。与 ratio_bp 同时给出时必须一致 */
+            ratio?: number | string;
+            /**
+             * Format: int64
+             * @description 万分比整数形式（15000 = 1.5 倍）
+             */
+            ratio_bp?: number;
+            /** @enum {string} */
+            model_scope_mode?: "ALL" | "SELECTED";
+            /** @enum {string} */
+            channel_scope_mode?: "ALL" | "SELECTED";
+            self_service?: boolean;
+            /** Format: int64 */
+            min_margin_bp?: number;
+            remark?: string;
+            enabled?: boolean;
+            /** @description 缺省保留现有范围；[] 清空 */
+            model_ids?: number[];
+            /** @description 缺省保留现有范围；[] 清空 */
+            channel_ids?: number[];
+            /** @description internal 保存与「范围含无成本价模型」两种场景的二次确认 */
+            confirm?: boolean;
+            /** @description internal 保存必填，写入审计的 reason 列 */
+            reason?: string;
+        };
+        /** @description 运营视角的充值订单（`fund/adminOrderView` = 账号侧 `orderView` + 客户身份） */
+        AdminOrder: {
+            /** Format: int64 */
+            id: number;
+            order_no: string;
+            order_type: string;
+            /** @description 套餐 code；非套餐订单不返回 */
+            plan_code?: string;
+            /**
+             * Format: int64
+             * @description 应付金额（分）
+             */
+            pay_amount_fen: number;
+            /**
+             * Format: int64
+             * @description 应付金额（元，整数部分）
+             */
+            pay_amount_yuan: number;
+            /**
+             * Format: int64
+             * @description 到账充值积分（微积分）
+             */
+            recharge_micro: number;
+            /** Format: int64 */
+            bonus_micro: number;
+            /**
+             * Format: int64
+             * @description 到账充值（元）
+             */
+            recharge: number;
+            /** Format: int64 */
+            bonus: number;
+            pay_channel: string;
+            /** @enum {string} */
+            state: "PENDING" | "PAID" | "CLOSED" | "REFUNDING" | "REFUNDED" | "PARTIAL_REFUNDED";
+            /**
+             * Format: date-time
+             * @description 支付时间；未支付时为 null
+             */
+            paid_at: string;
+            /** Format: date-time */
+            expire_at: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: int64 */
+            user_id: number;
+            user_email: string;
+            user_nickname: string;
+            /** @description 渠道支付时为平台 trade_no，运营确认时为银行流水号；未支付时不返回 */
+            pay_txn_id?: string;
+        };
+        AdminOrderList: {
+            items: components["schemas"]["AdminOrder"][];
+            page: number;
+            page_size: number;
+            /** Format: int64 */
+            total: number;
+        };
+        AdminConfirmPaymentRequest: {
+            /** @description 银行流水号，运营的打款凭证；幂等锚点，同一号码重复提交不会二次入账 */
+            bank_txn_no: string;
+            /** @description 运营备注，写审计 */
+            note?: string;
+        };
+        AdminConfirmPaymentResult: {
+            order: components["schemas"]["AdminOrder"];
+            /** @description true = 钱已进账（幂等重放同样为 true） */
+            credited: boolean;
+            /** @description true = 该流水号此前已结算过这单，本次未写任何东西 */
+            replayed: boolean;
+        };
+        AdminCloseOrderRequest: {
+            /** @description 作废理由，按 rune 计 2..100，写审计 */
+            reason: string;
+        };
+        AdminCloseOrderResult: {
+            order: components["schemas"]["AdminOrder"];
+            /** @description true = 订单已不可支付 */
+            closed: boolean;
+            /** @description true = 本来就是 CLOSED，本次未写任何东西 */
+            replayed: boolean;
+        };
+        /** @description 兑换码批次（`fund/redeemBatchView`）。批次维度，不含明码。 */
+        AdminRedeemBatch: {
+            /** Format: int64 */
+            id: number;
+            batch_name: string;
+            /**
+             * Format: int64
+             * @description 面额（分）
+             */
+            face_value_fen: number;
+            /**
+             * Format: int64
+             * @description 面额（元，整数部分）
+             */
+            face_value_yuan: number;
+            /**
+             * Format: int64
+             * @description 计划生成数量
+             */
+            quantity: number;
+            /**
+             * Format: int64
+             * @description 实际生成数量
+             */
+            generated_count: number;
+            /**
+             * Format: int64
+             * @description 已兑换数量
+             */
+            redeemed_count: number;
+            /** Format: date-time */
+            valid_from: string;
+            /** Format: date-time */
+            valid_to: string;
+            /**
+             * @description 兑换后记入哪个余额（BONUS 不计退款额度）
+             * @enum {string}
+             */
+            credit_target: "RECHARGE" | "BONUS";
+            /** Format: int64 */
+            created_by: number;
+            /** @description 创建人邮箱；账号行缺失时不返回 */
+            created_by_email?: string;
+            /** Format: date-time */
+            created_at: string;
+        };
+        AdminRedeemBatchList: {
+            items: components["schemas"]["AdminRedeemBatch"][];
+            page: number;
+            page_size: number;
+            /** Format: int64 */
+            total: number;
+        };
+        AdminRedeemBatchCreateRequest: {
+            batch_name: string;
+            /**
+             * Format: int64
+             * @description 面额（分），上限来自列类型
+             */
+            face_value_fen: number;
+            /**
+             * Format: int64
+             * @description 一次最多生成 500 张
+             */
+            quantity: number;
+            /**
+             * @default BONUS
+             * @enum {string}
+             */
+            credit_target: "RECHARGE" | "BONUS";
+            /** Format: int64 */
+            valid_days: number;
+        };
+        AdminRedeemBatchCreateResult: {
+            batch: components["schemas"]["AdminRedeemBatch"];
+            /** @description 明文兑换码，**唯一一次**返回；不落库、不写日志、不进审计，离开页面即丢失 */
+            codes: string[];
+        };
+        /** @description 审核队列行（`review/reviewItem`）+ 决策所需的业务事实 */
+        AdminReview: {
+            /** Format: int64 */
+            id: number;
+            /** @enum {string} */
+            biz_type: "QUOTA_APPLY" | "INVOICE_APPLY" | "REFUND_APPLY" | "REDEEM_BATCH" | "BALANCE_ADJUST";
+            /** Format: int64 */
+            biz_id: number;
+            /** @description 业务单号；该类型没有单号时不返回 */
+            biz_no?: string;
+            /** Format: int64 */
+            applicant_id: number;
+            applicant_name: string;
+            /**
+             * Format: int64
+             * @description 涉及积分；该类型没有金额时不返回
+             */
+            amount_micro?: number;
+            /**
+             * Format: int64
+             * @description 涉及金额（分）；该类型没有金额时不返回
+             */
+            amount_fen?: number;
+            /**
+             * @description 仅 BALANCE_ADJUST 有，表示调额方向
+             * @enum {string}
+             */
+            direction?: "INCREASE" | "DECREASE";
+            /** @description 申请摘要（截断到 200 字） */
+            summary: string;
+            /** @description 业务单据自身状态；查不到时不返回 */
+            business_state?: string;
+            /** @enum {string} */
+            state: "PENDING" | "APPROVED" | "REJECTED";
+            /**
+             * Format: int64
+             * @description 处理人；未分配时不返回
+             */
+            assignee_id?: number;
+            /** @description 决策备注；未决策时不返回 */
+            decision_note?: string;
+            /**
+             * Format: date-time
+             * @description 未决策时不返回
+             */
+            decided_at?: string;
+            /** Format: date-time */
+            created_at: string;
+            /** @description true = 业务行已不存在；列表仍返回 200，只做标记 */
+            anomaly: boolean;
+            /** @description anomaly=true 时的说明 */
+            anomaly_reason?: string;
+        };
+        AdminReviewList: {
+            items: components["schemas"]["AdminReview"][];
+            page: number;
+            page_size: number;
+            /** Format: int64 */
+            total: number;
+        };
+        AdminReviewDetail: {
+            review: components["schemas"]["AdminReview"];
+        };
+        /**
+         * @description 通过/驳回共用的请求体，整个 body 可省略。驳回必须给 `reason`；
+         *     通过时 `reason` 可选（存为 decision_note），但审核 `INVOICE_APPLY` 必须给
+         *     `invoice_url`。
+         */
+        AdminReviewDecisionRequest: {
+            /** @description 决策备注/驳回原因，超出 255 字截断 */
+            reason?: string;
+            /** @description 审核 INVOICE_APPLY 时的发票文件地址，必填且 ≤512 */
+            invoice_url?: string;
+        };
+        AdminRiskRule: {
+            /** Format: int64 */
+            id: number;
+            rule_name: string;
+            /** @description 指标名（自由字符串，≤32 字，由风控引擎解释） */
+            metric: string;
+            /** @enum {string} */
+            operator: "GTE" | "LTE" | "EQ" | "SUM_GTE";
+            /** Format: int64 */
+            threshold: number;
+            /**
+             * Format: int64
+             * @description 统计窗口，最长 30 天
+             */
+            window_seconds: number;
+            /** @enum {string} */
+            action: "ALERT" | "THROTTLE" | "DISABLE";
+            /** @description 动作参数，原样透传的 JSON */
+            action_param?: unknown;
+            /** @enum {string} */
+            scope: "USER" | "KEY" | "IP" | "DEVICE";
+            enabled: boolean;
+            /** Format: int64 */
+            created_by: number;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        AdminRiskRuleList: {
+            items: components["schemas"]["AdminRiskRule"][];
+            page: number;
+            page_size: number;
+            /** Format: int64 */
+            total: number;
+        };
+        AdminRiskRuleDetail: {
+            rule: components["schemas"]["AdminRiskRule"];
+        };
+        AdminRiskRuleCreateRequest: {
+            rule_name: string;
+            metric: string;
+            /** @enum {string} */
+            operator: "GTE" | "LTE" | "EQ" | "SUM_GTE";
+            /**
+             * Format: int64
+             * @default 0
+             */
+            threshold: number;
+            /**
+             * Format: int64
+             * @default 60
+             */
+            window_seconds: number;
+            /** @enum {string} */
+            action: "ALERT" | "THROTTLE" | "DISABLE";
+            /** @description 动作参数，任意 JSON；原样落库 */
+            action_param?: unknown;
+            /** @enum {string} */
+            scope: "USER" | "KEY" | "IP" | "DEVICE";
+            /** @default true */
+            enabled: boolean;
+        };
+        /** @description 字段语义同创建，全部可选；缺省表示不改。 */
+        AdminRiskRulePatchRequest: {
+            rule_name?: string;
+            metric?: string;
+            /** @enum {string} */
+            operator?: "GTE" | "LTE" | "EQ" | "SUM_GTE";
+            /** Format: int64 */
+            threshold?: number;
+            /** Format: int64 */
+            window_seconds?: number;
+            /** @enum {string} */
+            action?: "ALERT" | "THROTTLE" | "DISABLE";
+            /** @description 动作参数，任意 JSON */
+            action_param?: unknown;
+            /** @enum {string} */
+            scope?: "USER" | "KEY" | "IP" | "DEVICE";
+            enabled?: boolean;
+        };
+        /** @description 规则是停用而不是删除，`enabled` 恒为 false */
+        AdminRiskRuleDeleteResult: {
+            /** Format: int64 */
+            id: number;
+            deleted: boolean;
+            enabled: boolean;
+        };
+        AdminRiskHit: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            rule_id: number;
+            rule_name: string;
+            /** @enum {string} */
+            scope_type: "USER" | "KEY" | "IP" | "DEVICE";
+            scope_value: string;
+            /**
+             * Format: int64
+             * @description 命中关联的账号；无关联时不返回
+             */
+            user_id?: number;
+            /**
+             * Format: int64
+             * @description 触发时的指标实际值
+             */
+            metric_value: number;
+            /**
+             * Format: int64
+             * @description 触发时的阈值快照
+             */
+            threshold: number;
+            /** @enum {string} */
+            action_taken: "ALERT" | "THROTTLE" | "DISABLE";
+            /** @description 动作执行结果 */
+            action_result: string;
+            /** Format: date-time */
+            created_at: string;
+        };
+        AdminRiskHitList: {
+            items: components["schemas"]["AdminRiskHit"][];
+            page: number;
+            page_size: number;
+            /** Format: int64 */
+            total: number;
+        };
+        AdminRiskScoreRequest: {
+            /** Format: int64 */
+            risk_score: number;
+            /** @description 调整理由，写审计 */
+            reason?: string;
+        };
+        AdminRiskScoreResult: {
+            /** Format: int64 */
+            user_id: number;
+            /**
+             * Format: int64
+             * @description 本次写入的分值
+             */
+            risk_score: number;
+            /**
+             * Format: int64
+             * @description 修改前的分值
+             */
+            previous_risk_score: number;
+        };
+        /** @description 一个运行时配置键（`ops/configItemView`） */
+        AdminConfigItem: {
+            key: string;
+            namespace: string;
+            /** @description 该键的当前值，原始 JSON（标量、数组或对象，由键自己定义） */
+            value: unknown;
+            /** @description true = 可在线修改（PUT 只接受这类键） */
+            runtime_writable: boolean;
+            /** Format: int64 */
+            version: number;
+            /**
+             * @description ROW = 库里有行；DEFAULT = 库里没有，用注册表默认值
+             * @enum {string}
+             */
+            source: "ROW" | "DEFAULT";
+        };
+        /** @description 配置项不分页：只有 items + total */
+        AdminConfigList: {
+            items: components["schemas"]["AdminConfigItem"][];
+            total: number;
+        };
+        AdminConfigUpdateRequest: {
+            /** @description key → 原始 JSON 值；一次最多写 RuntimeKeyCount 个键，只接受可在线修改的键 */
+            values: {
+                [key: string]: unknown;
+            };
+        };
+        AdminConfigUpdateResult: {
+            /**
+             * Format: int64
+             * @description 写入后的配置版本
+             */
+            version: number;
+            /** @description 本次发布标识 */
+            publish_id: string;
+            /** @description 受影响的命名空间 */
+            namespaces: string[];
+            /** @description 实际发生变化的键（值相同的键不算变化） */
+            changed_keys: string[];
+        };
+        /** @description 第三方工具深链配置（`ops/integrationView`）。五行由迁移种子写入，固定。 */
+        AdminIntegration: {
+            /** @description 工具标识，不可修改 */
+            tool_key: string;
+            /** @description 展示名，不可修改 */
+            display_name: string;
+            enabled: boolean;
+            /** @description 深链模板，必须非空才能启用；null 表示未配置（handler 是 `*string` 且无 omitempty，键总是出现） */
+            deep_link_template: string | null;
+        };
+        /** @description 集成配置不分页：只有 items + total */
+        AdminIntegrationList: {
+            items: components["schemas"]["AdminIntegration"][];
+            /** Format: int64 */
+            total: number;
+        };
+        AdminIntegrationDetail: {
+            integration: components["schemas"]["AdminIntegration"];
+        };
+        /**
+         * @description 只有两个可改字段。`deep_link_template` 缺省或显式 `null` 都表示不动，
+         *     传空串表示清空；启用一个没有模板的工具会被拒（400）。
+         */
+        AdminIntegrationPatchRequest: {
+            enabled?: boolean;
+            /** @description 深链模板；"" 清空，null/缺省 不动 */
+            deep_link_template?: string | null;
+        };
+        AdminAnnouncement: {
+            /** Format: int64 */
+            id: number;
+            title: string;
+            content: string;
+            /** @enum {string} */
+            ann_type: "NOTICE" | "MAINTENANCE" | "PROMOTION" | "PRICE_CHANGE";
+            /**
+             * Format: int64
+             * @description 展示位位图（1..15）
+             */
+            position_mask: number;
+            pinned: boolean;
+            /**
+             * Format: date-time
+             * @description 可见起始时间
+             */
+            effective_from: string;
+            /**
+             * Format: date-time
+             * @description 可见结束时间；长期有效时不返回
+             */
+            effective_to?: string;
+            /**
+             * @description SCHEDULED = 到点自动发布的内部标记
+             * @enum {string}
+             */
+            state: "DRAFT" | "SCHEDULED" | "PUBLISHED" | "OFFLINE";
+            /** @description 关联模型（t_announcement_model）；无关联时为 []，不是 null */
+            model_ids: number[];
+            /** Format: int64 */
+            created_by: number;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        AdminAnnouncementList: {
+            items: components["schemas"]["AdminAnnouncement"][];
+            page: number;
+            page_size: number;
+            /** Format: int64 */
+            total: number;
+        };
+        AdminAnnouncementDetail: {
+            announcement: components["schemas"]["AdminAnnouncement"];
+        };
+        /**
+         * @description `publish_at` 决定新建后的状态：缺省 → DRAFT；未来时间 → SCHEDULED；
+         *     当前或过去时间 → PUBLISHED。给了 `publish_at` 时 `effective_from` 不得早于它。
+         */
+        AdminAnnouncementCreateRequest: {
+            title: string;
+            content: string;
+            /**
+             * @description PROMOTION 受 7 天涨价公示期约束
+             * @enum {string}
+             */
+            ann_type: "NOTICE" | "MAINTENANCE" | "PROMOTION" | "PRICE_CHANGE";
+            /** Format: int64 */
+            position_mask: number;
+            /** @default false */
+            pinned: boolean;
+            /**
+             * Format: date-time
+             * @description 发布时间；决定 DRAFT / SCHEDULED / PUBLISHED
+             */
+            publish_at?: string;
+            /**
+             * Format: date-time
+             * @description 可见起始；给了 publish_at 时不得早于它
+             */
+            effective_from?: string;
+            /** Format: date-time */
+            effective_to?: string;
+            /** @description 关联模型；[] = 不关联（促销冲突检查覆盖全部模型） */
+            model_ids?: number[];
+        };
+        /** @description 整个 body 可省略；给了 publish_at 就按该时间发布 */
+        AdminAnnouncementPublishRequest: {
+            /** Format: date-time */
+            publish_at?: string;
+        };
+        /**
+         * @description 手工导入的上游账单。每行字段全部可选但会被逐个校验；未知上游列不报错、
+         *     不丢失（原样进 raw_row）。
+         */
+        AdminUpstreamBillImportRequest: {
+            /** Format: int64 */
+            channel_id: number;
+            /** @description 按日账期，只接受 `YYYY-MM-DD` 或 `YYYYMMDD`（月度账期对账读不到，直接 400） */
+            bill_period: string;
+            rows: ({
+                /** @description 上游账单号 */
+                bill_no?: unknown;
+                /** @description 关联的请求 ID */
+                request_id?: unknown;
+                /** @description 上游交易号 */
+                upstream_trade_no?: unknown;
+                /** @description 上游模型名 */
+                model_name?: unknown;
+                /** @description 输入 token 数 */
+                tokens_in?: unknown;
+                /** @description 输出 token 数 */
+                tokens_out?: unknown;
+                /** @description 金额（微单位） */
+                amount_micro?: unknown;
+                /** @description 币种 */
+                currency?: unknown;
+            } & {
+                [key: string]: unknown;
+            })[];
+        };
+        AdminUpstreamBillImportResult: {
+            /** Format: int64 */
+            channel_id: number;
+            bill_period: string;
+            /** @description 收到的行数 */
+            received: number;
+            /** @description 新插入行数 */
+            inserted: number;
+            /** @description 覆盖更新行数 */
+            updated: number;
+            /** @description 内容一致、未变动的行数 */
+            unchanged: number;
         };
         AdminRoute: {
             /** Format: int64 */
@@ -2993,7 +4899,17 @@ export interface components {
              * @description 必须是境内渠道
              */
             primary_channel_id?: number;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description 输入＋输出的总窗口；`0` = 未知（不做跨字段比较）。
+             *     **跨字段约束（T48）**：本次请求不带 `max_output_tokens` 时，新值不得
+             *     小于该行存量的 `max_output_tokens`，否则 400 `invalid_request_body`
+             *     且 message 指向 `context_length`（例：「上下文长度 100 不能小于当前
+             *     输出上限（1234）；如需下调请显式传入 max_output_tokens」）。
+             *     存量上限为 0（未配置）时任意下调都放行。
+             *     同一次请求里把两者一起下调是允许的——此时由 `max_output_tokens`
+             *     一侧校验「新上限 ≤ 新上下文」，与字段先后无关。
+             */
             context_length?: number;
             /**
              * Format: int64
@@ -3026,6 +4942,192 @@ export interface components {
             };
             /** @description 写审计用的变更原因 */
             reason?: string;
+        };
+        /**
+         * @description 模型主数据视图（`ops/modelView`）。字段直接对应 `modelSelectColumns`
+         *     选出的列与 `attachModelDetails` 补齐的别名/能力/价目。
+         */
+        AdminModel: {
+            /** Format: int64 */
+            id: number;
+            /** @description 客户端可见的唯一标识（`t_model.model_name`），改名走 PATCH 的 model_name */
+            model_name: string;
+            display_name: string;
+            /** @enum {string} */
+            region: "DOMESTIC" | "OVERSEAS";
+            /** @enum {string} */
+            model_type: "TEXT" | "IMAGE" | "EMBEDDING";
+            /** Format: int64 */
+            protocol_id: number;
+            /** @description 协议 code（`t_protocol.code`） */
+            protocol: string;
+            /**
+             * Format: int64
+             * @description 缺省主渠道；未指定时该字段不返回（Go 侧 `omitempty`）
+             */
+            primary_channel_id?: number;
+            /**
+             * Format: int64
+             * @description 输入＋输出的总窗口（`t_model.context_length`）；0 = 未知
+             */
+            context_length: number;
+            /**
+             * Format: int64
+             * @description 模型自身的输出上限（`t_model.max_output_tokens`）。
+             *     `0` = 未配置，网关按 `min(context_length, 32768)` 兜底估算。
+             *     与平台输出上限（32768，客户端 `max_tokens` 的硬上限）不是同一个量，
+             *     不要混用；网关估算在该值 > 0 时直接采用它，不再裁剪到
+             *     `context_length`。
+             */
+            max_output_tokens: number;
+            /**
+             * Format: int64
+             * @description 能力位图（bit0 STREAM / bit1 TOOL_CALL / bit2 VISION / bit3 JSON_MODE）
+             */
+            capability_mask: number;
+            capabilities: components["schemas"]["ModelCapabilities"];
+            /** @enum {string} */
+            listing_state: "LISTED" | "CATALOG_ONLY" | "DELISTED";
+            /**
+             * Format: int64
+             * @description 仅 LISTED 可为非 0；离开 LISTED 自动归零
+             */
+            recommend_weight: number;
+            /**
+             * Format: date-time
+             * @description 首次上架时间；从未上架时不返回
+             */
+            published_at?: string;
+            /**
+             * Format: date-time
+             * @description 转为 DELISTED 的时间；未下架时不返回
+             */
+            delisted_at?: string;
+            /** @description 启用中的别名（`t_model_alias.alias_name`，`enabled = 1`） */
+            aliases: string[];
+            /** @description 当前生效价目（`t_price_rule`）；没有生效价目时为 null，不返回假的 0 */
+            pricing: components["schemas"]["AdminModelPricing"] | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /**
+         * @description 模型当前生效的价目行（`ops/modelPricingView`）。与客户端目录的
+         *     `ModelPricing` 不是同一个视图：这里没有换算成积分/人民币的展示字段，
+         *     多出上游成本字段（仅运营与财务可见）。
+         */
+        AdminModelPricing: {
+            /** Format: int64 */
+            price_rule_id: number;
+            /** Format: int64 */
+            version: number;
+            /** Format: date-time */
+            effective_from: string;
+            /**
+             * Format: int64
+             * @description 每千输入 token 的微积分价
+             */
+            in_price_micro_per_k: number;
+            /** Format: int64 */
+            out_price_micro_per_k: number;
+            /**
+             * Format: int64
+             * @description 按次计费价；0 = 不按次
+             */
+            per_call_price_micro: number;
+            /**
+             * Format: int64
+             * @description 缓存命中计费比例（万分比）；未配置时不返回
+             */
+            cache_hit_ratio_bp?: number;
+            /**
+             * Format: int64
+             * @description 未配置时不返回
+             */
+            cache_write_ratio_bp?: number;
+            /**
+             * Format: int64
+             * @description 长上下文档位起点；未配置时不返回
+             */
+            long_ctx_threshold_tokens?: number;
+            /**
+             * Format: int64
+             * @description 未配置时不返回
+             */
+            long_ctx_in_price_micro_per_k?: number;
+            /**
+             * Format: int64
+             * @description 未配置时不返回
+             */
+            long_ctx_out_price_micro_per_k?: number;
+            /**
+             * Format: int64
+             * @description 上游成本（每千输入 token）；未配置时不返回
+             */
+            cost_in_micro_per_k?: number;
+            /**
+             * Format: int64
+             * @description 未配置时不返回
+             */
+            cost_out_micro_per_k?: number;
+            /**
+             * Format: int64
+             * @description 未配置时不返回
+             */
+            cost_per_call_micro?: number;
+        };
+        AdminModelList: {
+            items: components["schemas"]["AdminModel"][];
+            page: number;
+            page_size: number;
+            /** Format: int64 */
+            total: number;
+        };
+        AdminModelDetail: {
+            model: components["schemas"]["AdminModel"];
+        };
+        AdminModelListingStateRequest: {
+            /** @enum {string} */
+            listing_state: "LISTED" | "CATALOG_ONLY" | "DELISTED";
+            /** @description 写审计用的变更原因；可为空串 */
+            reason?: string;
+        };
+        AdminModelRecommendWeightRequest: {
+            /**
+             * Format: int64
+             * @description 非 0 只允许在 LISTED 状态下设置
+             */
+            recommend_weight: number;
+            /** @description 写审计用的变更原因；可为空串 */
+            reason?: string;
+        };
+        /** @description 模型别名（`t_model_alias`），`enabled = 1` 的行才会出现在列表里 */
+        AdminAlias: {
+            /** @description 全局唯一的别名（uk_alias_name） */
+            alias_name: string;
+            /** @description 来源标记；运营手工创建恒为 OPS */
+            source: string;
+            /** Format: date-time */
+            created_at: string;
+        };
+        /** @description 别名列表不分页（四件套只用于分页接口） */
+        AdminAliasList: {
+            /** Format: int64 */
+            model_id: number;
+            aliases: components["schemas"]["AdminAlias"][];
+        };
+        AdminAliasDetail: {
+            alias: components["schemas"]["AdminAlias"];
+        };
+        AdminAliasCreateRequest: {
+            /** @description 去首尾空白后按 rune 计 1..128 */
+            alias_name: string;
+        };
+        AdminAliasDeleteResult: {
+            /** @description 删除成功恒为 true（失败走 404） */
+            deleted: boolean;
+            alias_name: string;
         };
         AdminOverviewToday: {
             /**
@@ -5620,6 +7722,187 @@ export interface operations {
             };
         };
     };
+    listAdminAnnouncements: {
+        parameters: {
+            query?: {
+                state?: "DRAFT" | "SCHEDULED" | "PUBLISHED" | "OFFLINE";
+                ann_type?: "NOTICE" | "MAINTENANCE" | "PROMOTION" | "PRICE_CHANGE";
+                pinned?: "0" | "1";
+                page?: number;
+                page_size?: number;
+                sort?: "created_at" | "updated_at" | "effective_from" | "id";
+                order?: "asc" | "desc";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 公告分页 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminAnnouncementList"];
+                };
+            };
+            /** @description 分页或过滤参数非法（invalid_query_parameter） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 notice.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    createAdminAnnouncement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminAnnouncementCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description 已创建 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminAnnouncementDetail"];
+                };
+            };
+            /**
+             * @description 字段非法（invalid_request_body，message 指向 `title` / `content` /
+             *     `ann_type` / `position_mask` / `effective_from` / `model_ids`），
+             *     或活动类公告撞上涨价公示期
+             */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 notice.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    publishAdminAnnouncement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AdminAnnouncementPublishRequest"];
+            };
+        };
+        responses: {
+            /** @description 已发布，返回公告 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminAnnouncementDetail"];
+                };
+            };
+            /** @description 路径 id 或请求体非法，或活动类公告撞上涨价公示期（invalid_request_body） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 notice.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 公告不存在或已软删（resource_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 公告已经是 PUBLISHED，无需重复发布（resource_state_conflict） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     updateAdminAnnouncement: {
         parameters: {
             query?: never;
@@ -6092,6 +8375,182 @@ export interface operations {
             };
         };
     };
+    disableAdminUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminUserDisableRequest"];
+            };
+        };
+        responses: {
+            /** @description 已禁用，返回账号详情与最新余额 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUserDetail"];
+                };
+            };
+            /** @description 路径 id、请求体或 `reason` 非法（reason 必填且不超过 255 字，invalid_request_body） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 user.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 用户不存在或已删除（resource_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 试图禁用当前登录账号（resource_state_conflict） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    enableAdminUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已启用（或本来就不是被禁状态），返回账号详情与最新余额 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUserDetail"];
+                };
+            };
+            /** @description 路径 id 不是正整数（invalid_request_body，message 为 id） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 user.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 用户不存在或已删除（resource_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 账号处于透支冻结（FROZEN_OVERDRAFT），运营启用无效（resource_state_conflict） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getAdminWhoami: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 当前会话身份 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminWhoami"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 admin.all（permission_denied）——whoami 只对 SUPER_ADMIN 开放 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     listAdminChannels: {
         parameters: {
             query?: {
@@ -6130,6 +8589,504 @@ export interface operations {
             };
             /** @description 角色缺少 channel.read（permission_denied） */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    createAdminChannel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminChannelCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description 已创建 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminChannelDetail"];
+                };
+            };
+            /**
+             * @description 字段非法（invalid_request_body，message 指向具体字段：`body` / `name` /
+             *     `protocol_id` / `region` / `base_url` / `upstream_key` /
+             *     `group_scope_mode` / `dedicated_scope_mode` / `dedicated_user_ids` /
+             *     `weight` / `priority` / `timeout_connect_ms` / `timeout_first_byte_ms` /
+             *     `timeout_total_ms` / `retry_max` / `stream_usage_mode` /
+             *     `upstream_model_name_map`）。渠道名重复也走 400。
+             */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 channel.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 服务端缺少 `CHANNEL_KEY_KEK` 或封装失败（config_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getAdminChannel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 渠道详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminChannelDetail"];
+                };
+            };
+            /** @description 路径 id 不是正整数（invalid_request_body，message 为 id） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 channel.read（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 渠道不存在或已软删（channel_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    deleteAdminChannel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已删除 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminChannelDeleteResult"];
+                };
+            };
+            /** @description 路径 id 不是正整数（invalid_request_body，message 为 id） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 channel.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 渠道不存在或已软删（channel_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 渠道仍被 t_route 引用（channel_in_use） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 快照重发失败（config_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    updateAdminChannel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminChannelPatchRequest"];
+            };
+        };
+        responses: {
+            /** @description 已更新，返回更新后的渠道 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminChannelDetail"];
+                };
+            };
+            /** @description 字段非法或一个可改字段都没给（invalid_request_body，message 为 `body` 或具体字段名；渠道名重复也是 400） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 channel.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 渠道不存在或已软删（channel_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 缺少 `CHANNEL_KEY_KEK` / 封装失败 / 快照重发失败（config_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    disableAdminChannel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已停用（或本来就已停用），返回渠道当前状态 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminChannelDetail"];
+                };
+            };
+            /** @description 路径 id 不是正整数（invalid_request_body，message 为 id） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 channel.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 渠道不存在或已软删（channel_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 快照重发失败（config_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listAdminChannelUpstreamModels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 上游模型清单 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUpstreamModelList"];
+                };
+            };
+            /** @description 路径 id 不是正整数（invalid_request_body，message 为 id） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 channel.read（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 渠道不存在或已软删（channel_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 上游不可用、拒绝密钥或返回了无法解析的内容（upstream_all_failed / upstream_auth_failed / upstream_invalid_response） */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 缺少 `CHANNEL_KEY_KEK`（config_unavailable）或密钥信封解不开（upstream_key_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    registerAdminChannelUpstreamModels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminRegisterUpstreamModelsRequest"];
+            };
+        };
+        responses: {
+            /** @description 登记结果（created 与 skipped 都是数组，可能为空） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminRegisterUpstreamModelsResult"];
+                };
+            };
+            /**
+             * @description 路径 id、请求体、`model_ids`（空数组或超过 50 个）非法，或请求里有
+             *     上游目录中不存在的模型名（invalid_request_body，message 会列出这些名字）
+             */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 model.write（permission_denied）——该路由比渠道写权限更严 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 渠道不存在或已软删（channel_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 上游不可用、拒绝密钥或返回了无法解析的内容（upstream_all_failed / upstream_auth_failed / upstream_invalid_response） */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 缺少 `CHANNEL_KEY_KEK` / 信封解不开 / 快照重发失败（config_unavailable / upstream_key_unavailable） */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6418,6 +9375,65 @@ export interface operations {
             };
         };
     };
+    listAdminModels: {
+        parameters: {
+            query?: {
+                /** @description 按 rune 计数；超过 128 返回 400 */
+                q?: string;
+                model_type?: "TEXT" | "IMAGE" | "EMBEDDING";
+                listing_state?: "LISTED" | "CATALOG_ONLY" | "DELISTED";
+                region?: "DOMESTIC" | "OVERSEAS";
+                /** @description 协议 code（`t_protocol.code`）；超过 32 字符返回 400 */
+                protocol?: string;
+                page?: number;
+                page_size?: number;
+                sort?: "created_at" | "updated_at" | "model_name" | "recommend_weight" | "published_at";
+                order?: "asc" | "desc";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 模型分页 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminModelList"];
+                };
+            };
+            /** @description 分页或过滤参数非法（invalid_query_parameter，message 为具体参数名） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 admin.read（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     createAdminModel: {
         parameters: {
             query?: never;
@@ -6437,14 +9453,13 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        model?: {
-                            [key: string]: unknown;
-                        };
-                    };
+                    "application/json": components["schemas"]["AdminModelDetail"];
                 };
             };
-            /** @description 字段非法（invalid_request_body） */
+            /**
+             * @description 字段非法（invalid_request_body）。注意 `model_name` 与已有模型重名也返回本码
+             *     （走 CreateModel 的重名预检），不走 409。
+             */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -6463,6 +9478,1950 @@ export interface operations {
                 };
             };
             /** @description 角色缺少 model.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /**
+             * @description 状态冲突（resource_state_conflict）。三种来源：
+             *     ① `aliases` 已被其它模型占用，或某个别名等于其它模型的 `model_name`；
+             *     ② `recommend_weight` 非 0 但 `listing_state` 不是 LISTED；
+             *     ③ `listing_state=LISTED` 但该模型没有当前生效的价目。
+             */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /**
+             * @description 快照重发失败（config_unavailable）。建了默认路由或 `listing_state=LISTED`
+             *     时提交后需重发 `cfg:snap:ROUTING`，失败即返回本码——数据已落库，
+             *     但网关短期内仍按旧快照路由。
+             */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getAdminModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 模型详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminModelDetail"];
+                };
+            };
+            /** @description 路径 id 不是正整数（invalid_request_body，message 为 id） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 admin.read（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 模型不存在或已软删（resource_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    updateAdminModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminModelPatchRequest"];
+            };
+        };
+        responses: {
+            /** @description 已更新，返回更新后的模型 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminModelDetail"];
+                };
+            };
+            /**
+             * @description 字段非法（invalid_request_body，message 指向具体字段：`body` / `id` /
+             *     `model_name` / `display_name` / `region` / `model_type` / `protocol_id` /
+             *     `primary_channel_id` / `context_length` / `max_output_tokens` /
+             *     `listing_state` / `recommend_weight` / `aliases` / `capabilities`）
+             */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 model.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 模型不存在或已软删（resource_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /**
+             * @description 资源状态冲突（resource_state_conflict），三种来源：
+             *     ① 新 `model_name` 或新 `aliases` 与其它模型的名称/别名冲突
+             *        （与自身已有别名重复不算冲突，服务端静默去重）；
+             *     ② 转 `LISTED` 但没配生效价目；
+             *     ③ `recommend_weight` 非 0 而模型不是 `LISTED`。
+             */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /**
+             * @description 快照重发失败（config_unavailable）。**仅当**本次 PATCH 使 `listing_state`
+             *     实际发生变化时才重发 `cfg:snap:ROUTING`（updateModel 的 `stateChanged`
+             *     守卫）；失败即返回本码——数据已落库，但网关短期内仍按旧快照路由。
+             *     只改 `recommend_weight`、`aliases` 等字段不触发重发。
+             */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    setAdminModelListingState: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminModelListingStateRequest"];
+            };
+        };
+        responses: {
+            /** @description 已更新，返回更新后的模型 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminModelDetail"];
+                };
+            };
+            /** @description 路径 id 或 `listing_state` 非法（invalid_request_body） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 model.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 模型不存在或已软删（resource_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 转 `LISTED` 但模型没有生效价目（resource_state_conflict） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /**
+             * @description 快照重发失败（config_unavailable）。仅当状态**实际发生变化**时才重发
+             *     `cfg:snap:ROUTING`（本接口复用 updateModel，同受 `stateChanged` 守卫），
+             *     失败即返回本码——状态已落库，但网关短期内仍按旧快照路由。
+             */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    setAdminModelRecommendWeight: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminModelRecommendWeightRequest"];
+            };
+        };
+        responses: {
+            /** @description 已更新，返回更新后的模型 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminModelDetail"];
+                };
+            };
+            /** @description 路径 id 或 `recommend_weight` 非法（0–1000 之外，invalid_request_body） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 model.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 模型不存在或已软删（resource_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 模型不是 `LISTED` 却要设非 0 权重（resource_state_conflict） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listAdminModelAliases: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 别名列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminAliasList"];
+                };
+            };
+            /** @description 路径 id 不是正整数（invalid_request_body，message 为 id） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 admin.read（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 模型不存在或已软删（resource_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    createAdminModelAlias: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminAliasCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description 已创建 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminAliasDetail"];
+                };
+            };
+            /** @description 路径 id、请求体或 `alias_name` 非法（invalid_request_body） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 model.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 模型不存在或已软删（resource_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 别名被占用或与其它模型的名称冲突（resource_state_conflict） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    deleteAdminModelAlias: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+                alias: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已删除 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminAliasDeleteResult"];
+                };
+            };
+            /** @description 路径 id 不是正整数（invalid_request_body，message 为 id） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 model.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 模型不存在、别名不存在或别名超长（resource_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listAdminPrices: {
+        parameters: {
+            query?: {
+                model_id?: number;
+                model_type?: "TEXT" | "IMAGE" | "EMBEDDING";
+                enabled?: "0" | "1";
+                page?: number;
+                page_size?: number;
+                sort?: "created_at" | "effective_from" | "version" | "id";
+                order?: "asc" | "desc";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 价目分页 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminPriceRuleList"];
+                };
+            };
+            /** @description 分页或过滤参数非法（invalid_query_parameter，message 为具体参数名） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 price.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    createAdminPrice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminPriceCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description 已创建 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminPriceRuleDetail"];
+                };
+            };
+            /**
+             * @description 字段非法（invalid_request_body，message 指向具体字段：`body` /
+             *     `model_id` / `in_price_micro_per_k` / `out_price_micro_per_k` /
+             *     `per_call_price_micro` / `cache_hit_ratio_bp` / `cache_write_ratio_bp` /
+             *     `long_ctx_threshold_tokens` / `long_ctx_in_price_micro_per_k` /
+             *     `long_ctx_out_price_micro_per_k` / `cost_*` / `currency_cost` /
+             *     `effective_to` / `clear_fields` / `model_type`），或毛利地板/
+             *     涨价公示未通过
+             */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 price.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description model_id 指向的模型不存在或已软删（resource_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 生效窗口与已有价目冲突（price_conflict），message 列出冲突行 id */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 价目快照重建失败（config_unavailable），行已提交但网关尚未看到 */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    updateAdminPrice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminPricePatchRequest"];
+            };
+        };
+        responses: {
+            /** @description 已更新 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminPriceRuleDetail"];
+                };
+            };
+            /** @description 字段非法、`model_id` 出现、无字段可改，或地板/公示未通过（invalid_request_body） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 price.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 价目行不存在（resource_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 生效窗口与已有价目冲突（price_conflict） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 价目快照重建失败（config_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listAdminGroups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 分组全量列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminGroupList"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 group.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    updateAdminGroup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminGroupPatchRequest"];
+            };
+        };
+        responses: {
+            /** @description 已更新，返回分组与 Key 同步结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminGroupDetail"];
+                };
+            };
+            /**
+             * @description 字段非法或无字段可改（invalid_request_body，message 为 `body` 或具体
+             *     字段名）；范围内有无成本价模型且未确认时，响应体额外带 `warnings[]`
+             */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminGroupUpdateError"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 group.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 分组不存在（resource_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listAdminOrders: {
+        parameters: {
+            query?: {
+                /** @description 订单号或用户邮箱，按 rune 计超过 64 返回 400 */
+                q?: string;
+                /** @description 缺省或 all = 不过滤；refunded 同时匹配 REFUNDED 与 PARTIAL_REFUNDED */
+                state?: "" | "all" | "pending" | "paid" | "closed" | "refunding" | "refunded";
+                page?: number;
+                page_size?: number;
+                sort?: "created_at" | "paid_at";
+                order?: "asc" | "desc";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 订单分页 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminOrderList"];
+                };
+            };
+            /** @description 分页、关键字或 state 非法（invalid_query_parameter） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 fund.approve（permission_denied）——OPS 不持有该权限 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    confirmAdminOrderPayment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminConfirmPaymentRequest"];
+            };
+        };
+        responses: {
+            /** @description 已确认到账（或幂等重放） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminConfirmPaymentResult"];
+                };
+            };
+            /** @description 请求体或 `bank_txn_no` / `note` 非法（invalid_request_body；流水号须匹配 `^[A-Za-z0-9_-]{6,64}$`） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 fund.approve（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 订单不存在（resource_not_found；路径 id 非正整数同样返回 404） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 订单当前状态不允许确认（resource_state_conflict，message 带出当前状态） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    closeAdminOrder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminCloseOrderRequest"];
+            };
+        };
+        responses: {
+            /** @description 已关闭（或幂等重放） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminCloseOrderResult"];
+                };
+            };
+            /** @description 请求体或 `reason` 非法（2..100 字，invalid_request_body） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 fund.approve（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 订单不存在（resource_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 订单当前状态不允许关闭（resource_state_conflict） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listAdminRedeemBatches: {
+        parameters: {
+            query?: {
+                page?: number;
+                page_size?: number;
+                sort?: "created_at" | "valid_to";
+                order?: "asc" | "desc";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 批次分页 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminRedeemBatchList"];
+                };
+            };
+            /** @description 分页参数非法（invalid_query_parameter） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 fund.approve（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    createAdminRedeemBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminRedeemBatchCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description 批次已创建，响应里带全部明文兑换码 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminRedeemBatchCreateResult"];
+                };
+            };
+            /**
+             * @description 字段非法（invalid_request_body，message 指向具体字段：`body` /
+             *     `batch_name` / `face_value_fen` / `quantity` / `credit_target` /
+             *     `valid_days`）
+             */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 fund.approve（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listAdminReviews: {
+        parameters: {
+            query?: {
+                state?: "ALL" | "PENDING" | "APPROVED" | "REJECTED";
+                biz_type?: "QUOTA_APPLY" | "INVOICE_APPLY" | "REFUND_APPLY" | "REDEEM_BATCH" | "BALANCE_ADJUST";
+                page?: number;
+                page_size?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 审核队列分页 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminReviewList"];
+                };
+            };
+            /** @description 分页或过滤参数非法（invalid_query_parameter；`sort` 不在白名单，传了也是 400） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 fund.approve（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    approveAdminReview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AdminReviewDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description 已通过，返回更新后的队列行 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminReviewDetail"];
+                };
+            };
+            /** @description 请求体非法，或审核 INVOICE_APPLY 时缺 `invoice_url`（invalid_request_body） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 fund.approve，或审批人即申请人（permission_denied，职责分离） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 审核任务不存在（resource_not_found；路径 id 非正整数同样返回 404） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 队列行已不是 PENDING（resource_state_conflict，message 带出当前状态） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    rejectAdminReview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminReviewDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description 已驳回，返回更新后的队列行 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminReviewDetail"];
+                };
+            };
+            /** @description 请求体非法或 `reason` 缺失/超长（invalid_request_body） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 fund.approve，或审批人即申请人（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 审核任务不存在（resource_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 队列行已不是 PENDING（resource_state_conflict） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listAdminRiskRules: {
+        parameters: {
+            query?: {
+                action?: "ALERT" | "THROTTLE" | "DISABLE";
+                scope?: "USER" | "KEY" | "IP" | "DEVICE";
+                enabled?: "0" | "1";
+                page?: number;
+                page_size?: number;
+                sort?: "created_at" | "updated_at" | "rule_name" | "id";
+                order?: "asc" | "desc";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 规则分页 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminRiskRuleList"];
+                };
+            };
+            /** @description 分页或过滤参数非法（invalid_query_parameter） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 risk.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    createAdminRiskRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminRiskRuleCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description 已创建 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminRiskRuleDetail"];
+                };
+            };
+            /** @description 字段非法（invalid_request_body，message 指向 `rule_name` / `metric` / `operator` / `window_seconds` / `action` / `action_param` / `scope` 等） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 risk.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    deleteAdminRiskRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已停用 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminRiskRuleDeleteResult"];
+                };
+            };
+            /** @description 路径 id 不是正整数（invalid_request_body，message 为 id） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 risk.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 规则不存在（resource_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    updateAdminRiskRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminRiskRulePatchRequest"];
+            };
+        };
+        responses: {
+            /** @description 已更新 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminRiskRuleDetail"];
+                };
+            };
+            /** @description 字段非法或无字段可改（invalid_request_body） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 risk.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 规则不存在（resource_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listAdminRiskHits: {
+        parameters: {
+            query?: {
+                rule_id?: number;
+                user_id?: number;
+                scope_type?: "USER" | "KEY" | "IP" | "DEVICE";
+                action_taken?: "ALERT" | "THROTTLE" | "DISABLE";
+                page?: number;
+                page_size?: number;
+                sort?: "created_at" | "id" | "metric_value";
+                order?: "asc" | "desc";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 命中记录分页 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminRiskHitList"];
+                };
+            };
+            /** @description 分页或过滤参数非法（invalid_query_parameter） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 risk.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    setAdminUserRiskScore: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminRiskScoreRequest"];
+            };
+        };
+        responses: {
+            /** @description 已更新 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminRiskScoreResult"];
+                };
+            };
+            /** @description 路径 id、请求体或 `risk_score` 非法（0–100 之外，invalid_request_body） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 risk.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 账号不存在（resource_not_found） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getAdminConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 配置项全量列表（不分页） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminConfigList"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 config.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    putAdminConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminConfigUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description 已写入并发布 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminConfigUpdateResult"];
+                };
+            };
+            /** @description values 为空（invalid_request_body）或某个键/值不合法（config_value_invalid） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 config.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 配置中心不可用或快照发布失败（config_unavailable） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listAdminIntegrations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 集成配置全量列表（不分页） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminIntegrationList"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 config.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    updateAdminIntegration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                toolKey: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminIntegrationPatchRequest"];
+            };
+        };
+        responses: {
+            /** @description 已更新 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminIntegrationDetail"];
+                };
+            };
+            /** @description tool_key 非法、请求体非法，或「启用但没有深链模板」（invalid_request_body） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 config.write（permission_denied） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 未知的 tool_key（resource_not_found）——五个工具是产品常量，不会按需新建 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    importAdminUpstreamBills: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminUpstreamBillImportRequest"];
+            };
+        };
+        responses: {
+            /** @description 导入结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUpstreamBillImportResult"];
+                };
+            };
+            /**
+             * @description 请求体或字段非法（invalid_request_body，message 指向 `channel_id` /
+             *     `bill_period` / `rows` 或 `rows[i].<字段>`），或 rows 超过 5000 行，
+             *     或 channel_id 不存在
+             */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 会话失效 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 角色缺少 channel.write（permission_denied） */
             403: {
                 headers: {
                     [name: string]: unknown;

@@ -14,6 +14,7 @@ import type {
   TicketState,
   TicketType,
 } from './console'
+import type { components } from './types'
 
 /**
  * Operator console contracts, transcribed from the Go handlers in
@@ -385,56 +386,21 @@ export function useDeleteChannel() {
 export type ModelType = 'TEXT' | 'IMAGE' | 'EMBEDDING'
 export type ListingState = 'LISTED' | 'CATALOG_ONLY' | 'DELISTED'
 
-/** modelCapabilities: null means "not configured", which is not "unsupported". */
-export interface ModelCapabilities {
-  stream: boolean | null
-  tool_call: boolean | null
-  vision: boolean | null
-  json_mode: boolean | null
-}
-
-/** modelPricingView. Read-only here; price writes live in PricingPage. */
-export interface ModelPricingRule {
-  price_rule_id: number
-  version: number
-  effective_from: string
-  in_price_micro_per_k: number
-  out_price_micro_per_k: number
-  per_call_price_micro: number
-  cache_hit_ratio_bp?: number | null
-  cache_write_ratio_bp?: number | null
-  long_ctx_threshold_tokens?: number | null
-  long_ctx_in_price_micro_per_k?: number | null
-  long_ctx_out_price_micro_per_k?: number | null
-  cost_in_micro_per_k?: number | null
-  cost_out_micro_per_k?: number | null
-  cost_per_call_micro?: number | null
-}
-
-export interface AdminModel {
-  id: number
-  model_name: string
-  display_name: string
-  region: Region
-  model_type: ModelType
-  protocol_id: number
-  protocol: string
-  primary_channel_id?: number | null
-  context_length: number
-  /** 模型自身输出上限；0 = 未配置，网关按 min(context_length, 32768) 兜底。 */
-  max_output_tokens: number
-  capability_mask: number
-  capabilities: ModelCapabilities
-  listing_state: ListingState
-  recommend_weight: number
-  published_at?: string | null
-  delisted_at?: string | null
-  aliases: string[]
-  /** null = no price rule is effective now; render "未配置", never a fake zero. */
-  pricing: ModelPricingRule | null
-  created_at: string
-  updated_at: string
-}
+/**
+ * 模型主数据视图直接取自生成的契约：`api/openapi.yaml` → `npm run gen:api`。
+ *
+ * T49 之前这三个类型是手写的，代价已经在 T46 发生过一次：后端加了
+ * `t_model.max_output_tokens`，手写类型不知道，页面只能靠人盯着补字段。
+ * 现在契约是单一出处——要改模型视图，先改 openapi.yaml 再重新生成，
+ * 生成不出来就是契约与 handler 不一致。
+ *
+ * `capabilities` / `pricing` 的字段含义见契约里的 AdminModel 与
+ * AdminModelPricing（后者与客户端目录的 ModelPricing 不是同一个视图）。
+ */
+export type AdminModel = components['schemas']['AdminModel']
+export type ModelCreateInput = components['schemas']['AdminModelCreateRequest']
+export type ModelPatchInput = components['schemas']['AdminModelPatchRequest']
+export type ModelPricingRule = components['schemas']['AdminModelPricing']
 
 export type ModelListResponse = Page<AdminModel>
 export interface ModelDetailResponse {
@@ -449,41 +415,6 @@ export interface ModelListParams extends PageParams {
   protocol?: string
   sort?: 'created_at' | 'updated_at' | 'model_name' | 'recommend_weight' | 'published_at'
   order?: SortOrder
-}
-
-/** modelCreateRequest. */
-export interface ModelCreateInput {
-  model_name: string
-  display_name: string
-  region: Region
-  model_type: ModelType
-  protocol_id: number
-  primary_channel_id?: number
-  context_length?: number
-  /** 0 = 未配置；> 0 时不得超过 context_length（后端 400）。 */
-  max_output_tokens?: number
-  listing_state?: ListingState
-  recommend_weight?: number
-  aliases?: string[]
-  capabilities?: Record<string, boolean>
-}
-
-/** modelPatchRequest. model_name is the single source of truth for renames (F22-1). */
-export interface ModelPatchInput {
-  model_name?: string
-  display_name?: string
-  region?: Region
-  model_type?: ModelType
-  protocol_id?: number
-  primary_channel_id?: number
-  context_length?: number
-  /** 0 = 未配置；与同一次 patch 里的 context_length 一起校验。 */
-  max_output_tokens?: number
-  listing_state?: ListingState
-  recommend_weight?: number
-  aliases?: string[]
-  capabilities?: Record<string, boolean>
-  reason?: string
 }
 
 export interface ListingStateInput {

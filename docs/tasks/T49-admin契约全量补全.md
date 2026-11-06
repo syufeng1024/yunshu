@@ -144,6 +144,10 @@ python -c "import yaml,sys; yaml.safe_load(open('api/openapi.yaml',encoding='utf
 # 类型生成与前端
 cd web && npm run gen:api && npm run gen:api && npm run typecheck && cd ..
 # 注意：连续跑两次 gen:api 确认幂等（第二次不应产生新 diff）
+# 前端测试必须串行：并行时两个 worker 抢写 .vitest-tmp 会触发 EPERM
+# unhandled error，把退出码顶成 1，并且只收集到一个测试文件 —— 极易被
+# 误判成「用例失败」或「另一个文件没跑」。串行后 2 files / 15 tests / exit 0。
+cd web && npx vitest run --no-file-parallelism ModelsPage && cd ..
 
 # 后端未被误改
 go build ./... && git diff --stat -- 'internal/**/*.go' 'cmd/**/*.go'   # 期望为空

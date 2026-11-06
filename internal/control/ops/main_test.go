@@ -136,6 +136,14 @@ func call(t *testing.T, h http.HandlerFunc, method, target string, body any, opt
 			t.Fatalf("marshal body: %v", err)
 		}
 	}
+	return callWithPayload(t, h, method, target, payload, opts)
+}
+
+// callWithPayload sends an already-encoded body. Tests that need to pin how the
+// request is encoded — the order of the JSON keys, a repeated key — use this
+// instead of call, whose map input is marshalled in a fixed order.
+func callWithPayload(t *testing.T, h http.HandlerFunc, method, target string, payload []byte, opts testCallOptions) *httptest.ResponseRecorder {
+	t.Helper()
 	req := httptest.NewRequest(method, target, bytes.NewReader(payload))
 	req = req.WithContext(mw.WithSession(req.Context(), &mw.Session{UID: opts.uid, Role: opts.role}))
 	for k, v := range opts.pathVal {

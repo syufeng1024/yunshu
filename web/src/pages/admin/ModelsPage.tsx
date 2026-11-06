@@ -319,12 +319,31 @@ export default function AdminModelsPage() {
 
     // max_output_tokens: 0 = 未配置（网关按 min(context_length, 32768) 兜底）。
     // 与后端同一口径：context_length > 0 时不得越过它；= 0（未知）时只看正负。
+    //
+    // T48：两个字段是一对，改动方向有两个。上面只管「输出上限越过上下文」；
+    // 反方向——把上下文改小到存量输出上限之下——同样会让库里那一行自相矛盾，
+    // 而网关估算在 max_output_tokens > 0 时直接拿它当输出上限、不再裁剪到
+    // context_length，prehold 就会按模型产不出的输出量预留额度（余额偏紧的
+    // 用户可能被 402 误拦）。
     const maxOutputTokensRaw = form.maxOutputTokens.trim()
     const maxOutputTokens = maxOutputTokensRaw === '' ? 0 : parseInteger(maxOutputTokensRaw)
+    // 存量输出上限：编辑态下就是这一行当前的值，新建态没有存量值。
+    const storedMaxOutputTokens = creating ? 0 : (editTarget?.max_output_tokens ?? 0)
+    // 输出上限输入框这次有没有被改动过（清空等于改成 0，算显式改动）。
+    const outputCeilingTouched =
+      creating || maxOutputTokensRaw !== String(storedMaxOutputTokens)
+
     if (maxOutputTokens === null || maxOutputTokens < 0 || maxOutputTokens > 100_000_000) {
       nextErrors.maxOutputTokens = '输出上限需为 0–100000000 的整数，0 表示未配置。'
     } else if (contextLength !== null && contextLength > 0 && maxOutputTokens > contextLength) {
-      nextErrors.maxOutputTokens = `输出上限不能超过上下文长度（当前 ${contextLength}）。`
+      if (!outputCeilingTouched) {
+        // 只改了上下文：错误挂在上下文长度上，与后端一致（本次提交的是它，
+        // 存量上限这次没被修改）。挂在输出上限上会让运营去改一个自己没碰过
+        // 的字段，而真正的动作是把两者一起改到一致。
+        nextErrors.contextLength = `上下文长度不能小于当前输出上限（${storedMaxOutputTokens}）；如需下调，请同时把输出上限改到不超过 ${contextLength}。`
+      } else {
+        nextErrors.maxOutputTokens = `输出上限不能超过上下文长度（当前 ${contextLength}）。`
+      }
     }
 
     const aliases = creating ? parseAliases(form.aliasesText) : []
@@ -358,6 +377,10 @@ export default function AdminModelsPage() {
         protocol_id: protocolID,
         context_length: contextLength,
         max_output_tokens: maxOutputTokens,
+        // 表单没有上架状态控件（上/下架是列表里的独立操作），新建一律走后端默认值。
+        listing_state: 'CATALOG_ONLY',
+        // 仅在同时建默认路由时生效：模型不支持流式，默认路由也没有理由声明支持。
+        stream_supported: form.capabilities.stream,
         capabilities,
         aliases: aliases as string[],
       }

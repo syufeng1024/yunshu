@@ -3,6 +3,7 @@ package ops
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -540,5 +541,172 @@ func TestModelMaxOutputTokensCreateValidation(t *testing.T) {
 	if created.MaxOutputTokens != 65536 || created.ContextLength != 0 {
 		t.Fatalf("context_length 未知时 max_output_tokens=%d context_length=%d，期望 65536/0",
 			created.MaxOutputTokens, created.ContextLength)
+	}
+}
+
+// modelPair reads the stored pair back from the row, so a test asserts what the
+// database holds rather than what a response claimed.
+func modelPair(t *testing.T, id int64) (contextLength, maxOutputTokens int64) {
+	t.Helper()
+	if err := testDB.QueryRowContext(context.Background(),
+		`SELECT context_length, max_output_tokens FROM t_model WHERE id = ?`, id).
+		Scan(&contextLength, &maxOutputTokens); err != nil {
+		t.Fatalf("read model %d: %v", id, err)
+	}
+	return contextLength, maxOutputTokens
+}
+
+// T48: a PATCH that lowers context_length without touching max_output_tokens
+// would leave the row with an output ceiling above its own context window, and
+// the gateway's estimate returns a non-zero ceiling verbatim
+// (internal/gw/p09_estimate.go), so it would reserve more output than the model
+// can produce.
+//
+// The refusal is invalid_request_body pointing at context_length — the field
+// this request submits — and it carries both numbers. 0 keeps meaning "unknown"
+// in both directions, and an unconfigured ceiling (0) never blocks a context
+// change.
+func TestModelPatchContextLengthAgainstStoredOutputCeiling(t *testing.T) {
+	svc := newTestService(t)
+	uid := newTestUser(t, "OPS")
+	body := modelBody(t, "t48-model-ceiling-"+uniqueSuffix(), "CATALOG_ONLY")
+	body["context_length"] = int64(8192)
+	body["max_output_tokens"] = int64(1234)
+	m := createTestModel(t, svc, uid, body)
+	patch := func(t *testing.T, body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		return call(t, svc.UpdateModel, http.MethodPatch, "/api/admin/models/1", body,
+			testCallOptions{uid: uid, role: "OPS", pathVal: map[string]string{"id": itoa(m.ID)}})
+	}
+
+	// Below the stored ceiling, alone: 400 on context_length, row untouched.
+	rec := patch(t, map[string]any{"context_length": int64(100)})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("单独下调 context_length status=%d body=%s，期望 400", rec.Code, rec.Body.String())
+	}
+	eb := errorBody(t, rec)
+	if eb.Error.Code != "invalid_request_body" {
+		t.Fatalf("code=%s，期望 invalid_request_body", eb.Error.Code)
+	}
+	// The field must be the one this request submitted. Naming
+	// max_output_tokens would point the operator at a field they never sent.
+	if !strings.Contains(eb.Error.Message, "context_length") {
+		t.Fatalf("message=%q，期望指向 context_length", eb.Error.Message)
+	}
+	if !strings.Contains(eb.Error.Message, "输出上限") ||
+		!strings.Contains(eb.Error.Message, "1234") ||
+		!strings.Contains(eb.Error.Message, "100") {
+		t.Fatalf("message=%q，期望含「输出上限」与存量 1234 / 新上下文 100 两个数值", eb.Error.Message)
+	}
+	if ctxLen, outMax := modelPair(t, m.ID); ctxLen != 8192 || outMax != 1234 {
+		t.Fatalf("被拒后库中 context_length=%d max_output_tokens=%d，期望仍是 8192/1234", ctxLen, outMax)
+	}
+
+	// Exactly equal is not "below": context_length == max_output_tokens passes.
+	rec = patch(t, map[string]any{"context_length": int64(1234)})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("context_length 等于输出上限 status=%d body=%s，期望 200", rec.Code, rec.Body.String())
+	}
+	if ctxLen, outMax := modelPair(t, m.ID); ctxLen != 1234 || outMax != 1234 {
+		t.Fatalf("库中 context_length=%d max_output_tokens=%d，期望 1234/1234", ctxLen, outMax)
+	}
+
+	// 0 is "unknown", not "small": it must pass and must not be compared to the
+	// stored ceiling (same semantics as validateMaxOutputTokens).
+	rec = patch(t, map[string]any{"context_length": int64(0)})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("context_length=0 status=%d body=%s，期望 200（0=未知，不校验）", rec.Code, rec.Body.String())
+	}
+
+	// With the ceiling cleared to 0 (not configured) any lowering is allowed.
+	rec = patch(t, map[string]any{"max_output_tokens": int64(0)})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("max_output_tokens=0 status=%d body=%s，期望 200", rec.Code, rec.Body.String())
+	}
+	rec = patch(t, map[string]any{"context_length": int64(16)})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("存量输出上限为 0 时下调 context_length status=%d body=%s，期望 200", rec.Code, rec.Body.String())
+	}
+	if ctxLen, outMax := modelPair(t, m.ID); ctxLen != 16 || outMax != 0 {
+		t.Fatalf("库中 context_length=%d max_output_tokens=%d，期望 16/0", ctxLen, outMax)
+	}
+}
+
+// T48: the cross-field rule must not depend on which JSON key arrives first, and
+// it must stay silent whenever max_output_tokens is part of the same PATCH — that
+// branch validates the new ceiling against the context length the request leaves
+// behind, so sending both is checked in both directions. Pinned by encoding the
+// bodies by hand: the struct is decoded by field name, and the branches run in a
+// fixed source order, so only a raw body can prove the order does not matter.
+func TestModelPatchContextAndOutputTokensOrderInvariant(t *testing.T) {
+	svc := newTestService(t)
+	uid := newTestUser(t, "OPS")
+	cases := []struct {
+		name         string
+		payload      string
+		wantStatus   int
+		wantContains string
+		wantAbsent   string
+		wantPair     [2]int64
+	}{
+		{
+			name:       "context_length_key_first",
+			payload:    `{"context_length":100,"max_output_tokens":100}`,
+			wantStatus: http.StatusOK,
+			wantPair:   [2]int64{100, 100},
+		},
+		{
+			name:       "max_output_tokens_key_first",
+			payload:    `{"max_output_tokens":100,"context_length":100}`,
+			wantStatus: http.StatusOK,
+			wantPair:   [2]int64{100, 100},
+		},
+		{
+			// Both fields present but the ceiling left above the new context:
+			// the pair is still wrong, and the fix is the output field, so the
+			// refusal comes from validateMaxOutputTokens, not from the new rule.
+			name:         "both_present_ceiling_not_lowered",
+			payload:      `{"max_output_tokens":1234,"context_length":100}`,
+			wantStatus:   http.StatusBadRequest,
+			wantContains: "max_output_tokens",
+			wantAbsent:   "不能小于当前输出上限",
+			wantPair:     [2]int64{8192, 1234},
+		},
+		{
+			// Raising the context is always safe, alone or not.
+			name:       "context_length_raised_alone",
+			payload:    `{"context_length":16384}`,
+			wantStatus: http.StatusOK,
+			wantPair:   [2]int64{16384, 1234},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := modelBody(t, "t48-model-order-"+uniqueSuffix(), "CATALOG_ONLY")
+			body["context_length"] = int64(8192)
+			body["max_output_tokens"] = int64(1234)
+			m := createTestModel(t, svc, uid, body)
+
+			rec := callWithPayload(t, svc.UpdateModel, http.MethodPatch, "/api/admin/models/1",
+				[]byte(tc.payload),
+				testCallOptions{uid: uid, role: "OPS", pathVal: map[string]string{"id": itoa(m.ID)}})
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status=%d body=%s，期望 %d", rec.Code, rec.Body.String(), tc.wantStatus)
+			}
+			if tc.wantContains != "" {
+				eb := errorBody(t, rec)
+				if !strings.Contains(eb.Error.Message, tc.wantContains) {
+					t.Fatalf("message=%q，期望含 %q", eb.Error.Message, tc.wantContains)
+				}
+				if tc.wantAbsent != "" && strings.Contains(eb.Error.Message, tc.wantAbsent) {
+					t.Fatalf("message=%q，期望不含 %q（本次提交带了 max_output_tokens）",
+						eb.Error.Message, tc.wantAbsent)
+				}
+			}
+			if ctxLen, outMax := modelPair(t, m.ID); ctxLen != tc.wantPair[0] || outMax != tc.wantPair[1] {
+				t.Fatalf("库中 context_length=%d max_output_tokens=%d，期望 %d/%d",
+					ctxLen, outMax, tc.wantPair[0], tc.wantPair[1])
+			}
+		})
 	}
 }

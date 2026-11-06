@@ -627,6 +627,36 @@ func (s *Service) updateModel(w http.ResponseWriter, r *http.Request, id int64, 
 			mw.WriteError(w, r, mw.InvalidField("context_length"))
 			return
 		}
+		// T48: context_length and max_output_tokens are two sides of one pair,
+		// but this branch used to check only its own range. Lowering
+		// context_length alone could therefore leave the row with a stored
+		// output ceiling above its own context window, and the gateway's
+		// estimate (internal/gw/p09_estimate.go) returns a non-zero ceiling
+		// verbatim — it never clamps it to context_length — so prehold would
+		// reserve more output than the model can produce. That is an upper
+		// bound, not a charge (settlement uses real usage), but it can 402 a
+		// user whose balance is merely tight.
+		//
+		// Three conditions keep this from firing where the operator is already
+		// fixing the pair:
+		//   - req.MaxOutputTokens != nil: the branch below validates the new
+		//     ceiling against the context length this request leaves behind, so
+		//     sending both is checked in both directions. That also makes the
+		//     JSON key order (and hence which branch runs first) irrelevant.
+		//   - context_length == 0: 0 means "unknown", the same semantics
+		//     validateMaxOutputTokens uses; there is nothing to compare against.
+		//   - before.MaxOutputTokens == 0: nothing is configured, so any
+		//     context_length is allowed.
+		//
+		// The refusal names context_length, not max_output_tokens: the field
+		// this request submits is the one that is wrong, and the stored ceiling
+		// was not modified here. Pointing at max_output_tokens would send an
+		// operator to edit a field they never mentioned.
+		if req.MaxOutputTokens == nil && *req.ContextLength > 0 &&
+			before.MaxOutputTokens > 0 && *req.ContextLength < before.MaxOutputTokens {
+			mw.WriteError(w, r, contextBelowStoredMaxOutputTokens(*req.ContextLength, before.MaxOutputTokens))
+			return
+		}
 		add("context_length", *req.ContextLength)
 	}
 	if req.MaxOutputTokens != nil {
@@ -995,6 +1025,22 @@ func validateMaxOutputTokens(value, contextLength int64) *apierr.APIError {
 		return mw.InvalidField("max_output_tokens")
 	}
 	return nil
+}
+
+// contextBelowStoredMaxOutputTokens is the T48 refusal for a PATCH that lowers
+// context_length under the output ceiling already stored on the row, without
+// submitting max_output_tokens in the same body.
+//
+// It is invalid_request_body and it names context_length, because the request
+// is fixable: resubmitting with max_output_tokens lowered as well succeeds. The
+// message carries both numbers — the submitted context length and the stored
+// ceiling — so the operator can see by how much the pair is out of line, and it
+// says which field to send. Both facts are absent from a bare field path, and
+// the console then shows the 400 next to the field the operator just edited.
+func contextBelowStoredMaxOutputTokens(contextLength, storedMaxOutputTokens int64) *apierr.APIError {
+	return apierr.Newf(apierr.CodeInvalidRequestBody,
+		fmt.Sprintf("context_length: 上下文长度 %d 不能小于当前输出上限（%d）；如需下调请显式传入 max_output_tokens",
+			contextLength, storedMaxOutputTokens))
 }
 
 func validateListingState(raw string) (string, *apierr.APIError) {

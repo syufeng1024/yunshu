@@ -52,7 +52,7 @@ func TestModelSelectColumnsMatchScanOrder(t *testing.T) {
 	record := func(dest ...any) error {
 		for _, d := range dest {
 			value := reflect.ValueOf(d)
-			if value.Kind() != reflect.Ptr || value.IsNil() {
+			if value.Kind() != reflect.Pointer || value.IsNil() {
 				t.Fatalf("scan destination %T 不是非空指针", d)
 			}
 			name, ok := fieldByOffset[value.Pointer()]

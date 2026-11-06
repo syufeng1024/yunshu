@@ -45,8 +45,6 @@ function model(overrides: Partial<AdminModel> = {}): AdminModel {
     capabilities: { stream: true, tool_call: false, vision: false, json_mode: null },
     listing_state: 'CATALOG_ONLY',
     recommend_weight: 0,
-    published_at: null,
-    delisted_at: null,
     aliases: [],
     pricing: null,
     created_at: '2026-08-20T02:00:00Z',
@@ -268,5 +266,56 @@ describe('ModelsPage', () => {
       await screen.findByText('输出上限不能超过上下文长度（当前 65536）。'),
     ).toBeInTheDocument()
     expect(mockedPatch).not.toHaveBeenCalled()
+  })
+
+  // T48: context_length 与 max_output_tokens 是一对，反方向也要拦。把上下文改小
+  // 到存量输出上限之下、又没动输出上限，库里那一行就自相矛盾（网关估算会按存量
+  // 上限预留，超出模型真实产出）。后端会 400 并指向 context_length，前端先拦一次，
+  // 运营不必提交后才吃到错误；文案带具体数值，与后端同口径。
+  it('T48: 只下调上下文到存量输出上限以下时在上下文字段拦截', async () => {
+    installGet([unpricedModel])
+    const user = userEvent.setup()
+    renderWithProviders(<AdminModelsPage />)
+    await screen.findByText('DeepSeek Chat')
+
+    const table = screen.getByRole('table', { name: '模型主数据列表' })
+    const row = within(table).getByText('DeepSeek Chat').closest('tr') as HTMLElement
+    await user.click(within(row).getByRole('button', { name: '编辑' }))
+
+    const contextInput = await screen.findByLabelText('上下文长度（tokens）')
+    await user.clear(contextInput)
+    await user.type(contextInput, '100')
+    await user.click(screen.getByRole('button', { name: '保存' }))
+
+    expect(
+      await screen.findByText(/上下文长度不能小于当前输出上限（4096）/),
+    ).toBeInTheDocument()
+    // 拦截，不发请求。
+    expect(mockedPatch).not.toHaveBeenCalled()
+  })
+
+  // T48: 两个字段一起改是合法的修复路径，必须放行，且同一次提交里带上两个值。
+  it('T48: 上下文与输出上限一起下调时放行并同批下发', async () => {
+    installGet([unpricedModel])
+    const user = userEvent.setup()
+    renderWithProviders(<AdminModelsPage />)
+    await screen.findByText('DeepSeek Chat')
+
+    const table = screen.getByRole('table', { name: '模型主数据列表' })
+    const row = within(table).getByText('DeepSeek Chat').closest('tr') as HTMLElement
+    await user.click(within(row).getByRole('button', { name: '编辑' }))
+
+    const contextInput = await screen.findByLabelText('上下文长度（tokens）')
+    const outputInput = await screen.findByLabelText('输出上限（tokens）')
+    await user.clear(contextInput)
+    await user.type(contextInput, '100')
+    await user.clear(outputInput)
+    await user.type(outputInput, '100')
+    await user.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => expect(mockedPatch).toHaveBeenCalledTimes(1))
+    const [path, body] = mockedPatch.mock.calls[0]
+    expect(path).toBe('/api/admin/models/12')
+    expect(body).toMatchObject({ context_length: 100, max_output_tokens: 100 })
   })
 })
